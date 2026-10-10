@@ -22,6 +22,8 @@ import SettingsPage from './pages/SettingsPage.js';
 import { useAppStore as useAppStoreNotification } from './stores/appStore.js';
 import { useAudioStore, MAX_QUEUE_SIZE } from './stores/audioStore.js';
 import { UpdateToast } from './components/UpdateToast.js';
+import TextPromptDialog from './components/TextPromptDialog.js';
+import ConfirmDialog from './components/ConfirmDialog.js';
 import { LAYER } from './theme/layers.js';
 import { useDawShortcuts } from './shortcuts/useDawShortcuts.js';
 import DawWorkspaceChrome, { useBottomZoneHeight } from './components/daw/DawWorkspaceChrome.js';
@@ -71,7 +73,9 @@ function Toast() {
   };
 
   return (
-    <div style={{ zIndex: LAYER.notification }}
+    // Keyed by the message's own id so a replacement re-plays the entrance
+    // rather than silently swapping the text under the reader.
+    <div key={notif.id} style={{ zIndex: LAYER.notification }}
          className={`fixed animate-in-fast border
                      bottom-4 left-4 right-4 px-4 py-3 rounded-xl shadow-lg
                      text-[15px] text-center whitespace-nowrap overflow-hidden text-ellipsis
@@ -468,6 +472,9 @@ function AppInner() {
 
       {/* Toast notifications */}
       <Toast />
+      {/* Electron has no window.prompt — see ui/text-prompt.ts. */}
+      <TextPromptDialog />
+      <ConfirmDialog />
 
       {/* Multitrack workspace entry point (desktop only). */}
 

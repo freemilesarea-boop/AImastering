@@ -22,6 +22,7 @@ import {
   deleteSessionTemplate, deleteTrackTemplate, exportTemplates, importTemplates,
   listSessionTemplates, listTrackTemplates, saveSessionTemplate, saveTrackTemplate,
 } from '../../../daw/engine/template-store.js';
+import { askText } from '../../../ui/text-prompt.js';
 
 export default function TemplatePanel({ onClose }: { onClose: () => void }) {
   const session = useDawStore((s) => s.session);
@@ -65,8 +66,9 @@ export default function TemplatePanel({ onClose }: { onClose: () => void }) {
     const missing = missingDevices(template);
     let problems: string[] = [];
     let made = 0;
+    const at = useDawStore.getState().insertIndex();
     apply((s) => {
-      const result = applyTrackTemplate(s, template, { count });
+      const result = applyTrackTemplate(s, template, at === undefined ? { count } : { count, atIndex: at });
       problems = result.problems;
       made = result.trackIds.length;
       if (result.createdBuses.length > 0) {
@@ -111,14 +113,15 @@ export default function TemplatePanel({ onClose }: { onClose: () => void }) {
   };
 
   const doImport = (): void => {
-    const raw = globalThis.prompt('템플릿 파일 내용을 붙여넣으세요');
-    if (!raw) return;
-    const result = importTemplates(raw);
-    say(result.problems);
-    setRevision((r) => r + 1);
-    if (result.tracks + result.sessions > 0) {
-      notify(`트랙 ${result.tracks}개 · 세션 ${result.sessions}개 가져왔습니다`, 'success');
-    }
+    void askText('템플릿 파일 내용을 붙여넣으세요').then((raw) => {
+      if (!raw) return;
+      const result = importTemplates(raw);
+      say(result.problems);
+      setRevision((r) => r + 1);
+      if (result.tracks + result.sessions > 0) {
+        notify(`트랙 ${result.tracks}개 · 세션 ${result.sessions}개 가져왔습니다`, 'success');
+      }
+    });
   };
 
   return (

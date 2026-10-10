@@ -12,7 +12,9 @@ import {
   undo as undoHistory, redo as redoHistory,
   canUndo, canRedo, type History,
 } from '../audio/options-history.js';
-import { createSession, sessionEndSec } from '../daw/model/session-ops.js';
+import {
+  addTrack, createBus, createSession, createTrack, indexAfterTracks, sessionEndSec,
+} from '../daw/model/session-ops.js';
 import type { DawSession, TrackId } from '../daw/model/types.js';
 import { EMPTY_SELECTION, type TimeSelection } from '../daw/edit/clip-edit.js';
 import { expandSelection } from '../daw/edit/edit-groups.js';
@@ -20,15 +22,28 @@ import type { ChannelSettings } from '../daw/edit/channel-ops.js';
 import type { TimeFormat } from '../daw/model/spot-time.js';
 import type { DawWindow } from '../daw/model/view-window.js';
 import {
-  linkedTimeline, recallZoom, storeZoom,
+  findLayout, linkedTimeline, recallZoom, removeLayout, saveLayout, storeZoom,
   type WindowLayout, type ZoomSlots, type ZoomView,
 } from '../daw/model/workspace-view.js';
-import { pushSnapshot, type MixSnapshot } from '../daw/model/mix-snapshot.js';
+import { pushSnapshot, removeSnapshot, type MixSnapshot } from '../daw/model/mix-snapshot.js';
+import {
+  captureLayout, layoutDiff, type LayoutDiff, type WorkspaceShot,
+} from '../daw/edit/layout-ops.js';
+// Reading the workspace and the floating panels here is what lets a layout be
+// the whole room rather than the DAW's half of it.  Neither store imports
+// this one, so there is no cycle.
+import { useWorkspaceStore, type PanelId } from './workspaceStore.js';
+import { usePanelWindowStore } from './panelWindowStore.js';
 import type { EditClipboard } from '../daw/edit/clipboard.js';
 import type { Groove } from '../daw/model/groove.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
 import { autosaveDriver } from '../daw/engine/autosave-driver.js';
+import {
+  clearAudioCache, forgetMissing, missingFileIds, missingFiles, onMissingFile,
+} from '../daw/engine/audio-cache.js';
 import { tempoMapOf } from '../daw/model/tempo-map.js';
+import { DEFAULT_NUDGE, type NudgeContext, type NudgeSetting } from '../daw/model/nudge.js';
+import { videoOf } from '../daw/model/video.js';
 import {
   cycleSnap, eventTimes, snapMove as snapMoveMode, snapTime as snapTimeMode,
   type SnapContext, type SnapMode,
@@ -98,6 +113,16 @@ export interface DawState {
   /** Track the keyboard acts on when the selection spans none. */
   focusedTrackId: TrackId | null;
   setFocusedTrack: (id: TrackId | null) => void;
+  /**
+   * Where the next new track goes: after the selection, or the end.
+   *
+   * Here rather than in each button because every one of them was getting it
+   * wrong in the same way — six add-track paths, all appending to the end of
+   * a thirty-track session, while `addTrack` had taken an index all along.
+   */
+  insertIndex: () => number | undefined;
+  /** Add a track of this kind where `insertIndex` says, and select it. */
+  addTrackHere: (kind: 'audio' | 'aux' | 'vca') => void;
 
   playheadSec: number;
   setPlayhead: (sec: number) => void;
@@ -134,8 +159,16 @@ export interface DawState {
   snapMode: SnapMode;
   setSnapMode: (m: SnapMode) => void;
   cycleSnapMode: () => void;
-  nudgeSec: number;
-  setNudgeSec: (s: number) => void;
+  /**
+   * How far one nudge moves — a choice, not a number.
+   *
+   * It was `nudgeSec: 0.1` with a setter nothing called, so every nudge in
+   * the app moved exactly 100 ms: a distance that lands on no grid line at
+   * any tempo.  Holding the CHOICE instead means `grid` keeps following the
+   * ruler through a tempo change, and `frame` keeps following the picture.
+   */
+  nudge: NudgeSetting;
+  setNudge: (n: NudgeSetting) => void;
   tabToTransient: boolean;
   toggleTabToTransient: () => void;
 
@@ -236,6 +269,26 @@ export interface DawState {
   /** Saved window layouts, same reasoning as the zoom slots. */
   layouts: WindowLayout[];
   setLayouts: (layouts: WindowLayout[]) => void;
+  /** Freeze the room under a name, replacing one already called that. */
+  saveWindowLayout: (name: string) => void;
+  /**
+   * Walk into a saved room.  Returns what it changed, or null if there is no
+   * layout by that name — a caller needs to tell "nothing to do" from
+   * "nothing there", and those read the same if both return nothing.
+   */
+  recallWindowLayout: (name: string) => LayoutDiff | null;
+  dropWindowLayout: (name: string) => void;
+  /**
+   * The layout last saved or recalled, for the cycle key and the menu tick.
+   * Cleared when the screen is no longer that layout would be a lie the store
+   * cannot tell honestly — every panel toggle would have to report here — so
+   * the menu shows the live difference beside the name instead.
+   */
+  currentLayout: string | null;
+
+  /** Whether the layout menu is on screen. */
+  layoutsOpen: boolean;
+  setLayoutsOpen: (open: boolean) => void;
 
   /**
    * Mixer snapshots for A/B.
@@ -247,6 +300,12 @@ export interface DawState {
   snapshots: MixSnapshot[];
   addSnapshot: (snapshot: MixSnapshot) => void;
   setSnapshots: (snapshots: MixSnapshot[]) => void;
+  /** Throw one away.  The cap drops the oldest; this is the deliberate one. */
+  dropSnapshot: (id: string) => void;
+
+  /** Whether the snapshot list is on screen (the mixer's own panel). */
+  snapshotsOpen: boolean;
+  setSnapshotsOpen: (open: boolean) => void;
 
   /**
    * Whether the timeline selection follows the edit selection.
@@ -263,6 +322,18 @@ export interface DawState {
   setChannelClipboard: (settings: ChannelSettings | null) => void;
 
   /**
+   * The track a Match EQ should copy the tone OF, waiting for a target.
+   *
+   * An id rather than a measured curve: the model track goes on being edited
+   * after it is picked, and a match taken ten minutes later should measure
+   * what the track sounds like THEN, not what it sounded like at the moment
+   * somebody clicked.  A stale curve is the kind of wrong that looks like the
+   * match simply not working.
+   */
+  matchModelTrackId: TrackId | null;
+  setMatchModelTrackId: (trackId: TrackId | null) => void;
+
+  /**
    * Write a crossfade whenever a drag leaves two clips overlapping.
    *
    * A preference rather than session data — it describes how this person
@@ -277,6 +348,59 @@ export interface DawState {
   setEngineWarning: (w: string | null) => void;
 }
 
+/**
+ * The room as it is right now, read off the three stores that hold it.
+ *
+ * A function rather than inline, because save and the menu's live difference
+ * must read the SAME thing: two readers that drift are how a preview comes to
+ * describe a change that does not happen.
+ */
+function workspaceShot(state: DawState): WorkspaceShot {
+  return {
+    window: state.window,
+    panels: useWorkspaceStore.getState().panels,
+    view: {
+      pxPerSec: state.pxPerSec,
+      scrollSec: state.scrollSec,
+      trackHeights: Object.fromEntries(state.session.tracks.map((t) => [t.id, t.height])),
+    },
+    // z is left out on purpose: stacking order is whatever the last click
+    // made it, not something anybody chose to save.
+    floating: usePanelWindowStore.getState().windows.map(
+      ({ id, x, y, width, height }) => ({ id, x, y, width, height })),
+  };
+}
+
+/**
+ * Drop the record of a missing file once nothing plays it any more.
+ *
+ * The warning tells people to put the file back OR delete the clip, and
+ * without this the second half of that sentence was a lie: the banner stayed
+ * up after the clip went, naming audio the session no longer asked for.
+ *
+ * The test is the same one the offline render refuses on — referenced by a
+ * non-muted clip — so the banner and the bounce cannot disagree about whether
+ * a file still matters.
+ */
+function forgetUnreferencedFailures(session: DawSession): void {
+  const missing = missingFileIds();
+  if (missing.size === 0) return;
+  const played = new Set<string>();
+  for (const track of session.tracks) {
+    if (track.mute) continue;
+    for (const playlist of track.playlists) {
+      for (const clip of playlist.clips) {
+        if (clip.kind === 'audio' && !clip.muted) played.add(clip.fileId);
+      }
+    }
+  }
+  let dropped = false;
+  for (const id of missing) {
+    if (!played.has(id)) { forgetMissing(id); dropped = true; }
+  }
+  if (dropped && missingFileIds().size === 0) useDawStore.setState({ engineWarning: null });
+}
+
 const initialSession = createSession();
 
 export const useDawStore = create<DawState>((set, get) => ({
@@ -288,10 +412,12 @@ export const useDawStore = create<DawState>((set, get) => ({
     const next = fn(current);
     if (next === current) return;
     set({ session: next, history: recordHistory(get().history, next, sameByReference) });
+    forgetUnreferencedFailures(next);
     dawRuntime.sync(next);
-    // The ONE place a real edit goes through.  Watching store emissions
-    // instead would count playback and scrolling as changes — see
-    // engine/autosave-driver.ts.
+    // Told, rather than diffed on a timer: watching store emissions instead
+    // would count playback and scrolling as changes — see
+    // engine/autosave-driver.ts.  Every path below that replaces the session
+    // has to say so too, or the work it did is not in the recovery file.
     autosaveDriver.noteEdit(next);
   },
 
@@ -301,6 +427,11 @@ export const useDawStore = create<DawState>((set, get) => ({
     if (next === current) return;
     set({ session: next });
     dawRuntime.sync(next);
+    // A drag is still editing.  Each move bumps the revision and pushes the
+    // idle gate out, so nothing is written mid-gesture and the save lands
+    // when the hand stops — which is the behaviour model/autosave.ts was
+    // written for and never saw, because this path used to say nothing.
+    autosaveDriver.noteEdit(next);
   },
 
   commitEdit: () => {
@@ -310,13 +441,20 @@ export const useDawStore = create<DawState>((set, get) => ({
   },
 
   loadSession: (session) => {
+    // Before the state swap: the driver's baseline has to move with the
+    // project, or a pending edit to the old one writes the new one's file.
+    autosaveDriver.noteLoaded(session);
     set({
       session,
       history: initHistory(session),
       selection: EMPTY_SELECTION,
       selectedTrackIds: [],
       playheadSec: 0,
+      // Another session's missing files are not this one's.  Left standing,
+      // the banner would name a file the project on screen never referred to.
+      engineWarning: null,
     });
+    clearAudioCache();
     dawRuntime.sync(session);
   },
 
@@ -326,6 +464,10 @@ export const useDawStore = create<DawState>((set, get) => ({
     const next = undoHistory(h);
     set({ history: next, session: next.present });
     dawRuntime.sync(next.present);
+    // Taking an edit back is itself a change to what the project is.  Left
+    // unsaid, the recovery file kept the thing that had just been undone
+    // and nothing ever corrected it.
+    autosaveDriver.noteEdit(next.present);
   },
 
   redo: () => {
@@ -334,6 +476,7 @@ export const useDawStore = create<DawState>((set, get) => ({
     const next = redoHistory(h);
     set({ history: next, session: next.present });
     dawRuntime.sync(next.present);
+    autosaveDriver.noteEdit(next.present);
   },
 
   canUndo: () => canUndo(get().history),
@@ -381,6 +524,61 @@ export const useDawStore = create<DawState>((set, get) => ({
   setSelectedTracks: (ids) => set({ selectedTrackIds: ids }),
   focusedTrackId: null,
   setFocusedTrack: (id) => set({ focusedTrackId: id }),
+
+  insertIndex: () => {
+    const { session, selectedTrackIds, focusedTrackId } = get();
+    // The selection wins, but only while it still names rows that are here.
+    //
+    // Measured in the running app: pressing a lane header focused that row —
+    // the header draws itself differently, so the UI said so — and the next
+    // add still went to the bottom, because a selection left over from an
+    // earlier session was non-empty and matched nothing.  Checking the length
+    // and stopping there let the stale list shadow the live focus.
+    const fromSelection = indexAfterTracks(session, selectedTrackIds);
+    if (fromSelection !== undefined) return fromSelection;
+    return focusedTrackId ? indexAfterTracks(session, [focusedTrackId]) : undefined;
+  },
+
+  addTrackHere: (kind) => {
+    const at = get().insertIndex();
+    let made = '';
+    get().apply((s) => {
+      if (kind === 'aux') {
+        // An aux reads from a bus, so the bus comes with it.
+        const bus = createBus(`Bus ${s.buses.length + 1}`);
+        const aux = createTrack(
+          `Aux ${s.tracks.filter((t) => t.kind === 'aux').length + 1}`, 'aux', { input: bus.id });
+        made = aux.id;
+        return addTrack({ ...s, buses: [...s.buses, bus] }, aux, at);
+      }
+      if (kind === 'vca') {
+        const vca = createTrack(
+          `VCA ${s.tracks.filter((t) => t.kind === 'vca').length + 1}`, 'vca',
+          { output: { kind: 'none' } });
+        made = vca.id;
+        return addTrack(s, vca, at);
+      }
+      // Numbered by how many audio tracks there are, not by the track count:
+      // the count includes the master and every aux, so a second audio track
+      // in a session with a few buses came out called "Audio 6".
+      const audio = createTrack(
+        `Audio ${s.tracks.filter((t) => t.kind === 'audio').length + 1}`, 'audio');
+      made = audio.id;
+      return addTrack(s, audio, at);
+    });
+    // The new row is what the next add should land after, and what the
+    // keyboard should act on.
+    //
+    // The FOCUS only.  `selectedTrackIds` has no writer anywhere in the app —
+    // every feature reads "the selection, else the focus", and in practice
+    // that has always meant the focus — so setting it here made this action
+    // the only source of a value everything else reads, and a list left over
+    // from the last add then shadowed the row the user had just pressed.
+    // Measured in the app: a header press focused Audio 2, the header drew
+    // itself focused, and the next track still landed at the bottom because
+    // the selection still said Audio 3.
+    if (made) set({ focusedTrackId: made });
+  },
 
   clipboard: null,
   setClipboard: (clipboard) => set({ clipboard }),
@@ -434,10 +632,66 @@ export const useDawStore = create<DawState>((set, get) => ({
 
   layouts: [],
   setLayouts: (layouts) => set({ layouts }),
+  currentLayout: null,
+  layoutsOpen: false,
+  setLayoutsOpen: (layoutsOpen) => set({ layoutsOpen }),
+
+  saveWindowLayout: (name) => {
+    const layout = captureLayout(name, workspaceShot(get()));
+    if (layout.name === '') return;
+    set((s) => ({ layouts: saveLayout(s.layouts, layout), currentLayout: layout.name }));
+  },
+
+  recallWindowLayout: (name) => {
+    const state = get();
+    const layout = findLayout(state.layouts, name);
+    if (!layout) return null;
+    const diff = layoutDiff(workspaceShot(state), layout);
+
+    useWorkspaceStore.getState().setPanels(layout.panels as Record<PanelId, boolean>);
+    set({ window: layout.window, currentLayout: layout.name });
+
+    // Floating panels are torn down and rebuilt rather than reconciled: the
+    // set that should be open is known exactly, and a diff-and-patch here
+    // would be three code paths where one does.
+    const floats = usePanelWindowStore.getState();
+    floats.closeAll();
+    for (const place of layout.floating ?? []) {
+      floats.float(place.id);
+      floats.move(place.id, place.x, place.y);
+      floats.resize(place.id, place.width, place.height);
+    }
+
+    // The zoom goes last, because restoring track heights runs through
+    // `apply` and a re-render mid-way would otherwise measure the old window.
+    if (layout.view) {
+      set({ pxPerSec: layout.view.pxPerSec, scrollSec: layout.view.scrollSec });
+      const heights = layout.view.trackHeights;
+      if (heights) {
+        get().apply((session) => ({
+          ...session,
+          tracks: session.tracks.map((t) => (
+            heights[t.id] !== undefined && heights[t.id] !== t.height
+              ? { ...t, height: heights[t.id] as number }
+              : t)),
+        }));
+      }
+    }
+    return diff;
+  },
+
+  dropWindowLayout: (name) => set((s) => ({
+    layouts: removeLayout(s.layouts, name),
+    currentLayout: s.currentLayout === name ? null : s.currentLayout,
+  })),
 
   snapshots: [],
   addSnapshot: (snapshot) => set((s) => ({ snapshots: pushSnapshot(s.snapshots, snapshot) })),
   setSnapshots: (snapshots) => set({ snapshots }),
+  dropSnapshot: (id) => set((s) => ({ snapshots: removeSnapshot(s.snapshots, id) })),
+
+  snapshotsOpen: false,
+  setSnapshotsOpen: (snapshotsOpen) => set({ snapshotsOpen }),
 
   linkSelection: false,
   setLinkSelection: (linkSelection) => set({ linkSelection }),
@@ -445,6 +699,9 @@ export const useDawStore = create<DawState>((set, get) => ({
 
   channelClipboard: null,
   setChannelClipboard: (channelClipboard) => set({ channelClipboard }),
+
+  matchModelTrackId: null,
+  setMatchModelTrackId: (matchModelTrackId) => set({ matchModelTrackId }),
 
   autoCrossfade: true,
   setAutoCrossfade: (autoCrossfade) => set({ autoCrossfade }),
@@ -512,8 +769,8 @@ export const useDawStore = create<DawState>((set, get) => ({
   snapMode: 'grid',
   setSnapMode: (m) => set({ snapMode: m }),
   cycleSnapMode: () => set((s) => ({ snapMode: cycleSnap(s.snapMode) })),
-  nudgeSec: 0.1,
-  setNudgeSec: (s) => set({ nudgeSec: Math.max(0.001, s) }),
+  nudge: DEFAULT_NUDGE,
+  setNudge: (nudge) => set({ nudge }),
   tabToTransient: true,
   toggleTabToTransient: () => set((s) => ({ tabToTransient: !s.tabToTransient })),
 
@@ -544,6 +801,31 @@ dawRuntime.onStopped = () => {
 };
 
 /**
+ * Runtime → store: audio the session refers to and cannot be read.
+ *
+ * `engineWarning` has carried the words "decode failures" in its own comment
+ * since it was written and nothing ever set it; this is the case it was for.
+ * Named rather than counted when there are few of them: "kick.wav" is
+ * something you can go and look for, "1개" is not.
+ */
+onMissingFile(() => {
+  // Rebuilt from the whole set rather than from the one that just arrived:
+  // failures trickle in one file at a time from four different places, and a
+  // message that named only the newest would keep replacing itself.
+  const { session } = useDawStore.getState();
+  const all = missingFiles();
+  if (all.length === 0) return;
+  const named = all
+    .map((f) => session.files.find((x) => x.id === f.id)?.name ?? f.path)
+    .slice(0, 3);
+  useDawStore.setState({
+    engineWarning: `오디오 파일 ${all.length}개를 읽을 수 없습니다 — `
+      + `${named.join(', ')}${all.length > named.length ? ' 외' : ''}`
+      + ' · 해당 트랙은 무음으로 재생되고 내보내기는 멈춥니다',
+  });
+});
+
+/**
  * The store's current snap settings, plus the times an Events snap can land on.
  *
  * The event list is built from the SELECTED tracks' clip edges plus the markers
@@ -571,6 +853,24 @@ export function snapContext(mode: SnapMode): SnapContext {
       (session.markers ?? []).map((m) => m.timeSec),
       [playheadSec],
     ),
+  };
+}
+
+/**
+ * What a nudge needs to know to turn a choice into seconds.
+ *
+ * Built in one place because the toolbar readout and the two numpad commands
+ * must agree: a label that says 125 ms while the key press moves 100 is
+ * worse than no label at all.
+ */
+export function nudgeContext(atSec: number): NudgeContext {
+  const { session, gridDivision } = useDawStore.getState();
+  const video = videoOf(session);
+  return {
+    tempoMap: tempoMapOf(session),
+    gridDivision,
+    atSec,
+    fps: video && video.fps > 0 ? video.fps : null,
   };
 }
 

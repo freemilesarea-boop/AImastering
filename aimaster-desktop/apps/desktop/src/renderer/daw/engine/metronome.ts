@@ -39,6 +39,7 @@
 // context) still gets a click.
 
 import { barBeatAt, beatToSec, meterAtBeat, secToBeat } from '../model/tempo-map.js';
+import type { PassWindow } from './clip-player.js';
 import type { TempoMap } from '../model/types.js';
 
 export interface MetronomeOptions {
@@ -121,6 +122,16 @@ function isDownbeat(map: TempoMap, beat: number): boolean {
 
 // ── Sounding it ───────────────────────────────────────────────────────────────
 
+/** A click in the graph: the nodes, and the moment it is over. */
+interface ClickVoice {
+  osc: OscillatorNode;
+  gain: GainNode;
+  /** Context time it starts at. */
+  at: number;
+  /** Context time its own `stop` was set to. */
+  endsAt: number;
+}
+
 interface AudioContextLike {
   currentTime: number;
   destination: AudioNode;
@@ -140,14 +151,39 @@ export class Metronome {
   /** Where the click is heard.  Null means the context destination. */
   private output: AudioNode | null = null;
   private options: MetronomeOptions = DEFAULT_METRONOME;
-  /** Timeline seconds already covered.  −1 means "nothing yet". */
-  private scheduledTo = -1;
+  /**
+   * The latest CONTEXT time already clicked.  −1 means "nothing yet".
+   *
+   * Context time, not timeline time, and that is the whole point.  The horizon
+   * used to be kept in timeline seconds, which works until the timeline
+   * repeats: inside a loop the horizon ran past the loop end, the position
+   * wrapped back to the start, and `to > from` was false from then on — the
+   * click simply stopped.  Measured in the app with a 2 s loop, 7 clicks were
+   * heard where 26 were due, the last eight seconds silent.  Context time only
+   * ever moves forward, so the same beat in the next pass is a later moment
+   * and is clicked again, while two overlapping windows in the same pass still
+   * cannot click one beat twice.
+   */
+  private scheduledCtxTo = -1;
+  /**
+   * The clicks already handed to the graph, and when each one is over.
+   *
+   * Nothing used to hold them, and the consequence was two measured bugs:
+   * pressing STOP left up to a look-ahead of clicks committed to the audio
+   * thread — 600 ms of clicking after the transport had stopped, measured in
+   * the app — and switching the click off and straight back on re-scheduled
+   * beats that were already in the graph, stacking two oscillators on one
+   * beat (two moments out of ten, measured).  A click cannot be unscheduled
+   * without a reference to it.
+   */
+  private voices: ClickVoice[] = [];
   private on = false;
 
   attach(ctx: AudioContextLike | null, output: AudioNode | null = null): void {
+    this.silence();
     this.ctx = ctx;
     this.output = output;
-    this.scheduledTo = -1;
+    this.scheduledCtxTo = -1;
   }
 
   /** What the next click will connect to — the monitor path, or the speakers. */
@@ -157,9 +193,15 @@ export class Metronome {
 
   setEnabled(on: boolean): void {
     this.on = on;
+    // OFF means off NOW, not at the end of the look-ahead: the clicks already
+    // in the graph are taken back out, or the button is a request rather than
+    // a switch.
+    this.silence();
     // Forget the horizon so re-enabling mid-song starts from where the
     // playhead actually is, not from where it was when it was switched off.
-    this.scheduledTo = -1;
+    // Safe because `silence` took the committed clicks with it — resetting the
+    // horizon while they were still in the graph is what doubled them.
+    this.scheduledCtxTo = -1;
   }
 
   get enabled(): boolean { return this.on; }
@@ -168,32 +210,134 @@ export class Metronome {
     this.options = { ...this.options, ...patch };
   }
 
-  /** A locate happened; whatever was scheduled ahead is no longer true. */
-  reset(): void { this.scheduledTo = -1; }
+  /**
+   * A locate or a stop happened; whatever was scheduled ahead is no longer
+   * true — including the part of it the audio thread already has.
+   */
+  reset(): void {
+    this.silence();
+    this.scheduledCtxTo = -1;
+  }
 
   /**
-   * Schedule the clicks in `[positionSec, positionSec + lookaheadSec)`.
+   * Take every click back out of the graph.
    *
-   * `originSec` is the context time that corresponds to timeline zero — the
-   * same anchor the clip player uses, so a click and a kick that fall on the
-   * same beat are scheduled to the same context time.
+   * A click that has not started yet is simply stopped before its moment and
+   * is never heard.  One that is SOUNDING is faded over 5 ms instead of being
+   * cut: the envelope is mid-ramp at a non-zero level, and ending a tone on a
+   * step is a click of its own — silencing the metronome with a pop would be
+   * a poor trade.
    */
-  tick(map: TempoMap, positionSec: number, lookaheadSec: number, originSec: number): void {
+  private silence(): void {
+    const ctx = this.ctx;
+    const now = ctx ? ctx.currentTime : 0;
+    for (const v of this.voices) {
+      try {
+        if (v.at > now) {
+          v.osc.stop(now);
+        } else if (v.endsAt > now) {
+          v.gain.gain.cancelScheduledValues(now);
+          v.gain.gain.setValueAtTime(v.gain.gain.value, now);
+          v.gain.gain.linearRampToValueAtTime(0, now + 0.005);
+          v.osc.stop(now + 0.01);
+        }
+      } catch { /* already stopped, or a stub context in a test */ }
+    }
+    this.voices = [];
+  }
+
+  /** Forget the clicks that are over, so the list cannot grow all session. */
+  private reapVoices(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    this.voices = this.voices.filter((v) => v.endsAt >= now);
+  }
+
+  /** How many clicks are in the graph right now — for the self-tests. */
+  get pendingClicks(): number { return this.voices.length; }
+
+  /**
+   * Schedule the clicks of one look-ahead window.
+   *
+   * `originSec` is the context time that corresponds to timeline zero FOR
+   * THIS WINDOW — inside a loop each pass has its own, which is why the window
+   * comes in rather than being worked out here.  It is the same anchor the
+   * clip player placed that window's material at, so a click and a kick on
+   * the same beat are scheduled to the same context time.
+   *
+   * Bar positions come from the tempo map as they stand: a loop that starts on
+   * beat 2 of a bar clicks a weak beat there, because the click has to agree
+   * with the ruler and the bar numbers the rest of the app shows.
+   */
+  tick(map: TempoMap, fromSec: number, toSec: number, originSec: number): void {
     const ctx = this.ctx;
     if (!ctx || !this.on) return;
+    this.reapVoices();
+    if (!(toSec > fromSec)) return;
 
-    const from = this.scheduledTo < 0 ? positionSec : Math.max(this.scheduledTo, positionSec);
-    const to = positionSec + lookaheadSec;
-    if (!(to > from)) return;
-
-    for (const click of clicksBetween(map, from, to, this.options)) {
+    for (const click of clicksBetween(map, fromSec, toSec, this.options)) {
       const at = originSec + click.timeSec;
       // A click whose moment has already gone is dropped rather than fired
       // late: a late click is worse than a missing one.
       if (at < ctx.currentTime) continue;
+      // Already scheduled — the transport ticks far more often than a beat
+      // goes by, and a metronome that stacked three clicks on every beat
+      // would be its own instrument.
+      if (at <= this.scheduledCtxTo + 1e-9) continue;
       this.sound(ctx, at, click);
+      this.scheduledCtxTo = at;
     }
-    this.scheduledTo = to;
+  }
+
+  /**
+   * Count a take in: `beats` clicks before the transport rolls, accented every
+   * `beatsPerBar`, starting at `startAtCtx`.  Returns how long it lasts.
+   *
+   * It is HERE, and not a second click generator next to the recorder, for
+   * three reasons that were each measured first.
+   *
+   *   · The room.  The count-in used to be wired straight to
+   *     `ctx.destination`, while the playback click goes through the control
+   *     room — so MUTE, DIM, the speaker trim and the monitor level reached
+   *     one click and not the other.  Rendered with MUTE engaged: the
+   *     count-in came out at 0.248 peak down the destination and 0.0015
+   *     through the room.  Press MUTE to take a phone call and the count-in
+   *     carried on into the speakers.  Scheduling it through the same object
+   *     that holds `output` makes that impossible rather than unlikely.
+   *
+   *   · The cancel.  Nothing held those oscillators — `scheduleCountIn`
+   *     returned a duration — so no stop could reach them: rendered after
+   *     every stop the app can make, the peak was unchanged.  Up to four bars
+   *     of clicking, against the 600 ms the playback click used to leak.
+   *     Here they are voices like any other and `reset` takes them out.
+   *
+   *   · The tempo.  The caller passes the beat length; `planRecording` reads
+   *     it off the tempo map at the record point, which is the tempo the
+   *     player is about to play.  The transport used to divide the plan's own
+   *     duration by the session's opening tempo and count at that instead.
+   *
+   * Deliberately not gated on `enabled`: a count-in is asked for by arming
+   * one, not by the click being on.  Switching the click OFF during one does
+   * silence it, because OFF means off.
+   */
+  countIn(startAtCtx: number, beats: number, beatSec: number, beatsPerBar: number): number {
+    const ctx = this.ctx;
+    const n = Math.max(0, Math.floor(beats));
+    const step = Math.max(1e-3, beatSec);
+    if (!ctx || n === 0) return 0;
+    const bar = Math.max(1, Math.floor(beatsPerBar));
+    for (let i = 0; i < n; i += 1) {
+      this.sound(ctx, startAtCtx + i * step, {
+        timeSec: i * step, accent: i % bar === 0, weak: false,
+      });
+    }
+    return n * step;
+  }
+
+  /** Every window of one transport tick — see `PassWindow`. */
+  tickWindows(map: TempoMap, windows: readonly PassWindow[]): void {
+    for (const w of windows) this.tick(map, w.fromSec, w.toSec, w.originSec);
   }
 
   private sound(ctx: AudioContextLike, at: number, click: ClickEvent): void {
@@ -212,6 +356,7 @@ export class Metronome {
     osc.connect(gain).connect(this.output ?? ctx.destination);
     osc.start(at);
     osc.stop(at + 0.08);
+    this.voices.push({ osc, gain, at, endsAt: at + 0.08 });
   }
 }
 

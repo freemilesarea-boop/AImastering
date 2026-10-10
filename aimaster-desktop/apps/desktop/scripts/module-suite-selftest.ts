@@ -442,6 +442,102 @@ if (!Chain) {
   }
 
   {
+    // A threshold in dB has to mean dB, through the shipped WASM and the
+    // config path the app actually uses.  Both these detectors have a
+    // filter in front of them, and both used to count that filter as part
+    // of the signal: the de-esser's emphasis shelf read 3 to 6 dB high, the
+    // dynamic EQ's side-chain band-pass up to 4 dB low and further the
+    // narrower the Q.
+    //
+    // The detector's own reading is recovered by inverting the gain
+    // computer well above the knee, where it is just `over * (1 - 1/ratio)`
+    // — measuring where the module first moves instead would be measuring
+    // the knee shape and the follower's droop, not the calibration.  A high
+    // ratio makes the inversion well conditioned; a wide range keeps the
+    // clamp out of it.
+    //
+    // 0.5 dB, where the Rust tests hold the same modules to 0.05.  Those
+    // run at 96 and 192 kHz to get 16+ samples per cycle; this one runs at
+    // the rate the app ships, where a 4 kHz tone four octaves clear of the
+    // corner has 12, and where on the crest the grid lands is worth about
+    // 0.3 dB on its own.  What this test is for is different: that the
+    // calibration survives the config path and the shipped WASM, against a
+    // defect that was 3 to 6 dB.
+    const THR = -30;
+    const RATIO = 20;
+    const SLOPE = 1 - 1 / RATIO;
+    const LEVEL = -12;
+
+    /** The same peak follower on the bare tone, so its droop between peaks
+     *  is never counted as a calibration error.  Read the same way the
+     *  modules report it: the deepest point over the last 512-sample block,
+     *  not the final sample — the envelope ripples at the tone's own rate,
+     *  and taking one of those two for the other is worth 0.15 dB here. */
+    const followerDroopDb = (freq: number, attackMs: number, releaseMs: number): number => {
+      const amp = Math.pow(10, LEVEL / 20);
+      const atk = Math.exp(-1 / ((attackMs / 1000) * SR));
+      const rel = Math.exp(-1 / ((releaseMs / 1000) * SR));
+      const n = SR * 2;
+      let env = -120;
+      let blockMax = -Infinity;
+      for (let i = 0; i < n; i++) {
+        const x = Math.abs(Math.sin((2 * Math.PI * freq * i) / SR)) * amp;
+        const inDb = 20 * Math.log10(Math.max(x, 1e-9));
+        env = inDb + (inDb > env ? atk : rel) * (env - inDb);
+        if (i >= n - 512) blockMax = Math.max(blockMax, env);
+      }
+      return blockMax - LEVEL;
+    };
+
+    {
+      let state = withParam(neutralState(), 'deess', 'rangeDb', 24);
+      state = withParam(state, 'deess', 'thresholdDb', THR);
+      state = withParam(state, 'deess', 'ratio', RATIO);
+      state = withParam(state, 'deess', 'frequencyHz', 1_000);
+      state = withParam(state, 'deess', 'attackMs', 1);
+      state = withParam(state, 'deess', 'releaseMs', 400);
+      const tone = sine(SR * 2, 4_000, Math.pow(10, LEVEL / 20));
+      const reads = THR + render(state, tone).chain.deessGrDb() / SLOPE;
+      const off = reads - LEVEL - followerDroopDb(4_000, 1, 400);
+      check(
+        "the de-esser's threshold is in dBFS",
+        Math.abs(off) < 0.5,
+        `a ${LEVEL} dBFS tone reads as ${reads.toFixed(2)} dBFS (${off >= 0 ? '+' : ''}${off.toFixed(2)} dB out)`,
+      );
+    }
+
+    {
+      let state = withParam(neutralState(), 'dynamic-eq', 'band0Enabled', true);
+      state = withParam(state, 'dynamic-eq', 'band0FrequencyHz', 1_000);
+      state = withParam(state, 'dynamic-eq', 'band0ThresholdDb', THR);
+      state = withParam(state, 'dynamic-eq', 'band0Ratio', RATIO);
+      state = withParam(state, 'dynamic-eq', 'band0RangeDb', 24);
+      state = withParam(state, 'dynamic-eq', 'band0AttackMs', 1);
+      state = withParam(state, 'dynamic-eq', 'band0ReleaseMs', 400);
+      const droop = followerDroopDb(1_000, 1, 400);
+      const readings: number[] = [];
+      for (const q of [0.5, 2, 8]) {
+        const st = withParam(state, 'dynamic-eq', 'band0Q', q);
+        const tone = sine(SR * 2, 1_000, Math.pow(10, LEVEL / 20));
+        const gains = Array.from(render(st, tone).chain.dynamicEqGainsDb());
+        const reads = THR + -(gains[0] ?? 0) / SLOPE;
+        readings.push(reads);
+        check(
+          `the dynamic EQ's threshold is in dBFS at Q ${q}`,
+          Math.abs(reads - LEVEL - droop) < 0.5,
+          `a ${LEVEL} dBFS tone reads as ${reads.toFixed(2)} dBFS`,
+        );
+      }
+      const spread = Math.max(...readings) - Math.min(...readings);
+      check(
+        'turning Q does not move where the dynamic EQ starts working',
+        spread < 0.3,
+        `${readings.map((r) => r.toFixed(2)).join(' / ')} dBFS across Q 0.5/2/8`,
+      );
+    }
+  }
+
+  {
     // Dynamic EQ band 0, down mode on 250 Hz.
     let state = withParam(neutralState(), 'dynamic-eq', 'band0Enabled', true);
     state = withParam(state, 'dynamic-eq', 'band0FrequencyHz', 250);
@@ -476,18 +572,80 @@ if (!Chain) {
   }
 
   {
-    // Latency must be reported when the STFT modules engage — a monitoring
-    // engineer needs the real figure, not a guess.
-    const quiet = withParam(neutralState(), 'denoise', 'reductionDb', 12);
-    const withDenoise = render(quiet, tone1k).latency;
-    check('engaging de-noise reports latency', withDenoise > 0, `${withDenoise} samples`);
+    // The reported latency must be the delay the audio actually takes.
+    // Asking only that the figure is above zero and goes up when another
+    // module joins — which is what this used to do — held true the whole
+    // time the limiter's lookahead was missing from the total.
+    //
+    // A short broadband burst in a long buffer, cross-correlated against the
+    // output: that finds the delay whatever the module did to the spectrum,
+    // where an impulse cannot once an STFT stage is in the way.
+    const AT = 8_192;
+    const burst = (() => {
+      const x = new Float32Array(SR * 2);
+      let seed = 99_991;
+      for (let i = AT; i < AT + 4096; i++) {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        const w = 0.5 - 0.5 * Math.cos((2 * Math.PI * (i - AT)) / 4096);
+        x[i] = (seed / 0x3fffffff - 1) * 0.5 * w;
+      }
+      return x;
+    })();
 
-    const both = withParam(engage(quiet, 'spectral-shaper'), 'spectral-shaper', 'amountPct', 60);
-    const withBoth = render(both, tone1k).latency;
+    const measuredDelay = (out: Float32Array, maxLag: number): number => {
+      const from = AT - 256;
+      const to = Math.min(AT + 4096 + maxLag + 256, out.length);
+      let bestLag = 0;
+      let best = -Infinity;
+      for (let lag = 0; lag <= maxLag; lag++) {
+        let num = 0; let a2 = 0; let b2 = 0;
+        for (let i = from; i < to; i++) {
+          const a = burst[i]!; const b = out[i + lag] ?? 0;
+          num += a * b; a2 += a * a; b2 += b * b;
+        }
+        const c = num / Math.sqrt(Math.max(a2 * b2, 1e-30));
+        if (c > best) { best = c; bestLag = lag; }
+      }
+      return bestLag;
+    };
+
+    // `engage` clears the bypass; `withParam` on its own does not, and
+    // neutralState() ships the limiter bypassed.
+    const limiterAt = (ms: number) =>
+      withParam(
+        withParam(engage(neutralState(), 'limiter'), 'limiter', 'lookaheadMs', ms),
+        'limiter', 'ceilingDbtp', 0,
+      );
+    const quiet = withParam(neutralState(), 'denoise', 'reductionDb', 12);
+
+    const CASES: Array<[string, AllModulesParameterState]> = [
+      ['a wire', neutralState()],
+      ['the limiter at 2.5 ms', limiterAt(2.5)],
+      ['the limiter at 10 ms', limiterAt(10)],
+      ['de-noise', quiet],
+      ['de-noise + the spectral stage',
+        withParam(engage(quiet, 'spectral-shaper'), 'spectral-shaper', 'amountPct', 60)],
+      ['de-noise + the spectral stage + the limiter',
+        withParam(withParam(
+          engage(withParam(engage(quiet, 'spectral-shaper'), 'spectral-shaper', 'amountPct', 60), 'limiter'),
+          'limiter', 'lookaheadMs', 2.5), 'limiter', 'ceilingDbtp', 0)],
+    ];
+
+    let latent = 0;
+    for (const [name, st] of CASES) {
+      const run = render(st, burst);
+      const measured = measuredDelay(run.left, run.latency + 600);
+      if (run.latency > 0) latent++;
+      check(
+        `the reported latency is the delay the audio takes — ${name}`,
+        measured === run.latency,
+        `reported ${run.latency}, measured ${measured} samples`,
+      );
+    }
     check(
-      'the spectral stage adds its own frame',
-      withBoth > withDenoise,
-      `${withDenoise} → ${withBoth} samples`,
+      'the sweep covered cases that actually have latency',
+      latent >= 4,
+      `${latent} of ${CASES.length} cases reported latency`,
     );
   }
 

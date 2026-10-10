@@ -118,10 +118,17 @@ function scriptFiles(): string[] { return find(['mjs', 'cjs']); }
  *
  * They stay in `sourceFiles` — and so in the import graph — because a story IS
  * one of the real callers of the component it renders.  Dropping them from the
- * search entirely made eleven live components (`LouiTopBar`, `LouiABCompare`,
- * `DraggableEQCurveEditor` …) read as dead: their story file was the importer
- * that had been vouching for them.  Candidate and reference are two different
- * sets, and conflating them breaks it in both directions.
+ * search entirely made eleven live components (`DraggableEQCurveEditor`,
+ * `LouiGainReductionMeter`, `EQCurveOverlay` …) read as dead: their story file
+ * was the importer that had been vouching for them.  Candidate and reference
+ * are two different sets, and conflating them breaks it in both directions.
+ *
+ * Two of the eleven this note used to name — `LouiTopBar` and `LouiABCompare`
+ * — have since been deleted, and that is not the naive search turning out to
+ * be right.  They were ProductPage's chrome; ProductPage was retired, the page
+ * that replaced it has its own, and nothing was ever going to adopt them.  A
+ * deliberate removal and "the graph cannot see the caller" are different
+ * findings, and only the second one is this file's business.
  */
 function declaringFiles(): string[] {
   return sourceFiles().filter((f) => !/\.stories\.tsx?$/.test(f));
@@ -304,6 +311,56 @@ check('no export is left with nothing referencing it', () => {
     + '\n  Delete them, use them, or add one to ALLOWED with a reason.');
 });
 
+/**
+ * The exports a test is the only thing reaching, as a list that may shrink.
+ *
+ * Read from a file rather than written out here, because a failure has to
+ * NAME what changed: a bare count can say the number went up and cannot say
+ * which export did it, and a ratchet nobody can act on is a ratchet nobody
+ * keeps.
+ */
+function testOnlyBaseline(): Set<string> {
+  const text = readFileSync('scripts/fixtures/test-only-exports.txt', 'utf8');
+  return new Set(text.split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l !== '' && !l.startsWith('#')));
+}
+
+check('no export has a test for its only caller', () => {
+  // The check above asks who references an export and counts the SELFTESTS as
+  // references, because they are in `find src scripts`.  So a test importing
+  // the thing it tests keeps that thing alive, and an export the app never
+  // reaches reads as live for as long as its suite exists.  That is a test
+  // vouching for its own subject.
+  //
+  // This one asks the same question with the suites taken out of the graph —
+  // the `.mjs`/`.cjs` build scripts stay, because a build script is the app
+  // calling something — and holds the answer against a committed list.
+  //
+  // Measured when it was written: 244, among them `saveLayout`, `removeLayout`,
+  // `findLayout` and `describeLayout` — a saved-workspace-layout feature that
+  // was built, tested, and never wired to a component, while the zoom slots
+  // beside it in the same module are called by `dawStore`.
+  const appFiles = sourceFiles().filter((f) => f.startsWith('src/'));
+  const found = findDead(readAll(appFiles), scriptFiles(),
+    declaringFiles().filter((f) => f.startsWith('src/')));
+  const current = new Set(found.map((d) => `${d.file}::${d.name}`));
+  const baseline = testOnlyBaseline();
+
+  const appeared = [...current].filter((k) => !baseline.has(k)).sort();
+  const gone = [...baseline].filter((k) => !current.has(k)).sort();
+  const show = (list: string[]): string =>
+    list.slice(0, 12).join('\n    ') + (list.length > 12 ? `\n    … and ${list.length - 12} more` : '');
+
+  assert(appeared.length === 0,
+    `${appeared.length} export(s) only a test reaches:\n    ${show(appeared)}\n`
+    + '  Call it from the app, delete it, or — if a test really is who it is '
+    + 'for — add the line to scripts/fixtures/test-only-exports.txt.');
+  assert(gone.length === 0,
+    `${gone.length} line(s) in scripts/fixtures/test-only-exports.txt are no longer `
+    + `test-only:\n    ${show(gone)}\n  Take them out — the list only goes down.`);
+});
+
 check('and no import was left standing with nothing in it', () => {
   // `import { } from './x.js'` is what an orphan-clearing pass leaves when it
   // takes the last specifier off a line and stops there.  It is legal, and it
@@ -356,6 +413,32 @@ check('and every selftest on disk is reachable from `pnpm test`', () => {
   assert(stranded.length === 0,
     `${stranded.length} selftest(s) never run in \`pnpm test\`:\n    ${stranded.join('\n    ')}`
     + '\n  Register each one and add it to the `test` chain.');
+});
+
+check('and no two scripts share a name', () => {
+  // JSON allows a duplicate key and keeps the LAST one, silently.  Adding
+  // `test:layout` a second time — for a different file, by accident — meant
+  // the original `layout-selftest` (hit targets, overlap, reachability)
+  // stopped running the moment the new one was registered, and every check
+  // above went on passing: the name is still in the chain, and both files are
+  // still referenced by *some* script.  `JSON.parse` cannot see this, because
+  // by the time it returns the collision is gone.
+  //
+  // It surfaced only because esbuild warns while bundling the model worker,
+  // and that check refuses to ship on a warning.  That is a long way from the
+  // mistake, so it is caught here too, where the name is.
+  const raw = readFileSync('package.json', 'utf8');
+  const block = /"scripts"\s*:\s*\{([\s\S]*?)\n  \}/.exec(raw);
+  assert(block !== null, 'could not find the scripts block in package.json');
+  const names = [...(block as RegExpExecArray)[1]!.matchAll(/^\s*"([^"]+)"\s*:/gm)]
+    .map((m) => m[1]!);
+  const seen = new Map<string, number>();
+  for (const n of names) seen.set(n, (seen.get(n) ?? 0) + 1);
+  const dupes = [...seen].filter(([, n]) => n > 1).map(([k]) => k);
+  assert(dupes.length === 0,
+    `${dupes.length} script name(s) declared twice — the earlier one is dead: ${dupes.join(', ')}`);
+  // And the block was actually read, rather than a regex that matched nothing.
+  assert(names.length > 100, `only ${names.length} scripts found in package.json`);
 });
 
 check('and the sweep is actually looking at the app', () => {

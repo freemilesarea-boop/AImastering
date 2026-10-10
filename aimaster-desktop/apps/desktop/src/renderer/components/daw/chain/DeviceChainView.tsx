@@ -22,6 +22,7 @@ import { buildRack, rackBlueprints, rackNode } from '../../../daw/model/racks.js
 import { PLUGINS, findPlugin } from '../../../daw/engine/plugins.js';
 import { premium } from '../../../theme/premium.js';
 import RackPanel from './RackPanel.js';
+import { knobParams } from '../../../daw/engine/plugin-kit.js';
 
 const COL_WIDTH = 168;
 const ROW_HEIGHT = 104;
@@ -373,7 +374,7 @@ function ParamStrip({
         fontFamily: premium.type.display, fontSize: 14, fontStyle: 'italic',
         color: premium.accent.light, whiteSpace: 'nowrap',
       }}>{descriptor.name}</span>
-      {descriptor.params.map((param) => (
+      {knobParams(descriptor.params).map((param) => (
         <label key={param.id} className="flex flex-col gap-0.5" style={{ minWidth: 96 }}>
           <span className="flex justify-between" style={{
             fontFamily: premium.type.sans, fontSize: 9, color: premium.text.muted,

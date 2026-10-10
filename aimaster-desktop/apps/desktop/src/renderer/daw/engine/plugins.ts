@@ -15,8 +15,13 @@
 import { webAudioAutoMakeup } from '../model/plugin-curves.js';
 
 import {
-  absShaper, dbToGain, halfWaveGainCurve, makeDbReductionCurve, makeExpanderCurve,
-  makeGainCurve, makeShaper, smoother, tanhCurve, wetDry, withBypass,
+  BUTTERWORTH_Q, crossoverSide, dynamicsLatencySamples, oversampleLatencySamples,
+  oversampleAlign,
+  absShaper, dbToGain, envelopeFollower, halfWaveGainCurve, makeDbReductionCurve,
+  makeExpanderCurve,
+  dcBlock, makeGainCurve, makeShaper, smoother, stereoSplit, tanhCurve, wetDry,
+  wholeSamplesSec,
+  withBypass,
   automatableFrom,
   type PluginDescriptor, type PluginInstance, type PluginParamDef,
 } from './plugin-kit.js';
@@ -25,7 +30,7 @@ import { REVERB_PLUGINS } from './plugins-reverb.js';
 import { SPACES, irBuffer, spaceIndex } from './reverb-spaces.js';
 
 export type { PluginDescriptor, PluginInstance, PluginParamDef };
-export { timeConstantToHz, makeImpulse } from './plugin-kit.js';
+export { makeImpulse } from './plugin-kit.js';
 
 /** The devices this file defines.  Extended devices are appended below. */
 const CORE_PLUGINS: PluginDescriptor[] = [
@@ -65,6 +70,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       const hpf = ctx.createBiquadFilter();  hpf.type = 'highpass';
       hpf.frequency.value = params['hpfHz'] ?? 20;
+      hpf.Q.value = BUTTERWORTH_Q;
       const low = ctx.createBiquadFilter();  low.type = 'lowshelf';
       low.frequency.value = 120; low.gain.value = params['lowDb'] ?? 0;
       const mid = ctx.createBiquadFilter();  mid.type = 'peaking';
@@ -105,7 +111,12 @@ const CORE_PLUGINS: PluginDescriptor[] = [
     ],
     automatableParams: ['attackMs', 'releaseMs'],
     drivenParams: ['thresholdDb', 'ratio', 'makeupDb'],
-    latencyFor: () => 0,
+    // A `DynamicsCompressorNode` looks ahead, and it does so whether or not
+    // it is reducing anything: at threshold 0 and ratio 1 the signal still
+    // comes back late and correlates 1.000 with its input, so it is a pure
+    // delay.  Undeclared, this put every compressed track eight milliseconds
+    // behind the rest of the mix and the delay compensation believed it.
+    latencyFor: (_params, sampleRate) => dynamicsLatencySamples(sampleRate),
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // A real compressor needs SEPARATE attack and release times, and a
       // detector that follows the envelope without following the waveform.
@@ -211,7 +222,11 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       // Never fast enough to chase the waveform: a ducker rides a part out of
       // the way of a vocal, and the shortest musical version of that is a few
       // milliseconds, not a tenth of one.
-      { id: 'attackMs',    name: 'Attack',    min: 5,   max: 200,  default: 20,  unit: 'ms' },
+      // 9 ms, not 5: below that the detector reads the ripple of the
+      // rectified waveform rather than its level.  It never did 5 ms — it
+      // clamped — and a range that stops where the device stops is the
+      // difference between a limit and a lie.
+      { id: 'attackMs',    name: 'Attack',    min: 9,   max: 200,  default: 20,  unit: 'ms' },
       { id: 'releaseMs',   name: 'Release',   min: 20,  max: 1000, default: 200, unit: 'ms' },
       { id: 'makeupDb',    name: 'Makeup',    min: 0,   max: 24,   default: 0,   unit: 'dB' },
     ],
@@ -234,7 +249,11 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       const externalKey = ctx.createGain();
       externalKey.gain.value = 0;
       const rect = absShaper(ctx);
-      const env = smoother(ctx, params['attackMs'] ?? 20);
+      // A real attack and a real release.  Both knobs used to be handed to
+      // one `smoother`, which has ONE time constant — so whichever the user
+      // touched last was the only one doing anything, and the other was a
+      // control that moved and did nothing.
+      const env = envelopeFollower(ctx, params['attackMs'] ?? 20, params['releaseMs'] ?? 200);
       let curve = makeGainCurve(ctx, params['thresholdDb'] ?? -24, params['ratio'] ?? 6);
 
       input.connect(internalKey);
@@ -254,7 +273,8 @@ const CORE_PLUGINS: PluginDescriptor[] = [
         },
         setParam: (id, v) => {
           if (id === 'makeupDb') makeup.gain.value = dbToGain(v);
-          if (id === 'attackMs' || id === 'releaseMs') env.setTimeMs(v);
+          if (id === 'attackMs') env.setAttackMs(v);
+          if (id === 'releaseMs') env.setReleaseMs(v);
           if (id === 'thresholdDb' || id === 'ratio') {
             if (id === 'thresholdDb') params['thresholdDb'] = v; else params['ratio'] = v;
             const next = makeGainCurve(
@@ -268,8 +288,8 @@ const CORE_PLUGINS: PluginDescriptor[] = [
           }
         },
         // Only the makeup gain: threshold and ratio rebuild the transfer
-        // curve, and the detector's time constants are two biquads, not one
-        // parameter.
+        // curve, and the detector's times are the coefficients of IIR filters,
+        // which are fixed when the filter is made.
         automatable: automatableFrom({ makeupDb: { param: makeup.gain, map: dbToGain } }),
         dispose: () => { curve.disconnect(); },
       };
@@ -294,7 +314,13 @@ const CORE_PLUGINS: PluginDescriptor[] = [
     latencyFor: (params, sampleRate) =>
       Math.round(((params['lookaheadMs'] ?? 2) / 1000) * sampleRate),
     create: (ctx, params) => withBypass(ctx, (input, output) => {
-      const lookaheadSec = (params['lookaheadMs'] ?? 2) / 1000;
+      // WHOLE SAMPLES, because `latencyFor` above rounds and the compensation
+      // believes it.  A look-ahead of 3.7 ms is 177.6 samples: the delay line
+      // interpolates and delays by 177.6 while the declaration says 178, and
+      // the four tenths come back as a comb on anything blended against this
+      // channel.  Rounding here makes the device delay by exactly the number
+      // it reports.
+      const lookaheadSec = wholeSamplesSec(ctx, params['lookaheadMs'] ?? 2);
       const delay = ctx.createDelay(0.05);
       delay.delayTime.value = lookaheadSec;
 
@@ -310,19 +336,11 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       curve.connect(vca.gain);
       input.connect(delay).connect(vca).connect(output);
 
-      // Bypass path is delayed by the same look-ahead so A/B stays aligned.
-      const bypassDelay = ctx.createDelay(0.05);
-      bypassDelay.delayTime.value = lookaheadSec;
-
       return {
-        bypassDelay,
         latencySamples: Math.round(lookaheadSec * ctx.sampleRate),
         setParam: (id, v) => {
           if (id === 'releaseMs') env.setTimeMs(v);
-          if (id === 'lookaheadMs') {
-            delay.delayTime.value = v / 1000;
-            bypassDelay.delayTime.value = v / 1000;
-          }
+          if (id === 'lookaheadMs') delay.delayTime.value = wholeSamplesSec(ctx, v);
         },
       };
     }),
@@ -423,51 +441,51 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       { id: 'mix',     name: 'Mix',   min: 0,  max: 1,  default: 0, unit: '' },
       { id: 'bias',    name: 'Bias',  min: -1, max: 1,  default: 0, unit: '' },
     ],
-    // `driveDb` moves the drive AND its level compensation, and `bias`
-    // rebuilds the transfer curve; only the blend is one parameter.
+    // `driveDb` and `bias` both rebuild the transfer curve now, so neither can
+    // follow a lane or a macro; only the blend is one parameter.  Drive used
+    // to be a gain in front of the shaper paired with a compensating gain
+    // after it, which made it rampable — and made it a hard clipper, because
+    // a WaveShaper clamps its input to [−1, 1].  See `tanhCurve`.
     automatableParams: ['mix'],
-    drivenParams: ['driveDb'],
-    latencyFor: () => 0,
+    latencyFor: (_params, sampleRate) => oversampleLatencySamples(sampleRate),
     create: (ctx, params) => withBypass(ctx, (input, output) => {
-      const drive = ctx.createGain();
-      const compensate = ctx.createGain();
-      let shaper = makeShaper(ctx, tanhCurve(params['bias'] ?? 0), '4x');
-
-      const applyDrive = (db: number): void => {
-        const gain = dbToGain(db);
-        drive.gain.value = gain;
-        // Saturation adds level; compensating keeps the macro from also
-        // acting as a volume knob.
-        compensate.gain.value = 1 / Math.max(1, Math.sqrt(gain));
-      };
-      applyDrive(params['driveDb'] ?? 0);
+      // No gain in front of the shaper and none behind it.  Drive is where
+      // the curve bends, so the signal never leaves the shaper's domain and
+      // there is no added level to compensate for — which is also why the
+      // level no longer falls as the knob rises: a −18 to 0 dBFS sine moves
+      // at most 1.62 dB of RMS across the whole range.
+      let shaper = makeShaper(
+        ctx, tanhCurve(params['bias'] ?? 0, params['driveDb'] ?? 0), '4x');
 
       const blend = wetDry(ctx, params['mix'] ?? 0);
 
-      drive.connect(shaper).connect(compensate);
-      input.connect(drive);
-      compensate.connect(blend.wet).connect(output);
-      input.connect(blend.dry).connect(output);
+      // The coupling sits after the curve, so a biased curve's offset never
+      // reaches the blend or the meter.
+      const block = dcBlock(ctx);
+      input.connect(shaper).connect(block).connect(blend.wet).connect(output);
+      // The dry side goes through a matching delay: the wet side has been
+      // through an oversampled shaper and is a render quantum late, and
+      // without this a fifty-per-cent Mix cancels instead of blending.
+      input.connect(oversampleAlign(ctx)).connect(blend.dry).connect(output);
+
+      const rebuild = (): void => {
+        const next = makeShaper(
+          ctx, tanhCurve(params['bias'] ?? 0, params['driveDb'] ?? 0), '4x');
+        input.disconnect(shaper);
+        shaper.disconnect();
+        shaper = next;
+        input.connect(shaper).connect(block);
+      };
 
       return {
         setParam: (id, v) => {
-          if (id === 'driveDb') applyDrive(v);
-          if (id === 'mix') blend.setMix(v);
-          if (id === 'bias' && v !== (params['bias'] ?? 0)) {
-            params['bias'] = v;
-            drive.disconnect(shaper);
-            shaper.disconnect();
-            shaper = makeShaper(ctx, tanhCurve(v), '4x');
-            drive.connect(shaper).connect(compensate);
-          }
+          if (id === 'mix') { blend.setMix(v); return; }
+          if (id !== 'driveDb' && id !== 'bias') return;
+          if (v === (params[id] ?? 0)) return;
+          params[id] = v;
+          rebuild();
         },
         automatable: automatableFrom({ mix: blend.mix }),
-        // The drive and its compensation are one control in two gains: a
-        // scalar that decides both can move both, which is what a macro does.
-        drives: (id) => (id === 'driveDb' ? [
-          { param: drive.gain, map: dbToGain },
-          { param: compensate.gain, map: (v) => 1 / Math.max(1, Math.sqrt(dbToGain(v))) },
-        ] : null),
         dispose: () => {
           blend.dispose();
           try { shaper.disconnect(); } catch { /* ignore */ }
@@ -495,11 +513,23 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       // transient.  Positive during an attack, negative while a note decays,
       // so one signal drives both halves of the control.
       const rect = absShaper(ctx);
-      const fast = smoother(ctx, 2);
-      const slow = smoother(ctx, 90);
+      // 9 and 304, not 2 and 90, and that is not a retune.  The detector
+      // used to take 3.379× the number it was given, and the 2 ms was
+      // additionally sitting on a 60 Hz ceiling it could not cross — so what
+      // this device has always done is 9 ms against 304 ms.  Now the numbers
+      // say so.
+      const fast = smoother(ctx, 9);
+      const slow = smoother(ctx, 304);
       const invert = ctx.createGain();
       invert.gain.value = -1;
       const difference = ctx.createGain();
+      // 2/π undoes the calibration `smoother` carries, and only here.  That
+      // calibration exists so a THRESHOLD in decibels means decibels; this
+      // device has no threshold — it shapes the difference between two
+      // envelopes, and scaling that difference is just a different amount of
+      // shaping at the same knob.  Leaving it in would have made everybody's
+      // Attack and Sustain 57% stronger overnight.
+      difference.gain.value = 2 / Math.PI;
 
       input.connect(rect);
       rect.connect(fast.input);
@@ -561,9 +591,13 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       { id: 'freqHz', name: 'Freq',   min: 1500, max: 12000, default: 4000, unit: 'Hz' },
       { id: 'mix',    name: 'Mix',    min: 0,   max: 1,     default: 0,    unit: '' },
     ],
+    // `amount` is the curve's knee now, not a gain in front of it, so it
+    // rebuilds the shaper and can follow neither a lane nor a macro.  It used
+    // to scale up to nine times INTO a curve whose domain ends at full scale,
+    // which a WaveShaper clamps — so the top of the Amount knob was a hard
+    // clip, and at 7 kHz it folded images back at −42.7 dB.
     automatableParams: ['freqHz', 'mix'],
-    drivenParams: ['amount'],
-    latencyFor: () => 0,
+    latencyFor: (_params, sampleRate) => oversampleLatencySamples(sampleRate),
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // Generate harmonics from the top band only, then blend them back —
       // the classic exciter topology, and the reason it adds "air" instead
@@ -571,35 +605,62 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       const band = ctx.createBiquadFilter();
       band.type = 'highpass';
       band.frequency.value = params['freqHz'] ?? 4000;
-      band.Q.value = 0.7;
+      band.Q.value = BUTTERWORTH_Q;
 
-      const drive = ctx.createGain();
-      const shaper = makeShaper(ctx, tanhCurve(0.15), '4x');
+      // Amount is the curve's ASYMMETRY, which is what generates air.
+      //
+      // It used to be a gain of up to nine times in front of a fixed curve,
+      // and a WaveShaper clamps its input to [−1, 1]: the wet band was
+      // hard-limited to full scale at any Amount above the floor, so its
+      // level barely moved (+1.10, +4.17, +4.32 dBFS peak at Amount 0, 0.5
+      // and 1) while its folded images climbed to −42.7 dB.  A band pinned
+      // at full scale is a buzz, not air.
+      //
+      // Putting that drive inside the curve as a knee removes the folding —
+      // but it also kills the knob.  Measured on two tones in the band, the
+      // intermodulation the device adds moves only from −31.5 to −28.5 dB
+      // across a knee swept from 0 to 48 dB, because a soft curve's curvature
+      // over a wide span is gentle and the level has to stay put.  The old
+      // Amount had range because it CLIPPED, and a soft curve cannot.
+      //
+      // The asymmetry can.  Sweeping the bias at a fixed knee moves the same
+      // measurement from −43.3 dB to −9.5 dB while the band's RMS stays
+      // within 0.34 dB — a 34 dB range of harmonic content at a steady level,
+      // which is the Aural Exciter's own trick and what this device was
+      // always reaching for.  The knee stays at 12 dB so a hot band is still
+      // caught rather than squared off.
+      const biasFor = (amount: number): number =>
+        Math.max(0, Math.min(1, amount)) * EXCITER_MAX_BIAS;
+      let shaper = makeShaper(
+        ctx, tanhCurve(biasFor(params['amount'] ?? 0), EXCITER_KNEE_DB), '4x');
+      // An asymmetric curve has a mean, and this band is highpassed BEFORE
+      // the shaper, so nothing downstream would take the offset out.
+      const block = dcBlock(ctx);
       const wet = ctx.createGain();
-
-      const applyAmount = (amount: number): void => { drive.gain.value = 1 + amount * 8; };
-      applyAmount(params['amount'] ?? 0);
       wet.gain.value = params['mix'] ?? 0;
 
-      input.connect(band).connect(drive).connect(shaper).connect(wet).connect(output);
-      input.connect(output);                      // dry stays full
+      input.connect(band);
+      (band as AudioNode).connect(shaper).connect(block).connect(wet).connect(output);
+      // Through the same delay the harmonics take.  An exciter ADDS its
+      // harmonics to the dry signal, so a render quantum between them is not
+      // a subtle blend error — it smears the thing the device exists to add.
+      input.connect(oversampleAlign(ctx)).connect(output);   // dry stays full
 
       return {
         setParam: (id, v) => {
-          if (id === 'amount') applyAmount(v);
-          if (id === 'freqHz') band.frequency.value = v;
-          if (id === 'mix') wet.gain.value = v;
+          if (id === 'freqHz') { band.frequency.value = v; return; }
+          if (id === 'mix') { wet.gain.value = v; return; }
+          if (id !== 'amount' || v === (params['amount'] ?? 0)) return;
+          params['amount'] = v;
+          const next = makeShaper(ctx, tanhCurve(biasFor(v), EXCITER_KNEE_DB), '4x');
+          (band as AudioNode).connect(next).connect(block);
+          try { (band as AudioNode).disconnect(shaper); shaper.disconnect(); } catch { /* not connected */ }
+          shaper = next;
         },
-        // `amount` is not offered: it scales the drive going INTO the shaper,
-        // and the harmonics it generates are a function of that level, so a
-        // lane on it would be ramping a curve's input, not a gain.
+        // `amount` is not offered: it is where the curve bends, and a lane
+        // cannot ramp an array.
         automatable: automatableFrom({ freqHz: band.frequency, mix: wet.gain }),
-        // Not offered as a lane above — as an insert knob it ramps the level
-        // going into a shaper, so the harmonics it makes are a function of a
-        // moving target.  A macro drives it from the same scalar as the mix
-        // it feeds, which is the case that reads as one gesture.
-        drives: (id) => (id === 'amount'
-          ? [{ param: drive.gain, map: (v) => 1 + v * 8 }] : null),
+        dispose: () => { try { shaper.disconnect(); } catch { /* ignore */ } },
       };
     }),
   },
@@ -619,7 +680,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       // Mid/side built from plain gains: M = (L+R)/2, S = (L−R)/2, scale S,
       // then L = M+S, R = M−S.  Everything below `lowMonoHz` is kept out of
       // S so the bass stays centred however wide the top gets.
-      const splitter = ctx.createChannelSplitter(2);
+      const { input: stereo, splitter } = stereoSplit(ctx);
       const merger = ctx.createChannelMerger(2);
 
       const mid = ctx.createGain();
@@ -629,7 +690,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       const lToSide = ctx.createGain(); lToSide.gain.value = 0.5;
       const rToSide = ctx.createGain(); rToSide.gain.value = -0.5;
 
-      input.connect(splitter);
+      input.connect(stereo);
       splitter.connect(lToMid, 0);
       splitter.connect(rToMid, 1);
       splitter.connect(lToSide, 0);
@@ -642,6 +703,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       const sideHigh = ctx.createBiquadFilter();
       sideHigh.type = 'highpass';
       sideHigh.frequency.value = params['lowMonoHz'] ?? 20;
+      sideHigh.Q.value = BUTTERWORTH_Q;
       const sideGain = ctx.createGain();
       sideGain.gain.value = params['width'] ?? 1;
       const sideInverted = ctx.createGain();
@@ -740,22 +802,30 @@ const CORE_PLUGINS: PluginDescriptor[] = [
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // Split the sibilant band off, compress only that, sum back.  A
       // full-band compressor would duck the whole voice on every "s".
-      const low = ctx.createBiquadFilter();
-      low.type = 'lowpass';
-      low.frequency.value = params['freqHz'] ?? 6500;
-      const high = ctx.createBiquadFilter();
-      high.type = 'highpass';
-      high.frequency.value = params['freqHz'] ?? 6500;
+      // A crossover that is SUMMED BACK, so the two halves have to add up to
+      // one — which a single lowpass and highpass at the same corner do not,
+      // at any Q: they cancel there.  Linkwitz-Riley, and the measurement
+      // behind it, is in `crossoverSide`.  Before this the split alone put a
+      // hole in the voice at the de-esser's own frequency, whether or not it
+      // was reducing anything.
+      const lowSide = crossoverSide(ctx, 'lowpass', params['freqHz'] ?? 6500);
+      const highSide = crossoverSide(ctx, 'highpass', params['freqHz'] ?? 6500);
+      const low = lowSide.input;
+      const high = highSide.output;
 
       const vca = ctx.createGain();
       vca.gain.value = 0;
       const rect = absShaper(ctx);
-      const env = smoother(ctx, 4);
+      // 9 rather than 4 for the reason the transient designer's numbers
+      // moved: 4 ms was under the detector's ripple ceiling and came out as
+      // 9 ms regardless.  The sound is unchanged; the number is now true.
+      const env = smoother(ctx, 9);
       const ratioOf = (amount: number): number => 1 + amount * 11;
       let curve = makeGainCurve(ctx, params['thresholdDb'] ?? -24, ratioOf(params['amount'] ?? 0));
 
-      input.connect(low).connect(output);
-      input.connect(high);
+      input.connect(low);
+      lowSide.output.connect(output);
+      input.connect(highSide.input);
       high.connect(rect).connect(env.input);
       env.output.connect(curve);
       curve.connect(vca.gain);
@@ -771,7 +841,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
 
       return {
         setParam: (id, v) => {
-          if (id === 'freqHz') { low.frequency.value = v; high.frequency.value = v; return; }
+          if (id === 'freqHz') { lowSide.setHz(v); highSide.setHz(v); return; }
           if ((id === 'thresholdDb' || id === 'amount') && v !== params[id]) {
             params[id] = v;
             rebuild();
@@ -812,7 +882,9 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       detector.Q.value = params['q'] ?? 1.4;
 
       const rect = absShaper(ctx);
-      const env = smoother(ctx, 12);
+      // 40 rather than 12: unclamped, the old mapping made 12 ms take
+      // 40.5 ms, and 40 ms is what this device was voiced against.
+      const env = smoother(ctx, 40);
       const scale = ctx.createGain();
       const range = () => Math.abs(params['rangeDb'] ?? 0);
       scale.gain.value = range();
@@ -877,6 +949,17 @@ const CORE_PLUGINS: PluginDescriptor[] = [
  * Order is the order the picker shows them in within a category, so the ones
  * an engineer reaches for most sit at the top of their group.
  */
+/**
+ * How asymmetric the exciter's curve gets at full Amount, and where it bends.
+ *
+ * 1.5 of bias measures −12.0 dB of added intermodulation on two tones in the
+ * band, against −43.3 dB at zero: a 34 dB range with the band's RMS steady
+ * inside 0.34 dB.  The knee is fixed because Amount is the asymmetry here —
+ * 12 dB keeps a hot band compressed rather than squared.
+ */
+export const EXCITER_MAX_BIAS = 1.5;
+export const EXCITER_KNEE_DB = 12;
+
 export const PLUGINS: PluginDescriptor[] = [...CORE_PLUGINS, ...REVERB_PLUGINS, ...EXTENDED_PLUGINS];
 
 export function findPlugin(id: string): PluginDescriptor | undefined {
@@ -895,5 +978,45 @@ export function defaultParams(id: string): Record<string, number> {
 export function pluginLatencySamples(
   pluginId: string, params: Record<string, number>, sampleRate: number,
 ): number {
-  return findPlugin(pluginId)?.latencyFor(params, sampleRate) ?? 0;
+  const descriptor = findPlugin(pluginId);
+  return descriptor ? descriptorLatency(descriptor, params, sampleRate) : 0;
+}
+
+/**
+ * What a device costs, whether or not it is switched in.
+ *
+ * ONE function, because the number has to be the same in three places that
+ * used to decide for themselves: the compensation, the device chain, and the
+ * delay a bypassed device puts on its own dry path.  An OFFLINE device is
+ * zero — it is force-bypassed in the realtime graph and its work is done by
+ * the render path instead.
+ *
+ * Bypass does NOT make it zero.  It used to, and the graph disagreed: a
+ * bypassed look-ahead limiter still delayed four milliseconds while the
+ * compensation was told it cost nothing, so the channel came out 192 samples
+ * behind everything else.  The other latent devices had the opposite
+ * problem — no bypass delay at all, so switching one out jumped the track
+ * forward by its latency mid-listen, which is the comparison `withBypass`
+ * exists to prevent.  Both halves now say the same thing: a bypassed device
+ * keeps its latency, and removing it is what gives the latency back.
+ */
+export function descriptorLatency(
+  descriptor: PluginDescriptor, params: Record<string, number>, sampleRate: number,
+): number {
+  return descriptor.offline ? 0 : descriptor.latencyFor(params, sampleRate);
+}
+
+/**
+ * Build a device and tell it what it costs, so a bypassed one stays aligned.
+ *
+ * Every caller that builds a plugin goes through here.  A call site that
+ * builds the instance itself is a device whose bypass silently shifts the
+ * track, and there is no way to see that by reading it.
+ */
+export function createInstance(
+  descriptor: PluginDescriptor, ctx: BaseAudioContext, params: Record<string, number>,
+): PluginInstance {
+  const instance = descriptor.create(ctx, params);
+  instance.setBypassLatency?.(descriptorLatency(descriptor, params, ctx.sampleRate));
+  return instance;
 }

@@ -13,6 +13,7 @@ import UniverseStrip from './UniverseStrip.js';
 import { formatLabel, DEFAULT_FPS, TIME_FORMATS } from '../../../daw/model/spot-time.js';
 import { useWorkspaceStore } from '../../../stores/workspaceStore.js';
 import { useRecordingStore } from '../../../stores/recordingStore.js';
+import { useAppStore } from '../../../stores/appStore.js';
 import { useAudioStore } from '../../../stores/audioStore.js';
 import { usePluginWindowStore } from '../../../stores/pluginWindowStore.js';
 import { decodeForDisplay } from '../../../daw/engine/audio-cache.js';
@@ -37,9 +38,13 @@ import {
   visibleTracks,
 } from '../../../daw/model/stacks.js';
 import { premium } from '../../../theme/premium.js';
-import { cyclePlaylist } from '../../../daw/edit/comping.js';
+import { laneWindow } from '../../../daw/model/lane-window.js';
+import {
+  addPlaylist, alternateLanes, cyclePlaylist, duplicatePlaylist, flattenComp,
+  removePlaylist, setActivePlaylist,
+} from '../../../daw/edit/comping.js';
 import { toggleMute, toggleSolo } from '../../../daw/model/mixer-math.js';
-import type { GroupDef, Track } from '../../../daw/model/types.js';
+import type { GroupDef, PlaylistId, Track } from '../../../daw/model/types.js';
 import TrackLaneCanvas from './TrackLaneCanvas.js';
 import AutomationLaneCanvas, {
   AUTOMATION_LANE_HEIGHT, AutomationLaneHeader,
@@ -51,6 +56,7 @@ import type { AutomationLane } from '../../../daw/model/types.js';
 import {
   describeTempoMap, formatBarBeat, isConstantTempo, tempoMapOf,
 } from '../../../daw/model/tempo-map.js';
+import { clipWarp } from '../../../daw/model/warp.js';
 import TempoTrack, { TempoTrackHeader } from './TempoTrack.js';
 import SectionLane, { SectionLaneHeader } from './SectionLane.js';
 import ChordLane, { ChordLaneHeader } from './ChordLane.js';
@@ -62,6 +68,11 @@ import HistoryPanel from './HistoryPanel.js';
 import PoolPanel from './PoolPanel.js';
 import BatchFadeDialog from './BatchFadeDialog.js';
 import { SNAP_LABELS, SNAP_MODES, describeSnap } from '../../../daw/model/snap-modes.js';
+import {
+  DEFAULT_NUDGE, NUDGE_CHOICES, describeNudge, nudgeChoiceId, nudgeSettingFromId,
+  type NudgeContext,
+} from '../../../daw/model/nudge.js';
+import { videoOf } from '../../../daw/model/video.js';
 import QuantizeDialog from './QuantizeDialog.js';
 import { separateAt } from '../../../daw/edit/clip-edit.js';
 import { useRegionLabStore } from '../../../stores/regionLabStore.js';
@@ -71,6 +82,7 @@ import {
   TRACK_COLORS, clampTrackHeight, renameTrack, setTrackColor,
   setTrackHeight,
 } from '../../../daw/model/track-header.js';
+import { deleteTracks } from '../../../ui/delete-tracks.js';
 
 const HEADER_WIDTH = 168;
 const RULER_HEIGHT = 26;
@@ -139,7 +151,8 @@ export default function EditWindow() {
   const setEditMode  = useDawStore((s) => s.setEditMode);
   const gridDivision = useDawStore((s) => s.gridDivision);
   const setGridDivision = useDawStore((s) => s.setGridDivision);
-  const nudgeSec     = useDawStore((s) => s.nudgeSec);
+  const nudge        = useDawStore((s) => s.nudge);
+  const setNudge     = useDawStore((s) => s.setNudge);
   const tabToTransient = useDawStore((s) => s.tabToTransient);
   const toggleTab    = useDawStore((s) => s.toggleTabToTransient);
   const loopEnabled  = useDawStore((s) => s.loopEnabled);
@@ -271,12 +284,45 @@ export default function EditWindow() {
     }
     return out;
   }, [rows]);
+  // Only the rows inside the scroller are built — see `lane-window.ts` for
+  // what that is worth.  Both columns take the same window, because they are
+  // two renderings of one list.
+  const rowScroller = useRef<HTMLDivElement>(null);
+  const rowsTop = useRef<HTMLDivElement>(null);
+  const [rowPort, setRowPort] = useState({ top: 0, height: 900 });
+  useEffect(() => {
+    const el = rowScroller.current;
+    if (!el) return undefined;
+    const read = (): void => {
+      // The fixed lanes above the tracks are always built, so the window is
+      // measured from where the track rows actually start.
+      const offset = rowsTop.current?.offsetTop ?? 0;
+      setRowPort({ top: el.scrollTop - offset, height: el.clientHeight });
+    };
+    read();
+    el.addEventListener('scroll', read, { passive: true });
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(read);
+    observer?.observe(el);
+    return () => {
+      el.removeEventListener('scroll', read);
+      observer?.disconnect();
+    };
+  }, []);
+  const rowHeights = useMemo(() => displayRows.map((r) => r.height), [displayRows]);
+  const rowView = laneWindow(rowHeights, rowPort.top, rowPort.height);
+  const builtRows = displayRows.slice(rowView.first, rowView.last);
+
   const recordStatus = useRecordingStore((s) => s.status);
+  const notify = useAppStore((s) => s.notify);
   // A session with only a master track is not "empty timeline", it is "you
   // have nothing to work on yet" — and a blank grid says neither.
   const hasMaterial = session.tracks.some((t) => t.kind === 'audio' || t.kind === 'instrument');
-  const hasMidiParts = session.tracks.some((t) => t.playlists.some(
-    (p) => p.clips.some((c) => c.kind === 'midi')));
+  // Audio whose LENGTH cannot follow the tempo: unwarped, or warped and told
+  // not to follow.  Its start moves with the bar like everything else, so a
+  // tempo change opens gaps and overlaps between such clips — which is worth
+  // saying out loud, because it is the one thing a tempo edit no longer keeps.
+  const hasFixedLengthAudio = session.tracks.some((t) => t.playlists.some(
+    (p) => p.clips.some((c) => c.kind === 'audio' && clipWarp(c) === null)));
   const queueCount = useAudioStore((s) => s.queue.length);
 
   /**
@@ -472,6 +518,19 @@ export default function EditWindow() {
   // second interval would sit next to the music instead of on it.  Beat lines
   // appear once a bar is wide enough to hold them.
   const tempoMap = useMemo(() => tempoMapOf(session), [session]);
+  // Where the NEXT nudge would land, so the readout and the key press cannot
+  // disagree.  Resolved at the selection start when there is one — the same
+  // point the command resolves it at — and at the play head otherwise, which
+  // is where a selection made right now would begin.
+  const nudgeView = useMemo<NudgeContext>(() => {
+    const video = videoOf(session);
+    return {
+      tempoMap,
+      gridDivision,
+      atSec: selection.endSec > selection.startSec ? selection.startSec : playheadSec,
+      fps: video && video.fps > 0 ? video.fps : null,
+    };
+  }, [session, tempoMap, gridDivision, selection, playheadSec]);
   // The ruler can count in bars, timecode, minutes or samples.  All four
   // already existed in spot-time.ts and only the Spot dialog could reach
   // them; the ruler was bars whatever the material was, which is the wrong
@@ -526,20 +585,36 @@ export default function EditWindow() {
             ))}
           </select>
         </label>
-        <span className="text-[10px] font-mono text-zinc-600">Nudge {nudgeSec}s</span>
+        <label className="flex items-center gap-1 text-[10px] font-mono text-zinc-600">
+          Nudge
+          <select
+            value={nudgeChoiceId(nudge)}
+            onChange={(e) => setNudge(nudgeSettingFromId(e.target.value) ?? DEFAULT_NUDGE)}
+            className="h-5 rounded px-1 bg-zinc-900 border border-zinc-700 text-zinc-400"
+            title="넘패드 +/− 가 선택 구간을 옮기는 거리입니다"
+          >
+            {NUDGE_CHOICES.map((c) => (
+              <option key={c.id} value={c.id}>{c.label}</option>
+            ))}
+          </select>
+          <span className="text-zinc-500">{describeNudge(nudge, nudgeView)}</span>
+        </label>
         <span className="text-[10px] font-mono" style={{ color: premium.accent.base }}
               title="템포 트랙에서 변화를 추가할 수 있습니다">
           {describeTempoMap(tempoMap)}
         </span>
-        {/* Said where it matters, not only in a document: audio follows the
-            map, MIDI does not yet, and finding that out by ear is the worst
-            way to find it out. */}
-        {!isConstantTempo(tempoMap) && hasMidiParts && (
+        {/* This used to say "⚠ MIDI 미추종", and it was false: notes are stored
+            in beats (model/midi.ts) and always followed the map, and parts now
+            follow it too (model/tempo-reanchor.ts).  What is true is narrower —
+            an unwarped clip's start moves to its bar and its length cannot, so
+            the gaps between such clips change.  Said where it matters, because
+            finding that out by ear is the worst way to find it out. */}
+        {!isConstantTempo(tempoMap) && hasFixedLengthAudio && (
           <span
             className="text-[10px] font-mono"
             style={{ color: 'rgb(251,191,36)' }}
-            title="워프된 오디오는 템포 맵을 따라갑니다. MIDI 노트는 아직 초 단위로 저장되어 있어 템포 변화를 따라가지 않습니다 — 노트는 있던 시각에 그대로 남습니다."
-          >⚠ MIDI 미추종</span>
+            title="템포가 바뀌면 클립은 자기 마디로 따라옵니다. 워프하지 않은 오디오는 길이가 그대로이므로 클립 사이에 빈틈이나 겹침이 생길 수 있습니다 — 길이까지 따라오게 하려면 워프를 켜세요."
+          >⚠ 오디오 길이 고정</span>
         )}
 
         <button
@@ -662,14 +737,16 @@ export default function EditWindow() {
       {showUniverse && <UniverseStrip laneWidth={laneWidth} />}
 
       {/* ── Tracks ──────────────────────────────────────────────────────── */}
-      <div className="flex-1 flex overflow-y-auto" onMouseUp={endDrag} onMouseLeave={endDrag}>
+      <div ref={rowScroller} className="flex-1 flex overflow-y-auto"
+           onMouseUp={endDrag} onMouseLeave={endDrag}>
         {/* Headers */}
         <div style={{ width: HEADER_WIDTH }} className="shrink-0 border-r border-zinc-800 bg-[#12121a]">
           <SectionLaneHeader />
           <ChordLaneHeader />
           <PictureLaneHeader />
           <TempoTrackHeader session={session} />
-          {displayRows.map((row) => (row.kind === 'lane' ? (
+          <div ref={rowsTop} style={{ height: rowView.padTop }} aria-hidden />
+          {builtRows.map((row) => (row.kind === 'lane' ? (
             <AutomationLaneHeader key={row.key} track={row.track} lane={row.lane} />
           ) : (
             <TrackHeader
@@ -684,10 +761,21 @@ export default function EditWindow() {
               summary={row.track.kind === 'folder' ? stackSummary(session, row.track.id) : null}
               focused={focusedTrackId === row.track.id}
               onFocus={() => setFocusedTrack(row.track.id)}
+              onDelete={row.track.kind === 'master' ? null : () => void deleteTracks([row.track.id])}
               onSolo={() => apply((s) => toggleSolo(s, row.track.id))}
               onMute={() => apply((s) => toggleMute(s, row.track.id))}
               onCyclePlaylist={(dir) => apply((s) => cyclePlaylist(s, row.track.id, dir))}
-              onArm={() => void useRecordingStore.getState().toggleArm(row.track.id)}
+              onPickTake={(id) => apply((s) => setActivePlaylist(s, row.track.id, id))}
+              onAddTake={() => apply((s) => addPlaylist(s, row.track.id))}
+              onDuplicateTake={() => apply((s) => duplicatePlaylist(s, row.track.id))}
+              onRemoveTake={(id) => apply((s) => removePlaylist(s, row.track.id, id))}
+              onFlattenTakes={() => apply((s) => flattenComp(s, row.track.id))}
+              onArm={() => {
+                // The button has no toast of its own, so a refused arm would
+                // show as the light going out again and nothing else.
+                void useRecordingStore.getState().toggleArm(row.track.id)
+                  .then((outcome) => { if (outcome.error) notify(outcome.error, 'warning'); });
+              }}
               recording={recordStatus === 'recording' || recordStatus === 'countIn'}
               onToggleCollapse={() => apply((s) => toggleCollapsed(s, row.track.id))}
               onUnpack={() => apply((s) => unpackStack(s, row.track.id))}
@@ -697,6 +785,7 @@ export default function EditWindow() {
               automationOpen={visibleLanes(row.track).length > 0}
             />
           )))}
+          <div style={{ height: rowView.padBottom }} aria-hidden />
         </div>
 
         {/* Lanes */}
@@ -726,7 +815,8 @@ export default function EditWindow() {
             session={session}
             viewport={{ scrollSec, pxPerSec, width: laneWidth }}
           />
-          {displayRows.map((row) => (row.kind === 'lane' ? (
+          <div style={{ height: rowView.padTop }} aria-hidden />
+          {builtRows.map((row) => (row.kind === 'lane' ? (
             <AutomationLaneCanvas
               key={row.key}
               track={row.track}
@@ -823,6 +913,7 @@ export default function EditWindow() {
               )}
             </div>
           )))}
+          <div style={{ height: rowView.padBottom }} aria-hidden />
 
           {/* Play head across every lane */}
           <div className="absolute top-0 bottom-0 w-px bg-red-400 pointer-events-none"
@@ -970,7 +1061,8 @@ function FadeShapeMenu({ at, current, onPick, onClose }: {
 }
 
 function TrackHeader({
-  track, editGroup, depth, summary, focused, onFocus, onSolo, onMute, onCyclePlaylist,
+  track, editGroup, depth, summary, focused, onFocus, onDelete, onSolo, onMute, onCyclePlaylist,
+  onPickTake, onAddTake, onDuplicateTake, onRemoveTake, onFlattenTakes,
   onToggleCollapse, onUnpack, onSmart, onInserts, onArm, recording,
   onToggleAutomation, automationOpen, onRename, onColor, onResize,
 }: {
@@ -980,9 +1072,16 @@ function TrackHeader({
   summary: string | null;
   focused: boolean;
   onFocus: () => void;
+  /** Null on the master, which is the output and not a channel. */
+  onDelete: (() => void) | null;
   onSolo: () => void;
   onMute: () => void;
   onCyclePlaylist: (dir: 1 | -1) => void;
+  onPickTake: (playlistId: PlaylistId) => void;
+  onAddTake: () => void;
+  onDuplicateTake: () => void;
+  onRemoveTake: (playlistId: PlaylistId) => void;
+  onFlattenTakes: () => void;
   onArm: () => void;
   recording: boolean;
   onToggleCollapse: () => void;
@@ -997,8 +1096,11 @@ function TrackHeader({
 }) {
   const [renaming, setRenaming] = useState(false);
   const [picking, setPicking] = useState(false);
+  const [takeMenu, setTakeMenu] = useState(false);
   const playlist = activePlaylist(track);
   const takes = track.playlists.length;
+  // Folders and VCAs carry no clips, so they have no takes to comp.
+  const hasTakes = track.kind !== 'folder' && track.kind !== 'vca' && track.kind !== 'master';
   const isFolder = track.kind === 'folder';
   const macroCount = Object.values(track.macros.values).filter((v) => (v ?? 0) !== 0).length;
   // Folders and VCAs carry no signal, so there is nothing to insert into them.
@@ -1111,6 +1213,20 @@ function TrackHeader({
           >✎</button>
         )}
         <span className="text-[9px] font-mono text-zinc-600 uppercase">{track.kind.slice(0, 3)}</span>
+        {/* The only way out.  `removeTrack` had been written and tested since
+            the model was, with five ways in and no caller. */}
+        {onDelete && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            title={isFolder
+              ? '이 스택을 지웁니다 — 안의 트랙은 남습니다 (Mod+Backspace)'
+              : '이 트랙을 지웁니다 (Mod+Backspace)'}
+            className="hit-target text-[11px] leading-none w-4 h-4 rounded shrink-0 flex items-center
+                       justify-center text-zinc-600 hover:text-red-300 transition-colors"
+            style={{ border: '1px solid rgba(255,255,255,0.14)' }}
+            data-testid={`track-delete-${track.id}`}
+          >×</button>
+        )}
       </div>
       {isFolder && summary && !focused && (
         <span className="text-[8px] text-zinc-600 truncate">{summary}</span>
@@ -1160,17 +1276,80 @@ function TrackHeader({
             className="w-5 h-5 rounded text-[9px] bg-zinc-900 border border-zinc-700 text-zinc-500"
           >⤫</button>
         )}
-        {takes > 1 && (
+        {hasTakes && (
+          // Shown with ONE take as well as with several, because a track with
+          // one take is exactly where you go to make a second: hiding the
+          // control until a second lane existed left no way to create one.
           <div className="flex items-center gap-0.5 ml-auto">
-            <button onClick={() => onCyclePlaylist(-1)}
-              className="w-4 h-4 rounded text-[8px] bg-zinc-900 border border-zinc-700 text-zinc-500">▲</button>
-            <span className="text-[8px] font-mono text-zinc-500 truncate max-w-[46px]"
-                  title={playlist?.name}>{playlist?.name.split('.').pop()}</span>
-            <button onClick={() => onCyclePlaylist(1)}
-              className="w-4 h-4 rounded text-[8px] bg-zinc-900 border border-zinc-700 text-zinc-500">▼</button>
+            {takes > 1 && (
+              <button onClick={(e) => { e.stopPropagation(); onCyclePlaylist(-1); }}
+                title="이전 테이크"
+                className="w-4 h-4 rounded text-[8px] bg-zinc-900 border border-zinc-700 text-zinc-500">▲</button>
+            )}
+            <button
+              onClick={(e) => { e.stopPropagation(); setTakeMenu((v) => !v); }}
+              title={takes > 1 ? `테이크 ${takes}개 — ${playlist?.name ?? ''}` : '테이크'}
+              className="px-1 h-4 rounded text-[8px] font-mono bg-zinc-900 border border-zinc-700 text-zinc-500 truncate max-w-[52px]"
+            >{takes > 1 ? `${playlist?.name.split('.').pop() ?? ''} ⌄` : '테이크 ⌄'}</button>
+            {takes > 1 && (
+              <button onClick={(e) => { e.stopPropagation(); onCyclePlaylist(1); }}
+                title="다음 테이크"
+                className="w-4 h-4 rounded text-[8px] bg-zinc-900 border border-zinc-700 text-zinc-500">▼</button>
+            )}
           </div>
         )}
       </div>
+
+      {/* Takes.  Cycling was the only one of these the app could reach: the
+          lanes loop recording makes could be stepped through and comped from,
+          and never added to, thrown away or committed. */}
+      {takeMenu && (
+        <div
+          className="absolute z-20 flex flex-col gap-0.5 p-1 rounded"
+          style={{
+            right: 6, top: 22, width: 156,
+            background: premium.surface.frame,
+            border: `1px solid ${premium.surface.hairlineStrong}`,
+            boxShadow: '0 6px 20px rgba(0,0,0,0.5)',
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          {/* The one you are hearing first, then the alternates — the order a
+              comp is worked in, and the order Pro Tools puts the main
+              playlist in. */}
+          {[...(playlist ? [playlist] : []), ...alternateLanes(track)].map((p) => (
+            <div key={p.id} className="flex items-center gap-0.5">
+              <button
+                onClick={(e) => { e.stopPropagation(); onPickTake(p.id); setTakeMenu(false); }}
+                className={`flex-1 text-left px-1 py-0.5 rounded text-[9px] font-mono truncate ${
+                  p.id === track.activePlaylistId ? 'text-zinc-100 bg-zinc-800' : 'text-zinc-500'}`}
+                title={p.name}
+              >{p.id === track.activePlaylistId ? '● ' : '　'}{p.name}</button>
+              <button
+                onClick={(e) => { e.stopPropagation(); onRemoveTake(p.id); }}
+                disabled={takes <= 1}
+                title={takes <= 1 ? '마지막 테이크는 지울 수 없습니다' : '이 테이크 삭제'}
+                className="w-4 h-4 rounded text-[9px] text-zinc-600 disabled:opacity-30"
+              >×</button>
+            </div>
+          ))}
+          <div className="h-px my-0.5" style={{ background: premium.surface.hairlineStrong }} />
+          <button
+            onClick={(e) => { e.stopPropagation(); onAddTake(); setTakeMenu(false); }}
+            className="text-left px-1 py-0.5 rounded text-[9px] text-zinc-400"
+          >새 테이크</button>
+          <button
+            onClick={(e) => { e.stopPropagation(); onDuplicateTake(); setTakeMenu(false); }}
+            className="text-left px-1 py-0.5 rounded text-[9px] text-zinc-400"
+          >지금 테이크 복제</button>
+          <button
+            onClick={(e) => { e.stopPropagation(); onFlattenTakes(); setTakeMenu(false); }}
+            disabled={takes <= 1}
+            className="text-left px-1 py-0.5 rounded text-[9px] text-zinc-400 disabled:opacity-30"
+            title={takes <= 1 ? '버릴 다른 테이크가 없습니다' : `${takes - 1}개 테이크를 버립니다`}
+          >컴프 확정 — 나머지 버리기</button>
+        </div>
+      )}
 
       {/* The palette, right under the swatch that opened it. */}
       {picking && (

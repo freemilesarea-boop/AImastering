@@ -23,7 +23,7 @@ import {
   MAX_CHAIN_TAIL_SEC, MAX_DEVICE_TAIL_SEC,
 } from '../src/renderer/daw/model/plugin-tail.js';
 import { PLUGINS, defaultParams } from '../src/renderer/daw/engine/plugins.js';
-import { tubeSmallSignalGain } from '../src/renderer/daw/engine/plugins-extended.js';
+import { tubeCurve, tubeSmallSignalGain } from '../src/renderer/daw/engine/plugins-extended.js';
 import { createInsert } from '../src/renderer/daw/model/session-ops.js';
 import {
   bodyDurationSec, originalSource, clipRegionFx, fadeSeam, renderSourceClip,
@@ -223,19 +223,25 @@ check('a processed clip still remembers what it replaced', () => {
 check('the tube curve claims the gain it actually has', () => {
   // The analytic figure and the sampled curve must agree, or compensating by
   // the analytic one would compensate by the wrong amount.
+  //
+  // Read off THE CURVE THE DEVICE BUILDS, sampled the way a WaveShaper reads
+  // it — index (x + 1) / 2 * (n - 1), interpolated between neighbours.  This
+  // check used to re-implement the curve's formula inline instead, which is
+  // not a check of anything: when the bias stopped being added to the sample
+  // and became a fraction of the knee, the copy went on agreeing with the
+  // analytic figure and only the real curve moved.
   for (const [drive, bias] of [[0, 0.05], [0.25, 0.05], [0.5, 0.05], [1, 0.05],
-                               [0.3, 0.15], [0.8, 0.15]] as Array<[number, number]>) {
-    const n = 4096;
-    const k = 1 + drive * 24;
+                               [0.3, 0.15], [0.8, 0.15], [0.3, 0.5]] as Array<[number, number]>) {
+    const curve = tubeCurve(drive, bias);
     const sample = (x: number): number => {
-      const b = x + bias;
-      return (Math.tanh(b * k) - Math.tanh(bias * k)) / Math.max(1e-6, Math.tanh(k));
+      const idx = ((Math.max(-1, Math.min(1, x)) + 1) / 2) * (curve.length - 1);
+      const lo = Math.floor(idx), hi = Math.min(curve.length - 1, lo + 1);
+      return curve[lo]! * (1 - (idx - lo)) + curve[hi]! * (idx - lo);
     };
     const measured = (sample(0.002) - sample(-0.002)) / 0.004;
     const claimed = tubeSmallSignalGain(drive, bias);
     assert(Math.abs(measured - claimed) / Math.max(1, claimed) < 0.01,
       `drive ${drive} bias ${bias}: curve slope ${measured.toFixed(3)} vs claimed ${claimed.toFixed(3)}`);
-    void n;
   }
 });
 

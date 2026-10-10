@@ -34,11 +34,9 @@ import IntelPanel from '../components/daw/intel/IntelPanel.js';
 import PluginWindowLayer from '../components/daw/plugin/PluginWindowLayer.js';
 import RegionLab from '../components/daw/region/RegionLab.js';
 import { createStack } from '../daw/model/stacks.js';
-import { setSessionTempo } from '../daw/model/warp.js';
+
 import { useMidiEditorStore } from '../stores/midiEditorStore.js';
-import {
-  addTrack, createTrack, createBus, findTrack, renameSession, sessionEndSec,
-} from '../daw/model/session-ops.js';
+import { findTrack, renameSession, sessionEndSec } from '../daw/model/session-ops.js';
 import { shouldAdoptQueue } from '../daw/model/import-audio.js';
 import { describeImport, importIntoSession } from '../daw/edit/session-import.js';
 import { importSessionData, deserializeDawSession, serializeDawSession } from '../daw/model/session-io.js';
@@ -52,12 +50,79 @@ import { describePlan, exportStems, planStems } from '../daw/engine/stem-export.
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
 import TemplatePanel from '../components/daw/template/TemplatePanel.js';
 import { describeFailure, exportAaf, importAaf } from '../daw/io/aaf-actions.js';
+import PanelWindowLayer from '../components/daw/PanelWindowLayer.js';
+import { usePanelWindowStore } from '../stores/panelWindowStore.js';
+import { DAW_PANELS, type DawWindow } from '../daw/model/view-window.js';
+import LayoutMenu from '../components/daw/LayoutMenu.js';
+import { setSessionTempo } from '../daw/model/tempo-reanchor.js';
 
 function fmt(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) return '0:00.000';
   const m = Math.floor(sec / 60);
   const s = sec - m * 60;
   return `${m}:${s.toFixed(3).padStart(6, '0')}`;
+}
+
+/**
+ * One panel, by name — the only place a window id becomes a component.
+ *
+ * Both the dock and the floating layer call this, so a panel torn off the tab
+ * strip is the same component the tab shows and not a second implementation
+ * of it.  Module scope rather than inside the component: it closes over
+ * nothing, and rebuilding it every render would remount every floating panel
+ * on every keystroke.
+ */
+function renderPanel(id: DawWindow): React.ReactElement {
+  switch (id) {
+    case 'edit':      return <EditWindow />;
+    case 'mix':       return <MixWindow />;
+    case 'midi':      return <KeyEditor />;
+    case 'chain':     return <DeviceChainView />;
+    case 'session':   return <SessionViewGrid />;
+    case 'steps':     return <StepSequencer />;
+    case 'warp':      return <WarpEditor />;
+    case 'spectral':  return <SpectralEditor />;
+    case 'vocal':     return <VocalEditor />;
+    case 'stems':     return <SeparatePanel />;
+    case 'restore':   return <RestorePanel />;
+    case 'intel':     return <IntelPanel />;
+    case 'reference': return <ReferencePanel />;
+  }
+}
+
+/**
+ * Non-fatal engine notices, on screen.
+ *
+ * `engineWarning` has been in the store, with "feedback loops, decode
+ * failures" in its own comment, since it was written — and nothing set it and
+ * nothing drew it.  A missing source was the case it was for: the track went
+ * quiet, the waveform stayed blank, and the app said nothing at all.
+ *
+ * A bar rather than a toast, because this one has to survive being ignored:
+ * a toast that faded while somebody was looking at the timeline would leave
+ * them with the silence and no explanation for it.
+ */
+function EngineWarningBar() {
+  const warning = useDawStore((s) => s.engineWarning);
+  const setEngineWarning = useDawStore((s) => s.setEngineWarning);
+  if (!warning) return null;
+  return (
+    <div
+      className="flex items-center gap-2 px-3 py-1 border-b text-[11px]"
+      style={{
+        background: 'rgba(224,112,112,0.12)', borderColor: 'rgba(224,112,112,0.35)',
+        color: '#f0b0b0',
+      }}
+      data-testid="engine-warning"
+    >
+      <span className="shrink-0">⚠</span>
+      <span className="flex-1 truncate" title={warning}>{warning}</span>
+      <button
+        onClick={() => setEngineWarning(null)}
+        className="shrink-0 px-1.5 h-5 rounded border border-zinc-700 bg-zinc-900 text-zinc-400"
+      >닫기</button>
+    </div>
+  );
 }
 
 export default function DawPage() {
@@ -71,6 +136,10 @@ export default function DawPage() {
   const setPanel     = useWorkspaceStore((s) => s.setPanel);
   const loadSession  = useDawStore((s) => s.loadSession);
   const windowMode   = useDawStore((s) => s.window);
+  const floatPanel   = usePanelWindowStore((s) => s.float);
+  // Ids only: subscribing to the window objects would re-render the whole
+  // page on every drag of a floating panel.
+  const floatingIds  = usePanelWindowStore((s) => s.windows.map((w) => w.id));
   const setWindow    = useDawStore((s) => s.setWindow);
   const isPlaying    = useDawStore((s) => s.isPlaying);
   const togglePlay   = useDawStore((s) => s.togglePlay);
@@ -395,30 +464,35 @@ export default function DawPage() {
         }
       />
 
+      <EngineWarningBar />
+
       {/* Transport / session chrome */}
       <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-zinc-800 bg-[#15151d] flex-wrap">
         <div className="flex rounded-md overflow-hidden border border-zinc-700 mr-1">
-          {(['edit', 'mix', 'midi', 'chain', 'session', 'steps', 'warp', 'spectral', 'vocal', 'stems', 'restore', 'reference', 'intel'] as const).map((w) => (
-            <button key={w} onClick={() => setWindow(w)}
-              className={`px-3 py-1 text-[11px] font-medium transition-colors ${
+          {/* One list, from view-window.ts.  The labels used to be spelled out
+              here in a thirteen-arm ternary and the bodies repeated the same
+              thirteen names further down — two parallel lists that drift. */}
+          {DAW_PANELS.map(({ id: w, label }) => (
+            <button key={w}
+              onClick={() => setWindow(w)}
+              onDoubleClick={() => floatPanel(w)}
+              title={`${label} — 더블클릭하면 따로 띄웁니다`}
+              className={`px-3 py-1 text-[11px] font-medium transition-colors relative ${
                 windowMode === w ? 'bg-indigo-600/30 text-indigo-300' : 'bg-zinc-900 text-zinc-500 hover:text-zinc-300'}`}
-            >{
-              w === 'edit' ? 'EDIT'
-              : w === 'mix' ? 'MIX'
-              : w === 'midi' ? 'KEY'
-              : w === 'chain' ? 'CHAIN'
-              : w === 'session' ? 'SESSION'
-              : w === 'steps' ? 'STEPS'
-              : w === 'warp' ? 'WARP'
-              : w === 'spectral' ? 'SPECTRAL'
-              : w === 'vocal' ? 'VOCAL'
-              : w === 'stems' ? 'STEMS'
-              : w === 'restore' ? 'RESTORE'
-              : w === 'reference' ? 'REFERENCE'
-              : 'AI'
-            }</button>
+            >
+              {label}
+              {/* A dot on a tab whose panel is also floating, so the strip says
+                  where the second copy went rather than leaving it a surprise. */}
+              {floatingIds.includes(w) && (
+                <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-amber-400/80" />
+              )}
+            </button>
           ))}
         </div>
+
+        {/* Saved rooms.  Beside the tab strip because that is what it changes
+            wholesale — the docked window, the panels and the floats at once. */}
+        <LayoutMenu />
 
         <button onClick={() => { dawRuntime.ensure(session.sampleRate); seek(0); }}
           title="처음으로 (Home)"
@@ -477,22 +551,13 @@ export default function DawPage() {
             홈 트랙 가져오기 ({queue.length})
           </ToolbarButton>
         )}
-        <ToolbarButton onClick={() => apply((s) => addTrack(s, createTrack(`Audio ${s.tracks.length}`, 'audio')))}>
+        <ToolbarButton onClick={() => useDawStore.getState().addTrackHere('audio')}>
           + 트랙
         </ToolbarButton>
         <ToolbarButton onClick={handleAddInstrument}>+ 인스트루먼트</ToolbarButton>
         <ToolbarButton onClick={handleImportMidi}>MIDI 가져오기</ToolbarButton>
-        <ToolbarButton onClick={() => apply((s) => {
-          const bus = createBus(`Bus ${s.buses.length + 1}`);
-          const aux = createTrack(`Aux ${s.tracks.filter((t) => t.kind === 'aux').length + 1}`, 'aux', {
-            input: bus.id,
-          });
-          return addTrack({ ...s, buses: [...s.buses, bus] }, aux);
-        })}>+ Aux</ToolbarButton>
-        <ToolbarButton onClick={() => apply((s) => addTrack(s,
-          createTrack(`VCA ${s.tracks.filter((t) => t.kind === 'vca').length + 1}`, 'vca', {
-            output: { kind: 'none' },
-          })))}>+ VCA</ToolbarButton>
+        <ToolbarButton onClick={() => useDawStore.getState().addTrackHere('aux')}>+ Aux</ToolbarButton>
+        <ToolbarButton onClick={() => useDawStore.getState().addTrackHere('vca')}>+ VCA</ToolbarButton>
 
         <span className="w-px h-5 bg-zinc-800 mx-1" />
 
@@ -546,19 +611,12 @@ export default function DawPage() {
 
       <SmartControlPanel />
 
-      {windowMode === 'edit' ? <EditWindow />
-        : windowMode === 'mix' ? <MixWindow />
-        : windowMode === 'midi' ? <KeyEditor />
-        : windowMode === 'chain' ? <DeviceChainView />
-        : windowMode === 'session' ? <SessionViewGrid />
-        : windowMode === 'steps' ? <StepSequencer />
-        : windowMode === 'warp' ? <WarpEditor />
-        : windowMode === 'spectral' ? <SpectralEditor />
-        : windowMode === 'vocal' ? <VocalEditor />
-        : windowMode === 'stems' ? <SeparatePanel />
-        : windowMode === 'restore' ? <RestorePanel />
-        : windowMode === 'intel' ? <IntelPanel />
-        : <ReferencePanel />}
+      {renderPanel(windowMode)}
+
+      {/* Torn-off panels, over everything the workspace draws.  They render
+          the SAME component the dock does — one renderer, so a floating MIX
+          and a docked MIX cannot come to show different things. */}
+      <PanelWindowLayer render={renderPanel} />
 
       {templatesOpen && <TemplatePanel onClose={() => setTemplatesOpen(false)} />}
 
@@ -652,7 +710,10 @@ function RecoveryPrompt() {
         {offer.label}
       </div>
       <p style={{ fontSize: 11, color: premium.text.muted, margin: '0 0 10px' }}>
-        앱이 예기치 않게 종료됐을 때 저장된 것입니다. 복구하면 지금 열려 있는
+        {/* Not "the app crashed": nothing here knows that.  What is known
+            is that this project was edited and not saved by hand afterwards
+            — a clean save deletes the file this is offering. */}
+        저장하지 않은 작업이 남아 있습니다. 복구하면 지금 열려 있는
         세션을 대체합니다.
       </p>
       <div className="flex gap-1.5">

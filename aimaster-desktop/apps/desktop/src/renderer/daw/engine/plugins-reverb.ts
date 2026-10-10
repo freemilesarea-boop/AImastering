@@ -25,8 +25,9 @@
 // device would not be the device that was designed.
 
 import {
-  automatableFrom, dbToGain, wetDry, withBypass,
+  automatableFrom, dbToGain, stereoSplit, wetDry, withBypass,
   type AutomatableParam, type PluginDescriptor,
+  BUTTERWORTH_Q,
 } from './plugin-kit.js';
 import {
   SPACES, irBuffer, spaceAt, spaceChoices, spaceIndex, spaceNotes, type Space,
@@ -39,18 +40,8 @@ const p = (params: Record<string, number>, id: string, fallback: number): number
 
 const clamp = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > hi ? hi : v);
 
-/**
- * Butterworth, and why it is not zero.
- *
- * Web Audio reads `Q` on a lowpass or highpass in DECIBELS, not as a Q factor:
- * alpha = sin(w0) / (2 · 10^(Q/20)).  The default of 1 is therefore 1 dB of
- * resonance — a small peak just under the cutoff, and harmless anywhere except
- * inside a feedback loop, where it multiplies the loop gain at exactly one
- * frequency.  A plate with a per-pass gain of 0.99 and a 1 dB peak has a loop
- * gain of 1.11 there, which is not a reverb: it is an oscillator.  This is the
- * value that gives a maximally flat response and no peak at all.
- */
-const BUTTERWORTH_Q = -3.0103;
+// `BUTTERWORTH_Q` lives in the kit now — this file found it first, inside a
+// feedback loop, and every device since has needed it.
 
 /** Round to a step, so a knob drag does not synthesise a hundred rooms. */
 const quantise = (v: number, step: number): number => Math.round(v / step) * step;
@@ -68,11 +59,9 @@ const quantise = (v: number, step: number): number => Math.round(v / step) * ste
 interface WidthStage { input: GainNode; output: GainNode; set: (width: number) => void }
 
 function widthStage(ctx: BaseAudioContext): WidthStage {
-  const input = ctx.createGain();
+  const { input, splitter } = stereoSplit(ctx);
   const output = ctx.createGain();
-  const splitter = ctx.createChannelSplitter(2);
   const merger = ctx.createChannelMerger(2);
-  input.connect(splitter);
 
   const mid = ctx.createGain();
   const side = ctx.createGain();
@@ -309,7 +298,9 @@ function buildSpaceReverb(
   const erGain = ctx.createGain();
   const tailGain = ctx.createGain();
   const lowCut = ctx.createBiquadFilter(); lowCut.type = 'highpass';
+  lowCut.Q.value = BUTTERWORTH_Q;
   const highCut = ctx.createBiquadFilter(); highCut.type = 'lowpass';
+  highCut.Q.value = BUTTERWORTH_Q;
   const width = widthStage(ctx);
   const blend = wetDry(ctx, 0);
   const wet = blend.wet;
@@ -419,7 +410,9 @@ function buildPlate(
   const wet = blend.wet;
   const dry = blend.dry;
   const lowCut = ctx.createBiquadFilter(); lowCut.type = 'highpass';
+  lowCut.Q.value = BUTTERWORTH_Q;
   const highCut = ctx.createBiquadFilter(); highCut.type = 'lowpass';
+  highCut.Q.value = BUTTERWORTH_Q;
 
   input.connect(pre).connect(drive);
 
@@ -670,7 +663,9 @@ function buildShimmer(
   const dry = blend.dry;
   const width = widthStage(ctx);
   const lowCut = ctx.createBiquadFilter(); lowCut.type = 'highpass';
+  lowCut.Q.value = BUTTERWORTH_Q;
   const highCut = ctx.createBiquadFilter(); highCut.type = 'lowpass';
+  highCut.Q.value = BUTTERWORTH_Q;
 
   const shifter = octaveUp(ctx);
   const shiftGain = ctx.createGain();

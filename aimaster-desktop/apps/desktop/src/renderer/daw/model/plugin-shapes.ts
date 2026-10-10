@@ -20,6 +20,8 @@ import {
   type BiquadSpec, type Complex,
 } from './plugin-curves.js';
 import { tanhCurve } from '../engine/plugin-kit.js';
+import { EXCITER_KNEE_DB, EXCITER_MAX_BIAS } from '../engine/plugins.js';
+import { upwardCurve } from '../engine/upward.js';
 import {
   bitCurve, clipCurve, gateGainCurve, tubeCurve,
 } from '../engine/plugins-extended.js';
@@ -111,7 +113,7 @@ export const TRANSFER_CURVE_DEVICES: readonly string[] = [
 ];
 
 /** The devices drawn on the detector axes. */
-export const DETECTOR_DEVICES: readonly string[] = ['gate', 'denoise'];
+export const DETECTOR_DEVICES: readonly string[] = ['gate', 'denoise', 'upward'];
 
 /** Whether this device wants a square picture — a transfer curve needs one. */
 export function wantsSquareVisual(pluginId: string): boolean {
@@ -130,13 +132,15 @@ export function shaperFor(pluginId: string, params: Record<string, number>): Sha
 
   if (pluginId === 'saturation') {
     const driveDb = num(params, 'driveDb', 0);
-    const gain = dbToGain(driveDb);
     return {
-      inputGain: gain,
-      curves: [tanhCurve(num(params, 'bias', 0))],
-      // The engine compensates the level the drive adds, so the macro is not
-      // also a volume knob.  It is inside the wet path, not after the blend.
-      wetGain: 1 / Math.max(1, Math.sqrt(gain)),
+      // No gain either side of the curve any more: Drive is where the curve
+      // bends, so the picture is the curve and nothing else.  It used to draw
+      // a pre-gain of up to sixteen times into a curve whose axes stop at
+      // full scale, which is a picture of a device walking off its own graph
+      // — and that was exactly what the engine did.
+      inputGain: 1,
+      curves: [tanhCurve(num(params, 'bias', 0), driveDb)],
+      wetGain: 1,
       mix: num(params, 'mix', 0),
       dryGain: 1 - num(params, 'mix', 0),
       postGain: 1,
@@ -161,18 +165,21 @@ export function shaperFor(pluginId: string, params: Record<string, number>): Sha
   if (pluginId === 'exciter') {
     const amount = num(params, 'amount', 0);
     const mix = num(params, 'mix', 0);
-    // `input -> highpass -> drive(1 + amount*8) -> tanh(0.15) -> wet(mix) -> out`
+    // `input -> highpass -> asymmetric curve -> dc block -> wet(mix) -> out`
     // with `input -> out` at FULL level alongside.  This curve is what content
     // above the corner meets; the corner is a filter and has no place on a
     // transfer curve's axes, so it is said in the caption instead of drawn.
+    //
+    // Amount is the curve's asymmetry, so the picture shows the asymmetry
+    // rather than a pre-gain pushing the signal off the graph.
     return {
-      inputGain: 1 + amount * 8,
-      curves: [tanhCurve(0.15)],
+      inputGain: 1,
+      curves: [tanhCurve(amount * EXCITER_MAX_BIAS, EXCITER_KNEE_DB)],
       wetGain: 1,
       mix,
       dryGain: 1,
       postGain: 1,
-      caption: `${(num(params, 'freqHz', 4000) / 1000).toFixed(1)} kHz 위만 · 드라이브 ×${(1 + amount * 8).toFixed(1)} · ${(mix * 100).toFixed(0)}% 더함`,
+      caption: `${(num(params, 'freqHz', 4000) / 1000).toFixed(1)} kHz 위만 · 치우침 ${(amount * EXCITER_MAX_BIAS).toFixed(2)} · ${(mix * 100).toFixed(0)}% 더함`,
     };
   }
 
@@ -215,7 +222,13 @@ export function shaperFor(pluginId: string, params: Record<string, number>): Sha
  * the compressor's axes, with the curve running the other way.
  */
 export interface DetectorSpec {
-  /** Envelope (0..1 linear) → gain (0..1 linear). */
+  /**
+   * Envelope (0..1 linear) → gain.
+   *
+   * Not bounded to 1 any more: an upward compressor's gain is above unity
+   * everywhere it does anything, and a drawing that clamped it would show a
+   * flat line across the only part of the curve worth looking at.
+   */
   curve: Float32Array;
   thresholdDb: number;
   caption: string;
@@ -230,6 +243,23 @@ export function detectorFor(pluginId: string, params: Record<string, number>): D
       curve: gateGainCurve(thresholdDb, rangeDb),
       thresholdDb,
       caption: `문턱 ${thresholdDb.toFixed(0)} dB · 닫히면 ${rangeDb.toFixed(0)} dB 내려감`,
+    };
+  }
+
+  if (pluginId === 'upward') {
+    const thresholdDb = num(params, 'thresholdDb', -24);
+    const depthDb = num(params, 'depthDb', 0);
+    const floorDb = num(params, 'floorDb', -55);
+    const ratio = num(params, 'ratio', 2);
+    return {
+      // The engine's own curve, not a second copy of it: the plugin hands
+      // this exact array to its WaveShaper.
+      curve: upwardCurve(thresholdDb, ratio, depthDb, floorDb),
+      thresholdDb,
+      caption: depthDb <= 0
+        ? `문턱 ${thresholdDb.toFixed(0)} dB · 깊이 0 dB — 아무것도 하지 않습니다`
+        : `문턱 ${thresholdDb.toFixed(0)} dB · ${ratio.toFixed(1)}:1 로 최대 `
+          + `${depthDb.toFixed(1)} dB 올림 · 플로어 ${floorDb.toFixed(0)} dB`,
     };
   }
 
@@ -289,11 +319,44 @@ export function detectorGainDb(spec: DetectorSpec, inputDb: number): number {
  * misrepresent — "the sides are 4 dB brighter than the centre" is the whole
  * information, and adding them together destroys exactly that.
  */
+import { TAPE_SPEEDS, tapeTopHz } from '../engine/plugins-extended.js';
+import { BUTTERWORTH_Q } from '../engine/plugin-kit.js';
+import { linphaseImpulse } from '../engine/linear-phase.js';
+import {
+  matchApplied, matchMagnitudeAt, matchShapeDb, matchShapeOf, matchStored,
+} from '../engine/match-eq.js';
+import { SLOPE_PIVOT_HZ, SPECTRUM_SLOPES, slopeDbAt } from './spectrum-view.js';
+import {
+  HARMONY_WINDOW_MAX_MS, HARMONY_WINDOW_MIN_MS, harmonyBaseSec, harmonyRatio,
+  harmonySpanSec,
+} from '../engine/pitch-shift.js';
+import { averageSeconds } from './analyzer-view.js';
+
+/**
+ * The rate the pictures are drawn at.
+ *
+ * A picture is a shape, not a render, so it does not have to match the
+ * session — but the impulse response's LENGTH in milliseconds depends on the
+ * rate, and a caption that said 10.6 ms while the session ran at 44.1 would
+ * be wrong by a tenth of a millisecond.  Stated here rather than guessed at
+ * each call site.
+ */
+const PICTURE_RATE = 48_000;
+
 export interface NamedCurve {
   label: string;
   specs: BiquadSpec[];
   /** Drawn in this colour, so two curves in one picture stay apart. */
   colour: string;
+  /**
+   * The curve's level at a frequency, when it is NOT a cascade of biquads.
+   *
+   * The match EQ's shape is thirty-two measured numbers and an interpolation,
+   * which no set of biquads reproduces exactly — and a picture that drew an
+   * approximation of the filter would be a picture of a different filter.
+   * When this is present it replaces `specs` entirely.
+   */
+  dbAt?: (hz: number) => number;
 }
 
 export interface FilterPicture {
@@ -307,7 +370,8 @@ export interface FilterPicture {
 const MID_COLOUR = 'rgba(230,210,160,0.95)';
 const SIDE_COLOUR = 'rgba(126,200,255,0.9)';
 
-export const FILTER_DEVICES: readonly string[] = ['mseq', 'hum', 'dcblock'];
+export const FILTER_DEVICES: readonly string[] =
+  ['mseq', 'hum', 'dcblock', 'amp', 'tape', 'matcheq', 'analyzer'];
 
 export function filterPictureFor(
   pluginId: string, params: Record<string, number>,
@@ -329,6 +393,174 @@ export function filterPictureFor(
       ],
       fromHz: 20, toHz: 20_000,
       caption: `가운데 ${midLow >= 0 ? '+' : ''}${midLow.toFixed(1)}/${midHigh >= 0 ? '+' : ''}${midHigh.toFixed(1)} · 양옆 ${sideLow >= 0 ? '+' : ''}${sideLow.toFixed(1)}/${sideHigh >= 0 ? '+' : ''}${sideHigh.toFixed(1)} dB`,
+    };
+  }
+
+  if (pluginId === 'tape') {
+    // Two curves, and the second one is the point of the picture.
+    //
+    // TAPE is what comes out: the head bump, the fall below it, and where the
+    // top ends.  Speed moves all three together, because all three are about
+    // wavelength, and seeing them move together is the only way the Speed
+    // knob explains itself.
+    //
+    // ON TAPE is what the magnetics actually see — the record pre-emphasis,
+    // which the playback EQ takes straight back out again.  It is therefore
+    // INVISIBLE in the response and is most of why tape sounds like tape: the
+    // top of the band arrives at the nonlinearity ten decibels hotter than
+    // the bottom and runs out of tape first.  A picture with only the first
+    // curve would be a picture of a mild EQ.
+    const speed = TAPE_SPEEDS[Math.max(0, Math.min(TAPE_SPEEDS.length - 1,
+      Math.round(num(params, 'speed', 1))))] ?? TAPE_SPEEDS[1]!;
+    const bias = Math.max(0, Math.min(1, num(params, 'bias', 0.5)));
+    const bumpDb = num(params, 'bump', 3);
+    const topHz = tapeTopHz(speed, bias);
+
+    // The same Q the engine uses, and on the lowpass and highpass that number
+    // is in DECIBELS — see `BUTTERWORTH_Q`.  A picture drawn with 0.707 would
+    // show a peak the device does not have, at the one place the device is
+    // making a claim.
+    const machine: BiquadSpec[] = [
+      { type: 'highpass', freq: speed.bumpHz * 0.45, gain: 0, q: BUTTERWORTH_Q },
+      { type: 'peaking', freq: speed.bumpHz, gain: bumpDb, q: 1.1 },
+      { type: 'lowpass', freq: Math.min(20_000, topHz), gain: 0, q: BUTTERWORTH_Q },
+    ];
+    const onTape: BiquadSpec[] = [
+      { type: 'highshelf', freq: speed.preHz, gain: speed.preDb, q: 0.707 },
+    ];
+    return {
+      curves: [
+        { label: `${speed.ips} ips`, specs: machine, colour: MID_COLOUR },
+        { label: '테이프가 받는 것', specs: onTape, colour: SIDE_COLOUR },
+      ],
+      fromHz: 20, toHz: 20_000,
+      caption: `${speed.ips} ips · 헤드 범프 ${speed.bumpHz} Hz ${bumpDb >= 0 ? '+' : ''}`
+        + `${bumpDb.toFixed(1)} dB · 상단 ${(topHz / 1000).toFixed(1)} kHz · 바이어스 `
+        + `${bias < 0.42 ? '낮음' : (bias > 0.58 ? '높음' : '표준')}`,
+    };
+  }
+
+  if (pluginId === 'analyzer') {
+    // The device does nothing to the audio, so the only thing a still picture
+    // can honestly show is what the DISPLAY does — and that is worth showing,
+    // because the tilt is the setting that decides whether "flat" means
+    // balanced or means nothing.
+    //
+    // Untilted, an FFT of music slopes down at roughly 4.5 dB per octave and
+    // always has; a flat reading on that scale would be a mix with far too
+    // much top.  The tilt is the line being added, drawn here with the pivot
+    // visible, so the number in the picker is a shape rather than a claim.
+    const index = Math.round(num(params, 'slope', 2));
+    const slope = SPECTRUM_SLOPES[Math.max(0, Math.min(SPECTRUM_SLOPES.length - 1, index))] ?? 4.5;
+    const seconds = averageSeconds(num(params, 'average', 1));
+    return {
+      curves: [{
+        label: `${slope} dB/oct`, specs: [], colour: MID_COLOUR,
+        dbAt: (hz) => slopeDbAt(hz, slope),
+      }],
+      fromHz: 20, toHz: 20_000,
+      caption: slope === 0
+        ? `기울기 없음 · 평균 ${seconds}초 — 음악은 우하향으로 보입니다`
+        : `${SLOPE_PIVOT_HZ} Hz 축으로 ${slope} dB/oct 기울임 · 평균 ${seconds}초`,
+    };
+  }
+
+  if (pluginId === 'matcheq') {
+    // Two curves, because the difference between them IS the three controls.
+    // The measurement is what the reference asked for; the applied curve is
+    // what Amount, Smooth and Limit left of it, and a panel that drew only
+    // one of them would make those three knobs invisible.
+    const stored = matchStored(params);
+    const shape = matchShapeOf(params);
+    const applied = matchApplied(params);
+    const raw = matchShapeDb(stored, { amount: 1, smoothOct: 0, limitDb: 24 });
+    const measured = stored.some((v) => Math.abs(v) > 0.01);
+    const curves: NamedCurve[] = [
+      { label: '적용', specs: [], colour: MID_COLOUR, dbAt: (hz) => matchMagnitudeAt(applied, hz) },
+    ];
+    if (measured) {
+      curves.push({
+        label: '측정', specs: [], colour: SIDE_COLOUR,
+        dbAt: (hz) => matchMagnitudeAt(raw, hz),
+      });
+    }
+    let worst = 0;
+    for (const v of applied) worst = Math.max(worst, Math.abs(v));
+    return {
+      curves,
+      fromHz: 20, toHz: 20_000,
+      caption: measured
+        ? `${Math.round(shape.amount * 100)}% · ${shape.smoothOct.toFixed(2)} 옥타브 평활 · `
+          + `한계 ${shape.limitDb.toFixed(0)} dB · 최대 이동 ${worst.toFixed(1)} dB`
+        : '레퍼런스를 아직 재지 않았습니다 — 커브가 비어 있어 통과만 시킵니다',
+    };
+  }
+
+  if (pluginId === 'amp') {
+    // Two curves, because an amplifier is two filters in series and people
+    // reach for them for different reasons: the TONE STACK is the three
+    // knobs, and the CABINET is the thing that decides whether the result
+    // sounds like a guitar amp or like a wasp in a tin.
+    //
+    // Drawn from the same numbers the engine builds its filters from — the
+    // stack's frequencies, the fixed scoop that a passive network always has,
+    // and the cabinet's corners for the size that is selected.
+    const british = num(params, 'stack', 0) > 0.5;
+
+    // The interstage filters are part of the response and are drawn.  They
+    // are easy to leave out — they are not knobs — but each preamp stage
+    // cuts bass on the way in and fizz on the way out, and a picture without
+    // them would be a picture of a different amplifier.  How many are in
+    // circuit is the Stages knob.
+    const count = Math.max(1, Math.min(3, Math.round(num(params, 'stages', 2))));
+    const STAGE_CUT = [45, 120, 220];
+    const STAGE_TILT = [9000, 7000, 6000];
+    const interstage: BiquadSpec[] = [];
+    for (let i = 0; i < count; i++) {
+      interstage.push({ type: 'highpass', freq: STAGE_CUT[i] ?? 45, gain: 0, q: BUTTERWORTH_Q });
+      interstage.push({ type: 'lowpass', freq: STAGE_TILT[i] ?? 9000, gain: 0, q: BUTTERWORTH_Q });
+    }
+
+    const stack: BiquadSpec[] = [
+      ...interstage,
+      { type: 'lowshelf', freq: british ? 120 : 90, gain: num(params, 'bass', 0), q: 0.707 },
+      {
+        type: 'peaking', freq: british ? 650 : 480,
+        gain: num(params, 'mid', 0), q: british ? 0.8 : 0.6,
+      },
+      { type: 'highshelf', freq: british ? 2600 : 3400, gain: num(params, 'treble', 0), q: 0.707 },
+      { type: 'peaking', freq: british ? 480 : 380, gain: british ? -3 : -5, q: 0.9 },
+      { type: 'highshelf', freq: 2200, gain: num(params, 'presence', 3), q: 0.707 },
+    ];
+
+    const kinds = [
+      { name: '1×12', lowHz: 95, topHz: 4600, coneHz: 115, presenceHz: 2600 },
+      { name: '2×12', lowHz: 85, topHz: 4200, coneHz: 100, presenceHz: 2300 },
+      { name: '4×12', lowHz: 75, topHz: 3800, coneHz: 88, presenceHz: 2000 },
+    ];
+    const index = Math.round(num(params, 'cab', 1));
+    const off = index >= kinds.length;
+    const spec = kinds[Math.max(0, Math.min(kinds.length - 1, index))]!;
+    const mic = Math.max(0, Math.min(1, num(params, 'mic', 45) / 100));
+    const cab: BiquadSpec[] = off ? [] : [
+      { type: 'highpass', freq: spec.lowHz, gain: 0, q: BUTTERWORTH_Q },
+      { type: 'peaking', freq: spec.coneHz, gain: 4, q: 1.4 },
+      { type: 'peaking', freq: 800, gain: -4, q: 1.1 },
+      { type: 'peaking', freq: spec.presenceHz, gain: 6 - mic * 9, q: 1.6 },
+      { type: 'lowpass', freq: spec.topHz * (1 - mic * 0.35), gain: 0, q: BUTTERWORTH_Q },
+      { type: 'lowpass', freq: spec.topHz * 0.86 * (1 - mic * 0.35), gain: 0, q: BUTTERWORTH_Q },
+    ];
+
+    return {
+      curves: [
+        { label: 'AMP', specs: stack, colour: MID_COLOUR },
+        { label: off ? 'CAB OFF' : spec.name, specs: [...stack, ...cab], colour: SIDE_COLOUR },
+      ],
+      fromHz: 20, toHz: 20_000,
+      caption: off
+        ? `${count}단 · ${british ? '브리티시' : '아메리칸'} 스택 · 캐비닛 끔`
+        : `${count}단 · ${british ? '브리티시' : '아메리칸'} 스택 · ${spec.name} · 마이크 ${
+          mic < 0.3 ? '온 액시스' : (mic > 0.7 ? '오프 액시스' : '중간')}`,
     };
   }
 
@@ -362,7 +594,7 @@ export function filterPictureFor(
     return {
       curves: [{
         label: '',
-        specs: [{ type: 'highpass', freq: 5, gain: 0, q: 0.707 }],
+        specs: [{ type: 'highpass', freq: 5, gain: 0, q: BUTTERWORTH_Q }],
         colour: MID_COLOUR,
       }],
       // Drawn from 1 Hz, because a 5 Hz corner seen from 20 Hz upwards is a
@@ -395,7 +627,7 @@ export interface WidthPicture {
   caption: string;
 }
 
-export const WIDTH_DEVICES: readonly string[] = ['widener', 'monomaker'];
+export const WIDTH_DEVICES: readonly string[] = ['widener', 'monomaker', 'mbwidth'];
 
 export function widthPictureFor(
   pluginId: string, params: Record<string, number>,
@@ -403,9 +635,9 @@ export function widthPictureFor(
   if (pluginId === 'widener') {
     const width = num(params, 'width', 1);
     const corner = num(params, 'lowMonoHz', 20);
-    // One highpass on the side path, at Web Audio's default Q of 1 (which on
-    // a highpass is a resonance in dB, not a cookbook Q).
-    const hp: BiquadSpec = { type: 'highpass', freq: corner, gain: 0, q: 1 };
+    // One Butterworth highpass on the side path.  `q` here is what the node
+    // takes: a resonance in DECIBELS, so Butterworth is -3.01, not 0.707.
+    const hp: BiquadSpec = { type: 'highpass', freq: corner, gain: 0, q: BUTTERWORTH_Q };
     return {
       widthAt: (hz) => width * Math.pow(10, biquadMagnitudeDb(hp, hz) / 20),
       cornerHz: corner,
@@ -414,12 +646,50 @@ export function widthPictureFor(
     };
   }
 
+  if (pluginId === 'mbwidth') {
+    const lowX = num(params, 'lowXHz', 150);
+    const highX = num(params, 'highXHz', 4000);
+    const widths = [
+      Math.max(0, num(params, 'lowWidth', 1)),
+      Math.max(0, num(params, 'midWidth', 1)),
+      Math.max(0, num(params, 'hiWidth', 1)),
+    ];
+    // Each band is two Butterworth sections — Linkwitz-Riley — so its
+    // magnitude is the square of one, and the three add up.  Summing
+    // MAGNITUDES rather than complex responses is exact where it matters:
+    // LR4 halves each side at the corner and the two arrive in phase, so
+    // 0.5 + 0.5 is 1 there, and an octave away one of them is 24 dB down.
+    // Measured against the rendered device at 300 Hz with the low band shut:
+    // this says −0.53 dB and the device does −0.53 dB.
+    const mag = (spec: BiquadSpec, hz: number): number =>
+      Math.pow(10, (2 * biquadMagnitudeDb(spec, hz)) / 20);
+    const lowPass: BiquadSpec = { type: 'lowpass', freq: lowX, gain: 0, q: BUTTERWORTH_Q };
+    const lowCut: BiquadSpec = { type: 'highpass', freq: lowX, gain: 0, q: BUTTERWORTH_Q };
+    const highPass: BiquadSpec = { type: 'lowpass', freq: highX, gain: 0, q: BUTTERWORTH_Q };
+    const highCut: BiquadSpec = { type: 'highpass', freq: highX, gain: 0, q: BUTTERWORTH_Q };
+    const widthAt = (hz: number): number =>
+      widths[0]! * mag(lowPass, hz)
+      + widths[1]! * mag(lowCut, hz) * mag(highPass, hz)
+      + widths[2]! * mag(highCut, hz);
+    const pct = (w: number): string => `${Math.round(w * 100)}%`;
+    return {
+      widthAt,
+      // Where the low band hands over, which is the edge people set first.
+      cornerHz: lowX,
+      maxWidth: Math.max(2, ...widths),
+      caption: widths.every((w) => Math.abs(w - 1) < 0.005)
+        ? `${lowX.toFixed(0)} Hz · ${(highX / 1000).toFixed(1)} kHz — 세 대역 모두 그대로`
+        : `${pct(widths[0]!)} / ${pct(widths[1]!)} / ${pct(widths[2]!)} `
+          + `· ${lowX.toFixed(0)} Hz · ${(highX / 1000).toFixed(1)} kHz`,
+    };
+  }
+
   if (pluginId === 'monomaker') {
     const width = Math.max(0, num(params, 'widthPct', 100)) / 100;
     const corner = num(params, 'freqHz', 120);
     // TWO highpasses in series on the side path — 12 dB/oct, a steeper skirt
     // than the widener's, and the reason this one sounds tighter.
-    const hp: BiquadSpec = { type: 'highpass', freq: corner, gain: 0, q: 0.707 };
+    const hp: BiquadSpec = { type: 'highpass', freq: corner, gain: 0, q: BUTTERWORTH_Q };
     return {
       widthAt: (hz) => width * Math.pow(10, (2 * biquadMagnitudeDb(hp, hz)) / 20),
       cornerHz: corner,
@@ -457,7 +727,16 @@ export interface LfoPicture {
   caption: string;
 }
 
-export const LFO_DEVICES: readonly string[] = ['tremolo', 'autopan', 'chorus'];
+/**
+ * The devices that draw A VALUE OVER TIME.
+ *
+ * Four of them are modulators and the fifth is not: a linear-phase EQ's
+ * impulse response is the one thing a magnitude curve cannot show, and it is
+ * a trace over time like any other.  Hence the name — the picture is a shape
+ * against a clock, not a statement that everything here has an LFO.
+ */
+export const TIME_TRACE_DEVICES: readonly string[] =
+  ['tremolo', 'autopan', 'chorus', 'rotary', 'linphase', 'harmonizer'];
 
 const sine = (phase: number): number => Math.sin(2 * Math.PI * phase);
 /** Web Audio's square is a hard two-level wave, not a band-limited one. */
@@ -471,6 +750,72 @@ function triangle(phase: number): number {
 export function lfoPictureFor(
   pluginId: string, params: Record<string, number>,
 ): LfoPicture | null {
+  if (pluginId === 'harmonizer') {
+    // The mechanism, drawn.  A harmoniser made of delay lines is two sawtooth
+    // sweeps half a window apart, and the picture is those two sweeps: where
+    // one drops back is where the other is mid-ramp, and that is the whole
+    // trick.  The steeper the ramps, the wider the interval.
+    const windowMs = Math.max(
+      HARMONY_WINDOW_MIN_MS, Math.min(HARMONY_WINDOW_MAX_MS, num(params, 'windowMs', 30)),
+    );
+    const windowSec = windowMs / 1000;
+    const semitones = num(params, 'v1St', 4);
+    const ratio = harmonyRatio(semitones, num(params, 'v1Cents', 0));
+    const span = harmonySpanSec(ratio, windowSec);
+    const base = harmonyBaseSec(ratio, windowSec);
+    const sign = ratio > 1 ? -1 : 1;
+    // Web Audio's sawtooth starts at 0, reaches +1 half a period in, and
+    // jumps to −1 there — so the delay is drawn from the same shape the node
+    // produces rather than from an idealised ramp.
+    const saw = (t: number): number => {
+      const phase = ((t / windowSec) % 1 + 1) % 1;
+      return phase < 0.5 ? phase * 2 : phase * 2 - 2;
+    };
+    const delayMs = (t: number, offset: number): number =>
+      (base + sign * (span / 2) * saw(t - offset)) * 1000;
+    return {
+      traces: [
+        { label: 'A', colour: MID_COLOUR, at: (t) => delayMs(t, 0) },
+        { label: 'B', colour: SIDE_COLOUR, at: (t) => delayMs(t, windowSec / 2) },
+      ],
+      spanSec: windowSec * 2.4,
+      min: 0,
+      max: Math.max(1, span * 1000 * 1.1),
+      unit: 'ms',
+      caption: span === 0
+        ? `${windowMs.toFixed(0)} ms 창 · 유니슨이라 스윕이 없습니다 — 그대로 통과합니다`
+        : `${semitones >= 0 ? '+' : ''}${semitones.toFixed(0)}반음 · ${windowMs.toFixed(0)} ms 창에 `
+          + `${(span * 1000).toFixed(1)} ms 스윕 · 한쪽이 되돌아갈 때 다른 쪽이 중간입니다`,
+    };
+  }
+
+  if (pluginId === 'linphase') {
+    // The impulse response, and the reason this device is not simply a better
+    // EQ.  It is SYMMETRIC — that is what zero phase means — so whatever it
+    // does after the transient it does an equal amount of BEFORE it.  On a
+    // kick with a steep cut under it that reads as a tick ahead of the hit,
+    // and no amount of length removes it; length only spreads it wider.
+    const h = linphaseImpulse(params, PICTURE_RATE);
+    const half = (h.length - 1) / 2;
+    const spanSec = h.length / PICTURE_RATE;
+    let peak = 0;
+    for (let i = 0; i < h.length; i++) peak = Math.max(peak, Math.abs(h[i] ?? 0));
+    const scale = peak > 0 ? 1 / peak : 1;
+    const lateMs = (half / PICTURE_RATE) * 1000;
+    return {
+      traces: [{
+        label: 'IR', colour: MID_COLOUR,
+        // t runs from 0, and the centre sits at the middle of the span.
+        at: (t) => (h[Math.round(t * PICTURE_RATE)] ?? 0) * scale,
+      }],
+      spanSec,
+      min: -0.35, max: 1,
+      unit: '',
+      caption: `${h.length}탭 · 가운데가 ${lateMs.toFixed(1)} ms 늦게 도착 · `
+        + '앞쪽 물결이 프리링잉',
+    };
+  }
+
   if (pluginId === 'tremolo') {
     const rate = num(params, 'rateHz', 5);
     const depth = num(params, 'depth', 0.5);
@@ -485,6 +830,29 @@ export function lfoPictureFor(
       spanSec: 2 / Math.max(0.05, rate),
       min: 0, max: 1, unit: '×',
       caption: `${rate.toFixed(2)} Hz · ${(depth * 100).toFixed(0)}% · ${wave === square ? '사각' : '사인'}`,
+    };
+  }
+
+  if (pluginId === 'rotary') {
+    // Three traces, because the device is three facts at once and no one of
+    // them alone explains it.  The two horn traces are the SAME rotation seen
+    // by two microphones at an angle to each other — everything stereo about
+    // a rotary speaker comes from that and from nothing else, since the
+    // cabinet is mono.  The drum trace runs slower and is not locked to the
+    // horn, which is the swirl that a chorus cannot imitate.
+    const rate = num(params, 'rateHz', 0.8);
+    const throb = num(params, 'throb', 55) / 100;
+    const angle = (num(params, 'micAngle', 90) * Math.PI) / 180;
+    const cos = (turns: number, phase = 0): number => Math.cos(2 * Math.PI * turns + phase);
+    return {
+      traces: [
+        { label: 'HORN L', colour: MID_COLOUR, at: (t) => 1 + throb * 0.75 * cos(rate * t) },
+        { label: 'HORN R', colour: SIDE_COLOUR, at: (t) => 1 + throb * 0.75 * cos(rate * t, angle) },
+        { label: 'DRUM', colour: 'rgba(255,255,255,0.45)', at: (t) => 1 + throb * 0.45 * cos(rate * 0.78 * t) },
+      ],
+      spanSec: 2 / Math.max(0.05, rate),
+      min: 0, max: 2, unit: '×',
+      caption: `혼 ${rate.toFixed(2)} Hz · 드럼 ${(rate * 0.78).toFixed(2)} Hz · 마이크 ${Math.round(num(params, 'micAngle', 90))}°`,
     };
   }
 

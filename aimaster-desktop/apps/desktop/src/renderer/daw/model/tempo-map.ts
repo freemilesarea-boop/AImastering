@@ -604,14 +604,22 @@ export function tempoMapOf(session: DawSession): TempoMap {
 }
 
 /**
- * Put a map back on a session, keeping the two old fields honest.
+ * Put a map back on a session and leave every stored second where it is.
  *
  * `tempoBpm` and `timeSignature` stay as the song's opening values.  Leaving
  * them stale would mean a session whose transport says 120 and whose first bar
  * is 76, and the half of the app that has not been taught the map yet would
  * read the wrong one.
+ *
+ * NOT what a tempo edit wants.  Everything on the timeline is stored in
+ * seconds, so a map swapped out from under it keeps its second and lands on a
+ * different bar — `model/tempo-reanchor.ts` has the measurements and the
+ * `withTempoMap` that moves the arrangement with the map.  This one is for the
+ * callers that have already moved the content themselves: ripple insert and
+ * delete shift every position in seconds and then hand over a map with beats
+ * inserted, and re-anchoring on top of that would count the shift twice.
  */
-export function withTempoMap(session: DawSession, map: TempoMap): DawSession {
+export function withTempoMapKeepingSeconds(session: DawSession, map: TempoMap): DawSession {
   const normalised = normaliseTempoMap(map);
   const opening = normalised.meters[0]!;
   return {

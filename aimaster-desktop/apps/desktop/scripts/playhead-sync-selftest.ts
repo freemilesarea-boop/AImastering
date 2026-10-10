@@ -19,8 +19,9 @@
  *
  * TWO CLOCKS, and keeping them apart is the whole design:
  *
- *   · the WRITE clock schedules.  The look-ahead window, the loop wrap, the
- *     punch-out and the click all decide what to hand the audio thread NEXT,
+ *   · the WRITE clock schedules.  The look-ahead window, the loop's pass walk,
+ *     the punch-out and the click all decide what to hand the audio thread
+ *     NEXT,
  *     so they must reason about the moment being written.  Moving them would
  *     schedule everything late by the latency — the bug, facing the other way.
  *   · the AUDIBLE clock draws.  Only the cursor.
@@ -111,16 +112,36 @@ check('the cursor is fed the audible clock',
 
 // The half that is easy to get wrong: moving the scheduler onto the audible
 // clock would schedule everything late by the latency.
-const tickAt = runtime.indexOf('player.tick(session, LOOKAHEAD_SEC)');
+//
+// What this pins is the CLOCK, not the distance.  It used to require the
+// literal `player.tick(session, LOOKAHEAD_SEC)`, and that broke the day the
+// transport started reaching a growing distance instead of a fixed one —
+// `start` schedules a short window so the first sound is not waiting on a
+// second of work, and the rest is filled in steps (see `FIRST_WINDOW_SEC`).
+// The distance is still bounded by LOOKAHEAD_SEC; what must never happen is
+// an audible position being handed to the scheduler.  Which clock the
+// window planner itself reads is held by 'the click still rides the write
+// clock' below.
 check('the scheduler still runs on the write clock',
-  tickAt >= 0 && /player\.tick\(session, LOOKAHEAD_SEC\)/.test(runtime)
+  /player\.tick\(session, (?:LOOKAHEAD_SEC|this\.reachSec)\)/.test(runtime)
+  && /Math\.min\(LOOKAHEAD_SEC,/.test(runtime)
   && !/player\.tick\([^)]*audiblePosition/.test(runtime));
 
 // Anchored past the nested call in the first argument — `[^)]*` stops at the
 // closing paren of `tempoMapOf(session)` and never reaches the argument this
 // is actually about.
+// The click used to be handed `pos` and a lookahead and work out its own
+// window.  It is now handed the windows the clip player just placed material
+// in, which is a stronger form of the same requirement: not merely the same
+// CLOCK as the clips but the same windows and the same per-pass origins.  What
+// must not come back is the click reading the audible clock — that would
+// schedule every click late by the output latency.  Measured in the app with
+// notes on beats the click also marks: ten of ten notes share their moment
+// with a click.
 check('the click still rides the write clock, so a beat and a kick agree',
-  /metronome\.tick\(tempoMapOf\(session\),\s*pos\b/.test(runtime));
+  /metronome\.tickWindows\(tempoMapOf\(session\),\s*player\.lastWindows\)/.test(runtime)
+  && /planWindows\([^)]*\)[^{]*\{\s*const now = this\.position\(\)/.test(player)
+  && !/planWindows[\s\S]{0,600}?audiblePosition/.test(player));
 
 // ── The other half ─────────────────────────────────────────────────────────
 //

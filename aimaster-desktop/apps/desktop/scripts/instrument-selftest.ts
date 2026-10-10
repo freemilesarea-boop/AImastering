@@ -127,15 +127,16 @@ const cents = (got: number, want: number): number => 1200 * Math.log2(got / want
 /** The period the loop actually runs at, from its parts. */
 function loopPeriod(freq: number, sr: number): number {
   const { length, frac } = stringDelay(freq, sr);
-  return length - frac + 0.5;      // delay line − fractional read + filter
+  return length + frac + 0.5;      // delay line + allpass + loop filter
 }
 
 // ── Tuning ──────────────────────────────────────────────────────────────────
 
 check('the delay line adds up to the period it is asked for', () => {
-  // The whole tuning argument in one assertion.  Interpolating toward the
-  // NEXT sample subtracts the fraction; the two-point loop filter adds half a
-  // sample.  Getting either sign wrong puts the instrument out of tune by
+  // The whole tuning argument in one assertion.  The allpass ADDS its fraction
+  // and the two-point loop filter adds half a sample — the interpolation that
+  // used to be here subtracted instead, so the sign of that term moved when it
+  // was replaced.  Getting either sign wrong puts the instrument out of tune by
   // more at higher pitches, which is exactly how it read when it was wrong.
   for (const f of [82.41, 110, 164.81, 220, 329.63, 440, 659.26, 880]) {
     const err = Math.abs(loopPeriod(f, SR) - SR / f);

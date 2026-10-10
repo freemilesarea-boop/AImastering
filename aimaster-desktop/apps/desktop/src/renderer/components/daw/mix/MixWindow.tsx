@@ -6,7 +6,7 @@
 // mixer engine re-syncs on every change, so a fader move is audible on the
 // next block.
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useDawStore } from '../../../stores/dawStore.js';
 import { useAppStore } from '../../../stores/appStore.js';
 import {
@@ -19,7 +19,7 @@ import {
 import {
   effectiveFaderDb, toggleMute, toggleSolo, toggleSoloSafe, vcaChainDb,
 } from '../../../daw/model/mixer-math.js';
-import { describePath, computeDelayCompensation, wouldFeedback } from '../../../daw/model/routing.js';
+import { describePath, computeDelayCompensation, insertLatencySamples, wouldFeedback } from '../../../daw/model/routing.js';
 import { PLUGINS, defaultParams, pluginLatencySamples } from '../../../daw/engine/plugins.js';
 import { dawRuntime } from '../../../daw/engine/daw-runtime.js';
 import type { LiveLoudnessMetrics } from '../../../audio/loudnessStream.js';
@@ -36,10 +36,13 @@ import { findLane, isWritingMode, pointValueAt } from '../../../daw/model/automa
 import { ensureLane } from '../../../daw/edit/automation-lanes.js';
 import { stackDepth, isSummingStack } from '../../../daw/model/stacks.js';
 import { activeMacros } from '../../../daw/model/macros.js';
+import { stripWindow } from '../../../daw/model/strip-window.js';
 import { premium } from '../../../theme/premium.js';
 import { slotLetter, slotsToShow } from '../../../daw/model/strip-slots.js';
 import { MAX_TRACK_DELAY_MS, delayMechanism, trackDelayMs } from '../../../daw/model/track-delay.js';
 import { describeDelay, setTrackDelay } from '../../../daw/edit/track-delay-ops.js';
+import SnapshotPanel from './SnapshotPanel.js';
+import { deleteTracks } from '../../../ui/delete-tracks.js';
 
 const AUTOMATION_MODES: AutomationMode[] = ['off', 'read', 'touch', 'latch', 'write', 'trim'];
 
@@ -49,6 +52,12 @@ export default function MixWindow() {
   const notify  = useAppStore((s) => s.notify);
   const [levels, setLevels] = useState<Map<string, ChannelMeterReading>>(new Map());
   const [busesOpen, setBusesOpen] = useState(false);
+  // In the store rather than local state, because Mod+Alt+Shift+K opens this
+  // panel from a keyboard layer that cannot reach a component's useState.
+  const snapshots = useDawStore((s) => s.snapshots);
+  const snapshotsOpen = useDawStore((s) => s.snapshotsOpen);
+  const setSnapshotsOpen = useDawStore((s) => s.setSnapshotsOpen);
+  const scroller = useRef<HTMLDivElement>(null);
 
   // Meter poll — cheap enough at 20 Hz and only while the window is open.
   // The interval comes from the same constant the analyser window is sized
@@ -59,6 +68,27 @@ export default function MixWindow() {
   }, []);
 
   const compensation = computeDelayCompensation(session);
+
+  // Where the strip row is scrolled to, read from the element rather than
+  // held in the store: it is view state, it changes on every scroll frame,
+  // and nothing outside this window has any use for it.  The starting
+  // viewport is a guess, because the first paint is the expensive one and an
+  // unmeasured scroller would otherwise build either nothing or everything.
+  const [port, setPort] = useState({ left: 0, width: 1280 });
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el) return undefined;
+    const read = (): void => setPort({ left: el.scrollLeft, width: el.clientWidth });
+    read();
+    el.addEventListener('scroll', read, { passive: true });
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(read);
+    observer?.observe(el);
+    return () => {
+      el.removeEventListener('scroll', read);
+      observer?.disconnect();
+    };
+  }, []);
+  const view = stripWindow(session.tracks.length, port.left, port.width);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-[#0e0e15] text-zinc-200">
@@ -82,14 +112,27 @@ export default function MixWindow() {
             ? 'border-zinc-600 bg-zinc-800 text-zinc-200'
             : 'border-zinc-700 bg-zinc-900 text-zinc-400'}`}
         >버스 {session.buses.length}</button>
+        <button
+          onClick={() => setSnapshotsOpen(!snapshotsOpen)}
+          title="저장해 둔 믹스로 되돌리기 (Mod+Alt+Shift+K)"
+          className={`px-2 py-0.5 rounded text-[10px] border ${snapshotsOpen
+            ? 'border-zinc-600 bg-zinc-800 text-zinc-200'
+            : 'border-zinc-700 bg-zinc-900 text-zinc-400'}`}
+        >스냅샷 {snapshots.length}</button>
         <div className="flex-1" />
         <span className="text-[10px] font-mono text-zinc-600">{session.tracks.length} ch</span>
       </div>
 
       {busesOpen && <BusPanel session={session} onApply={apply} onNotify={notify} />}
+      {snapshotsOpen && <SnapshotPanel session={session} onApply={apply} onNotify={notify} />}
 
-      <div className="flex-1 flex overflow-x-auto">
-        {session.tracks.map((track) => (
+      {/* Only the strips in the scroller are built — see `strip-window.ts`
+          for what that is worth and why the spacers are there. */}
+      <div ref={scroller} className="flex-1 flex overflow-x-auto">
+        {view.padLeft > 0 && (
+          <div style={{ width: view.padLeft }} className="shrink-0" aria-hidden />
+        )}
+        {session.tracks.slice(view.first, view.last).map((track) => (
           <ChannelStrip
             key={track.id}
             session={session}
@@ -102,8 +145,55 @@ export default function MixWindow() {
             onSmart={() => useDawStore.getState().openSmartControls(track.id)}
           />
         ))}
+        {view.padRight > 0 && (
+          <div style={{ width: view.padRight }} className="shrink-0" aria-hidden />
+        )}
       </div>
     </div>
+  );
+}
+
+
+/**
+ * A `<select>` whose options are built when somebody reaches for it.
+ *
+ * The insert slot picker lists every device in the rack — fifty-one options —
+ * and the console draws one per strip.  Counted in the running app, a channel
+ * strip is 113 DOM nodes and SIXTY of them are `<option>`: more than half the
+ * strip is a list nobody is looking at until they open it.  Thirteen strips
+ * on screen is 650 nodes of closed dropdown.
+ *
+ * Closed, it holds exactly one option — the current value, so the select
+ * still shows what it is set to; a `<select>` whose value matches none of its
+ * options renders blank, which is the way this goes wrong.  The full list
+ * arrives on the first mousedown, focus or key, which is before the popup has
+ * anything to show.
+ */
+function LazySelect({
+  value, label, onChange, className, title, children,
+}: {
+  value: string;
+  /** What to show while the list is not built. */
+  label: string;
+  onChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
+  className?: string;
+  title?: string;
+  children: React.ReactNode;
+}): React.ReactElement {
+  const [ready, setReady] = useState(false);
+  const fill = (): void => setReady(true);
+  return (
+    <select
+      value={value}
+      onChange={onChange}
+      onMouseDown={fill}
+      onFocus={fill}
+      onKeyDown={fill}
+      className={className}
+      {...(title === undefined ? {} : { title })}
+    >
+      {ready ? children : <option value={value}>{label}</option>}
+    </select>
   );
 }
 
@@ -125,10 +215,13 @@ function ChannelStrip({
   const isVca    = track.kind === 'vca';
   const isFolder = track.kind === 'folder';
   const macros   = activeMacros(track.macros);
+  const signalPath = describePath(session, track.id);
   const faderDb  = effectiveFaderDb(session, track);
   const vcaDb    = vcaChainDb(session, track);
+  // Bypassed inserts count, because in the graph they still delay — this read
+  // `i.bypass ? 0 : …` and showed a number the mix was not using.
   const latency  = track.inserts.reduce(
-    (sum, i) => sum + (i.bypass ? 0 : pluginLatencySamples(i.pluginId, i.params, session.sampleRate)), 0);
+    (sum, i) => sum + insertLatencySamples(i, session.sampleRate), 0);
 
   // ── Automation gestures ───────────────────────────────────────────────
   //
@@ -266,8 +359,9 @@ function ChannelStrip({
               <span className={`w-2 text-[8px] font-mono leading-5 ${insert ? 'text-zinc-500' : 'text-zinc-700'}`}>
                 {slotLetter(slot)}
               </span>
-              <select
+              <LazySelect
                 value={insert?.pluginId ?? ''}
+                label={insert ? pluginName(insert.pluginId) : '—'}
                 onChange={(e) => {
                   const id = e.target.value;
                   onApply((s) => (id
@@ -283,7 +377,7 @@ function ChannelStrip({
               >
                 <option value="">—</option>
                 {PLUGINS.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
+              </LazySelect>
               {insert && (
                 <button
                   title="바이패스"
@@ -438,8 +532,10 @@ function ChannelStrip({
             {session.buses.map((b) => <option key={b.id} value={b.id}>← {b.name}</option>)}
           </select>
         )}
-        <p className="text-[8px] font-mono text-zinc-700 truncate" title={describePath(session, track.id)}>
-          {describePath(session, track.id)}
+        {/* Once, not twice: this walks the routing graph, and it was being
+            walked a second time to fill the tooltip with the same string. */}
+        <p className="text-[8px] font-mono text-zinc-700 truncate" title={signalPath}>
+          {signalPath}
         </p>
         {compensationSamples > 0 && (
           <p className="text-[8px] font-mono text-sky-500/80">ADC +{compensationSamples}</p>
@@ -618,15 +714,30 @@ function ChannelStrip({
 
       {/* Name plate — pinned: it is how you tell which strip you are on. */}
       <div className="shrink-0 px-1.5 py-1 border-t border-zinc-800" style={{ background: `${track.color}22` }}>
-        <p
-          className="text-[10px] truncate"
-          style={{
-            color: isFolder ? premium.accent.light : 'rgb(228,228,231)',
-            letterSpacing: isFolder ? '0.08em' : undefined,
-            fontWeight: isFolder ? 600 : 400,
-          }}
-          title={isSummingStack(track) ? `${track.name} (합산 스택)` : track.name}
-        >{isFolder ? track.name.toUpperCase() : track.name}</p>
+        <div className="flex items-center gap-1 min-w-0">
+          <p
+            className="text-[10px] truncate flex-1"
+            style={{
+              color: isFolder ? premium.accent.light : 'rgb(228,228,231)',
+              letterSpacing: isFolder ? '0.08em' : undefined,
+              fontWeight: isFolder ? 600 : 400,
+            }}
+            title={isSummingStack(track) ? `${track.name} (합산 스택)` : track.name}
+          >{isFolder ? track.name.toUpperCase() : track.name}</p>
+          {/* The console needs the way out too: a channel you decided against
+              while mixing is decided against here, not back in the arrangement. */}
+          {track.kind !== 'master' && (
+            <button
+              onClick={() => void deleteTracks([track.id])}
+              title={isFolder
+                ? '이 스택을 지웁니다 — 안의 트랙은 남습니다'
+                : '이 채널을 지웁니다'}
+              className="shrink-0 w-3.5 h-3.5 rounded text-[10px] leading-none text-zinc-600
+                         hover:text-red-300 transition-colors"
+              data-testid={`strip-delete-${track.id}`}
+            >×</button>
+          )}
+        </div>
         <p className="text-[9px] font-mono text-zinc-500">
           {shownVolumeDb >= 0 ? '+' : ''}{shownVolumeDb.toFixed(1)}
           {Math.abs(vcaDb) > 0.01 && (

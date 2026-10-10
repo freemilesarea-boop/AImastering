@@ -36,6 +36,10 @@ import { GENRE_PRESETS } from './plugin-presets-genre.js';
 // RECORD sound like", this one answers "what is actually on this track".  Both
 // are on every device because neither answers the other.
 import { INSTRUMENT_PRESETS } from './plugin-presets-instrument.js';
+// The third axis.  Genre asks what the RECORD should sound like, instrument
+// asks what is on the track, and this one asks who is singing — which moves
+// every landmark by roughly an octave and so moves most of the numbers.
+import { VOICE_PRESETS } from './plugin-presets-voice.js';
 
 const S = spaceIndex;
 
@@ -65,6 +69,12 @@ const SOURCE_PRESETS: readonly PluginPreset[] = [
     id: 'space-vox-cathedral', pluginId: 'spacereverb', name: '성가대 · 대성당', group: '보컬',
     note: '6초. 가사가 겹치는 걸 감수하고 쓰는 소리입니다',
     params: { space: S('hall-cathedral'), decayPct: 100, preDelayMs: 60, lowCutHz: 160, highCutHz: 8000, mixPct: 38 },
+  },
+
+  {
+    id: 'space-vox-chamber', pluginId: 'spacereverb', name: '보컬 에코 챔버', group: '보컬',
+    note: '콘크리트 방에 스피커와 마이크를 넣어둔 그것. 플레이트보다 거칠고 길게 남습니다',
+    params: { space: S('chamber-echo'), decayPct: 80, preDelayMs: 20, lowCutHz: 280, highCutHz: 8500, erDb: -2, widthPct: 105, mixPct: 22 },
   },
 
   // ── Space Reverb · 드럼 ───────────────────────────────────────────────────
@@ -146,6 +156,17 @@ const SOURCE_PRESETS: readonly PluginPreset[] = [
     id: 'space-live-monitor', pluginId: 'spacereverb', name: '무대 모니터', group: '라이브',
     note: '무대 위에서 들리는 만큼만. 존재감용',
     params: { space: S('live-monitor'), decayPct: 100, preDelayMs: 0, erDb: 4, lowCutHz: 250, highCutHz: 12000, mixPct: 18 },
+  },
+
+  {
+    id: 'space-live-rehearsal', pluginId: 'spacereverb', name: '합주실', group: '라이브',
+    note: '흡음재를 붙인 작은 방. 데모 테이프의 그 소리이고, 밴드를 한 방에 모으는 데도 씁니다',
+    params: { space: S('live-rehearsal'), decayPct: 95, preDelayMs: 6, erDb: 3, lowCutHz: 180, highCutHz: 10000, widthPct: 95, mixPct: 20 },
+  },
+  {
+    id: 'space-live-stadium', pluginId: 'spacereverb', name: '스타디움', group: '라이브',
+    note: '5 초. 반대편 스탠드에서 소리가 돌아옵니다 — 공간이라기보다 효과입니다',
+    params: { space: S('live-stadium'), decayPct: 100, preDelayMs: 90, lowCutHz: 120, highCutHz: 6500, erDb: -3, tailDb: 2, widthPct: 130, mixPct: 30 },
   },
 
   // ── Space Reverb · 오케스트라 ─────────────────────────────────────────────
@@ -304,7 +325,7 @@ const SOURCE_PRESETS: readonly PluginPreset[] = [
 ];
 
 export const PLUGIN_PRESETS: readonly PluginPreset[] = [
-  ...SOURCE_PRESETS, ...INSTRUMENT_PRESETS, ...GENRE_PRESETS,
+  ...SOURCE_PRESETS, ...VOICE_PRESETS, ...INSTRUMENT_PRESETS, ...GENRE_PRESETS,
 ];
 
 /** Presets for one device, in the order they are listed. */

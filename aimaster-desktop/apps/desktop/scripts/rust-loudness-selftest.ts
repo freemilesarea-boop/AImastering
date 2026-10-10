@@ -6,18 +6,25 @@
  */
 
 import path from 'node:path';
+// NOTE: this pins the WASM build by path on purpose, which means it does
+// NOT exercise the loader's own resolution — and for a long time nothing
+// did.  The loader counted directories, landing one level too high from
+// `dist-electron/main`, so the app never found the offline engine while
+// every test here stayed green.  `wasm-resolve-selftest` now owns that
+// question; this override stays so a path problem fails in one place
+// instead of five.
 process.env['LOUI_WASM_NODE_PATH'] = path.resolve(
   __dirname, '../../../packages/dsp-wasm/pkg-node/loui_dsp_wasm.cjs',
 );
 
 import { renderStereoBufferNormalized} from '../src/main/offline/rust-offline-render-core.js';
 import { solveLoudnessGain} from '../src/main/offline/offline-loudness.js';
-import { loadWasmModule, type OfflineChainConfig} from '../src/main/offline/load-mastering-chain-node.js';
+import { loadWasmModule, type OfflineChainConfig, type OfflineFlatChainConfig } from '../src/main/offline/load-mastering-chain-node.js';
 
 const SR = 48000;
 const N = SR * 3; // 3 s — enough gated blocks for a stable integrated LUFS.
 
-function cfg(over: Partial<OfflineChainConfig> = {}): OfflineChainConfig {
+function cfg(over: Partial<OfflineFlatChainConfig> = {}): OfflineFlatChainConfig {
   return {
     inputGainDb: 0,
     eqLowCutHz: 30, eqLowShelfDb: 0, eqPresenceDb: 0, eqAirDb: 0, eqAdaptive: false, eqBypass: false,
@@ -110,6 +117,59 @@ check('extreme low level respects maxBoost', () => {
   const l = sine(N, 1000, 0.0008);
   const r = renderStereoBufferNormalized(l, l.slice(), cfg(), SR, norm({ targetLufs: -9, maxBoostDb: 12 }));
   assert(r.metrics.appliedLoudnessGainDb <= 12 + 1e-6, `gain ${r.metrics.appliedLoudnessGainDb} > maxBoost`);
+});
+
+// ── the suite-config path (what a Studio export actually renders) ───────
+//
+// Every check above drives a FLAT config, and that is why this was missed:
+// pass 2 applied the solved gain by writing `inputGainDb` on the config
+// object, which is the flat `setConfig` field.  A suite config goes in
+// through `setConfigJson`, which never reads it — so on the Studio's render
+// path the second pass re-rendered identical audio and the normalisation
+// did nothing at all.  Measured before the fix: −33.2 LUFS asking for −9
+// solved +12.00 dB and came out at −33.2.
+//
+// `render-song` disables the chain's own realtime loudness loop for an
+// export because this two-pass is meant to do it better, so "does nothing"
+// meant a Studio export had no loudness control of any kind.
+function suite(over: Record<string, unknown> = {}): OfflineChainConfig {
+  return { suiteConfig: { ...over } };
+}
+
+check('suite config: a reachable target is actually reached', () => {
+  const q = sine(N, 440, 0.02);
+  const r = renderStereoBufferNormalized(q, q.slice(), suite(), SR, norm({ targetLufs: -25 }));
+  assert(Math.abs(r.metrics.appliedLoudnessGainDb) > 1,
+    `nothing to do: solved ${r.metrics.appliedLoudnessGainDb.toFixed(2)} dB`);
+  assert(Math.abs(r.metrics.finalLufs - (-25)) < 1.0,
+    `final ${r.metrics.finalLufs.toFixed(2)} LUFS vs target -25 `
+    + `(pass 1 measured ${r.metrics.measuredProcessedLufs.toFixed(2)}, `
+    + `solved ${r.metrics.appliedLoudnessGainDb.toFixed(2)} dB — if final equals pass 1, `
+    + 'the solved gain went into a field the chain does not read)');
+});
+
+check('suite config: the solved gain is heard, not just reported', () => {
+  const q = sine(N, 440, 0.02);
+  const r = renderStereoBufferNormalized(q, q.slice(), suite(), SR, norm({ targetLufs: -25 }));
+  // The whole bug was a second pass that produced the first pass again.
+  assert(Math.abs(r.metrics.finalLufs - r.metrics.measuredProcessedLufs) > 1,
+    `pass 2 came out at the same level as pass 1 (${r.metrics.finalLufs.toFixed(2)} LUFS)`);
+});
+
+check("suite config: the user's own input trim is added to, not replaced", () => {
+  const q = sine(N, 440, 0.02);
+  const plain = renderStereoBufferNormalized(q, q.slice(), suite(), SR, norm({ targetLufs: -25 }));
+  const trimmed = renderStereoBufferNormalized(q, q.slice(), suite({ inputGainDb: 3 }), SR, norm({ targetLufs: -25 }));
+  // A +3 dB trim makes pass 1 three dB louder, so three dB less is solved —
+  // and both still land on the target.
+  assert(Math.abs(trimmed.metrics.measuredProcessedLufs - (plain.metrics.measuredProcessedLufs + 3)) < 0.2,
+    `trim not applied: ${trimmed.metrics.measuredProcessedLufs.toFixed(2)} vs `
+    + `${(plain.metrics.measuredProcessedLufs + 3).toFixed(2)}`);
+  assert(Math.abs(trimmed.metrics.appliedLoudnessGainDb - (plain.metrics.appliedLoudnessGainDb - 3)) < 0.2,
+    `solved ${trimmed.metrics.appliedLoudnessGainDb.toFixed(2)} vs expected `
+    + `${(plain.metrics.appliedLoudnessGainDb - 3).toFixed(2)}`);
+  assert(Math.abs(trimmed.metrics.finalLufs - (-25)) < 1.0,
+    `final ${trimmed.metrics.finalLufs.toFixed(2)} LUFS vs target -25`);
 });
 
 check('metrics shape complete', () => {

@@ -54,6 +54,14 @@ export interface AutosaveRecord {
   savedAtMs: number;
   sessionName: string;
   bytes: number;
+  /**
+   * The session this belongs to.
+   *
+   * Read out of the file rather than taken from the filename, which has been
+   * through `safeKey` and cannot be turned back into an id.  The renderer
+   * needs it to ask whether this project has been saved by hand since.
+   */
+  sessionId: string;
 }
 
 function readMeta(file: string): AutosaveRecord | null {
@@ -63,12 +71,15 @@ function readMeta(file: string): AutosaveRecord | null {
     // The name is read out of the JSON rather than the filename so the prompt
     // says what the user called the project, not what we called the file.
     let sessionName = '이름 없는 세션';
+    let sessionId = '';
     try {
       const head = fs.readFileSync(file, 'utf8').slice(0, 4096);
       const match = /"name"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(head);
       if (match?.[1]) sessionName = JSON.parse(`"${match[1]}"`) as string;
+      const idMatch = /"id"\s*:\s*"([^"\\]*)"/.exec(head);
+      if (idMatch?.[1]) sessionId = idMatch[1];
     } catch { /* a truncated file still has a size and a time */ }
-    return { path: file, savedAtMs: stat.mtimeMs, sessionName, bytes: stat.size };
+    return { path: file, savedAtMs: stat.mtimeMs, sessionName, bytes: stat.size, sessionId };
   } catch {
     return null;
   }

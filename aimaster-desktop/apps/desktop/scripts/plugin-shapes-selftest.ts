@@ -21,7 +21,7 @@
 import {
   shaperFor, detectorFor, shaperOutput, readCurve, detectorGainDb, expanderGainCurve,
   filterPictureFor, widthPictureFor, FILTER_DEVICES, WIDTH_DEVICES,
-  lfoPictureFor, combPictureFor, LFO_DEVICES, COMB_DEVICES,
+  lfoPictureFor, combPictureFor, TIME_TRACE_DEVICES, COMB_DEVICES,
   delayPictureFor, bandPictureFor, DELAY_DEVICES, BAND_DEVICES,
   channelPictureFor, floorPictureFor, noticeFor,
   CHANNEL_DEVICES, FLOOR_DEVICES, NOTICE_DEVICES,
@@ -35,6 +35,7 @@ import {
 } from '../src/renderer/daw/engine/plugins-extended.js';
 import { tanhCurve, makeExpanderCurve } from '../src/renderer/daw/engine/plugin-kit.js';
 import { defaultParams, PLUGINS } from '../src/renderer/daw/engine/plugins.js';
+import { eqNodes } from '../src/renderer/daw/model/eq-nodes.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
@@ -85,6 +86,21 @@ check('the clipper draws BOTH its stages, so the ceiling drawn is the real one',
   assert(spec!.curves.length === 2, `two stages, got ${spec!.curves.length}`);
   sameArray(spec!.curves[0]!, clipCurve(ceiling, 0.2), 'clipper shaper');
   sameArray(spec!.curves[1]!, clipCurve(ceiling, 1), 'clipper guard');
+  // The two lines above prove the picture is not a SECOND COPY of the maths.
+  // They cannot prove it is the right shape — when `clipCurve` carried +26 dB
+  // of gain and squared everything above −25 dBFS, both sides of the
+  // comparison agreed, and the window drew an honest picture of a square.
+  // So the shape itself is pinned here too; clipper-selftest does the rest.
+  const drawn = spec!.curves[0]!;
+  const readAt = (x: number): number => {
+    const t = ((x + 1) / 2) * (drawn.length - 1);
+    const i = Math.max(0, Math.min(drawn.length - 2, Math.floor(t)));
+    return drawn[i]! + (drawn[i + 1]! - drawn[i]!) * (t - i);
+  };
+  const quiet = Math.pow(10, -40 / 20);
+  assert(Math.abs(readAt(quiet) / quiet - 1) < 1e-3,
+    `the drawn curve passes −40 dBFS through: ${(readAt(quiet) / quiet).toFixed(4)}×`);
+  assert(readAt(1) <= ceiling + 1e-6, 'and never draws above the ceiling');
 });
 
 check('the gate draws the array its shaper is loaded with', () => {
@@ -115,12 +131,24 @@ check('a curve is read the way WaveShaperNode reads it', () => {
 
 // ── The gains sit where the graph puts them ─────────────────────────────────
 
-check("the saturator's compensation is inside its wet path, so mix uncovers the dry signal", () => {
+check('the saturator has no gain on either side of its curve', () => {
+  // It used to draw a pre-gain of up to sixteen times into a curve whose axes
+  // stop at full scale, with a 1/sqrt(gain) compensation inside the wet path
+  // to undo it — a picture of a device walking off its own graph, and the
+  // engine did exactly that: a WaveShaper clamps, so the Drive knob's top was
+  // a hard clip.  Drive is the curve's knee now, so the picture is the curve.
   const spec = shaperFor('saturation', { driveDb: 18, bias: 0, mix: 0 })!;
-  // Fully dry: whatever the drive and compensation are, nothing may change.
   near(shaperOutput(spec, 0.5), 0.5, 1e-6, 'mix 0 passes the input through');
-  assert(spec.postGain === 1, 'the saturator has no gain after the blend');
-  assert(spec.wetGain < 1, `18 dB of drive must be compensated — ${spec.wetGain}`);
+  assert(spec.postGain === 1, 'no gain after the blend');
+  assert(spec.inputGain === 1, `no gain before the curve — ${spec.inputGain}`);
+  assert(spec.wetGain === 1, `and none inside the wet path — ${spec.wetGain}`);
+  // And the curve itself is what moved: at 18 dB of drive it bends.
+  const driven = shaperFor('saturation', { driveDb: 18, bias: 0, mix: 1 })!;
+  const flat = shaperFor('saturation', { driveDb: 0, bias: 0, mix: 1 })!;
+  assert(shaperOutput(driven, 0.9) < shaperOutput(flat, 0.9) - 0.01,
+    'drive compresses the top');
+  near(shaperOutput(driven, 0.02), shaperOutput(flat, 0.02), 1e-4,
+    'and leaves a quiet signal where it was');
 });
 
 check("the tube's output trim is AFTER the blend, so it moves the dry signal too", () => {
@@ -595,21 +623,41 @@ check('an allpass is flat on its own — the notches are the dry sum, not filter
   }
 });
 
-check('only the modulation devices claim these pictures', () => {
+check('a device that owes TWO pictures is one the window was told about', () => {
+  // The window shows a band EDITOR or a picture, never both — which is the
+  // right answer for every device but one.  A linear-phase EQ's cost is its
+  // impulse response, and a magnitude curve cannot show a millisecond of
+  // pre-ringing; with the either/or left alone the trace was computed, was
+  // correct, and was never drawn.
+  //
+  // So this is a tripwire rather than a property: any device with BOTH a band
+  // description and a time trace has to be handled in `PluginWindow`, and if
+  // a second one appears it fails here by name instead of quietly losing half
+  // its panel.
+  const both = PLUGINS
+    .filter((p) => eqNodes(p.id, defaultParams(p.id)).length > 0
+      && lfoPictureFor(p.id, defaultParams(p.id)) !== null)
+    .map((p) => p.id);
+  assert(both.join(',') === 'linphase',
+    `devices with both an editor and a trace: [${both.join(', ')}] — the window draws one or `
+    + 'the other, so each of these needs saying in PluginWindow');
+});
+
+check('only the devices that draw over time claim these pictures', () => {
   for (const p of PLUGINS) {
-    if (!LFO_DEVICES.includes(p.id)) {
-      assert(!lfoPictureFor(p.id, defaultParams(p.id)), `${p.id} claims an LFO picture`);
+    if (!TIME_TRACE_DEVICES.includes(p.id)) {
+      assert(!lfoPictureFor(p.id, defaultParams(p.id)), `${p.id} claims a time trace`);
     }
     if (!COMB_DEVICES.includes(p.id)) {
       assert(!combPictureFor(p.id, defaultParams(p.id)), `${p.id} claims a comb picture`);
     }
   }
-  for (const id of LFO_DEVICES) assert(lfoPictureFor(id, defaultParams(id)), `${id} has no LFO picture`);
+  for (const id of TIME_TRACE_DEVICES) assert(lfoPictureFor(id, defaultParams(id)), `${id} has no time trace`);
   for (const id of COMB_DEVICES) assert(combPictureFor(id, defaultParams(id)), `${id} has no comb picture`);
 });
 
 check('every modulation caption says something real', () => {
-  for (const id of LFO_DEVICES) {
+  for (const id of TIME_TRACE_DEVICES) {
     const c = lfoPictureFor(id, defaultParams(id))!.caption;
     assert(c.trim().length > 0 && !c.includes('NaN'), `${id}: ${c}`);
   }
@@ -770,9 +818,20 @@ check('the exciter ADDS its band — its mix does not uncover the dry signal', (
   assert(shaperOutput(loud, 0.2) > 0.2 + 0.05, `mix should pile on — ${shaperOutput(loud, 0.2)}`);
 });
 
-check("the exciter's drive follows its amount knob, 1x to 9x", () => {
-  near(shaperFor('exciter', { amount: 0, mix: 1 })!.inputGain, 1, 1e-9, 'no amount, no drive');
-  near(shaperFor('exciter', { amount: 1, mix: 1 })!.inputGain, 9, 1e-9, 'full amount is 9x');
+check("the exciter's amount is drawn as the curve's asymmetry, not as a pre-gain", () => {
+  // It used to draw `inputGain: 1 + amount * 8`, up to nine times into a
+  // curve that stops at full scale — which is what the engine did, and what
+  // hard-clipped the band.  Amount is the asymmetry now, so the picture has
+  // to show an asymmetric curve and no gain in front of it.
+  for (const amount of [0, 0.5, 1]) {
+    const spec = shaperFor('exciter', { amount, mix: 1 })!;
+    near(spec.inputGain, 1, 1e-9, `no gain in front at amount ${amount}`);
+  }
+  const none = shaperFor('exciter', { amount: 0, mix: 1 })!.curves[0]!;
+  const full = shaperFor('exciter', { amount: 1, mix: 1 })!.curves[0]!;
+  const lean = (c: Float32Array): number => Math.abs(readCurve(c, 0.5) + readCurve(c, -0.5));
+  assert(lean(none) < 1e-6, `no amount is symmetric — ${lean(none)}`);
+  assert(lean(full) > 0.05, `full amount leans — ${lean(full)}`);
 });
 
 check('the Haas widener delays one side and leaves the other alone', () => {
@@ -931,7 +990,7 @@ const failed = results.length - passed;
 console.log('\n=== Plugin shapes ===');
 console.log(`${SHAPERS.length} transfer curves, ${DETECTORS.length} detector curves, `
   + `${FILTER_DEVICES.length} filter responses, ${WIDTH_DEVICES.length} width curves, `
-  + `${LFO_DEVICES.length} modulators, ${COMB_DEVICES.length} combs, `
+  + `${TIME_TRACE_DEVICES.length} time traces, ${COMB_DEVICES.length} combs, `
   + `${DELAY_DEVICES.length} delays, ${BAND_DEVICES.length} band compressors, `
   + `${CHANNEL_DEVICES.length} routings, ${FLOOR_DEVICES.length} floor, ${NOTICE_DEVICES.length} notice\n`);
 for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);

@@ -51,6 +51,13 @@ const REALTIME_CHAIN_MODULE_TYPES = new Set([
 
 /** Classify a single parameter definition. */
 export function classifyParamExport(def: ParameterDef): ExportSupport {
+  // Nothing implements it, so it is not preview-anything.  The branch below
+  // grades by MODULE type — every parameter on a module the realtime chain
+  // processes is called preview-only — and that is a per-module answer to a
+  // per-parameter question: the imager's Stereoize sits on `stereo-imager`
+  // and no engine has ever had a field for it, so it graded "Preview only"
+  // and told the user their toggle was being heard.
+  if (def.unimplemented !== undefined) return 'planned';
   // Export-stage quality (sample rate / bit depth) — applied on render only.
   if (def.binding.exportField) return 'export-only';
   // Renderable audio param the Python engine honours → exact.

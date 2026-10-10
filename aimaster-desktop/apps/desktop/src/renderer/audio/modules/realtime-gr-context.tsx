@@ -1,9 +1,15 @@
 // Realtime GR context (OZONE-MODULE-NEXT-3).
 //
-// Bridges the realtime-mastering metrics (owned by ProductPageProductionInner)
-// down to the Limiter slide-over panel + any GR meter, so they can show the
-// REAL limiter gain reduction.  Defaults to "unavailable" outside a
-// provider (e.g. storybook) — never fakes data.
+// Bridges the realtime-mastering metrics down to the Limiter slide-over
+// panel + any GR meter, so they can show the REAL limiter gain reduction.
+// Defaults to "unavailable" outside a provider — never fakes data.
+//
+// The metrics were owned by ProductPageProductionInner, which went with
+// ProductPage.  Nothing provides this context now, and nothing in the app
+// asks for it either: both consumers — `LimiterParameterPanel` and
+// `DynamicsParameterPanel` — are themselves reached only by their
+// stories.  So the "unavailable" default is what Storybook sees, and the
+// reason it is a blank meter rather than an invented number.
 
 import React from 'react';
 import type { GrSource } from './gr-meter-model.js';

@@ -112,6 +112,16 @@ export interface WorkspaceState {
   panels: Record<PanelId, boolean>;
   togglePanel: (id: PanelId) => void;
   setPanel: (id: PanelId, v: boolean) => void;
+  /**
+   * Replace every panel flag at once — for recalling a saved window layout.
+   *
+   * Wholesale rather than a loop of `setPanel`, because that one closes the
+   * panels sharing a slot with whatever it just opened: replaying a saved
+   * record key by key would have each panel evict the one set before it, and
+   * the room that came back would not be the room that was saved.  A layout
+   * was captured from this store, so it already obeys the slot rule.
+   */
+  setPanels: (panels: Record<PanelId, boolean>) => void;
 
   // Options undo history
   history: History<MasteringOptions> | null;
@@ -212,6 +222,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setPanel: (id, v) => set((s) => ({
     panels: { ...s.panels, ...closeSlotMates(id, v), [id]: v },
   })),
+  setPanels: (panels) => set({ panels: { ...panels } }),
 
   history: null,
   applyingHistory: false,

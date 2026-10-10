@@ -24,12 +24,16 @@ import { OfflineAudioContext } from 'node-web-audio-api';
 import {
   DEFAULT_WARP, buildWarpMap, sourceToDest, destToSource, rateAt, resolveBpm,
   beatSeconds, addMarker, removeMarker, moveMarker, clearMarkers, createMarker,
-  warpFromBpm, autoWarp, estimateBpm, warpedDuration, retimeClip, clipWarp,
-  validateWarp, describeWarp, setSessionTempo, clipSourceSpan,
+  warpFromBpm, autoWarp, estimateBpm, warpedDuration, clipWarp,
+  validateWarp, describeWarp, clipSourceSpan,
   type WarpConfig,
 } from '../src/renderer/daw/model/warp.js';
+import { setSessionTempo } from '../src/renderer/daw/model/tempo-reanchor.js';
 import { noteSpan, partClock } from '../src/renderer/daw/model/note-time.js';
-import { tempoMapOf } from '../src/renderer/daw/model/tempo-map.js';
+import {
+  addTempoEvent, beatToSec, formatBarBeat, secToBeat, tempoMapOf,
+} from '../src/renderer/daw/model/tempo-map.js';
+import { withTempoMap } from '../src/renderer/daw/model/tempo-reanchor.js';
 import {
   modeOptions, planStretch, renderStretch, stretchChannel, stretchChannels,
 } from '../src/renderer/daw/audio/time-stretch.js';
@@ -508,6 +512,49 @@ check('MIDI parts follow the tempo, and their notes never have to move', () => {
   close(span.durationSec, 1, 'and one beat is one — both twice what they were at 120', 1e-9);
 });
 
+check('a marker and a section on bar 9 are still on bar 9 afterwards', () => {
+  // This is what the function's own comment promised and did not do: it moved
+  // clips, automation and chords by the tempo ratio and left `markers` and
+  // `sections` out of the object it returned.  Measured before the fix: halving
+  // the tempo of a song with a marker on bar 9 put it on bar 5.
+  const { session: base } = sessionWith([createClip('f', 'c', { startSec: 8, durationSec: 2 })]);
+  const session: DawSession = {
+    ...base,
+    markers: [{ id: 'mk1', name: 'chorus', timeSec: 16 }],
+    sections: [{ id: 'sc1', name: '', kind: 'chorus', startSec: 16 }],
+  };
+  const where = (s: DawSession, sec: number): string => formatBarBeat(tempoMapOf(s), sec, false);
+  eq(where(session, 16), '9|1', 'the fixture starts on bar 9');
+  const { session: slower } = setSessionTempo(session, 60);
+  eq(where(slower, slower.markers[0]!.timeSec), '9|1', 'the marker held its bar');
+  eq(where(slower, slower.sections![0]!.startSec), '9|1', 'and so did the section');
+  close(slower.markers[0]!.timeSec, 32, 'which at 60 BPM is 32 seconds', 1e-9);
+});
+
+check('a session that already has a tempo event stays consistent', () => {
+  // The other hole: it wrote `tempoBpm` and never touched the tempo MAP, so on
+  // a session that had ever had a tempo event it scaled every position and left
+  // the map behind.  Measured before the fix: a clip written on bar 5 came back
+  // on bar 8|3, with `tempoBpm` saying 60 and the map still saying 120.
+  const { session: base, trackId } = sessionWith([
+    createClip('f', 'c', { startSec: 8, durationSec: 2 }),
+  ]);
+  const mapped = withTempoMap(base, addTempoEvent(tempoMapOf(base), 8, 90, 'jump'));
+  const where = (s: DawSession, sec: number): string => formatBarBeat(tempoMapOf(s), sec, false);
+  eq(where(mapped, trackClips(findTrack(mapped, trackId)!)[0]!.startSec), '5|1',
+    'the fixture is on bar 5, with a tempo change at bar 3');
+  const { session: slower } = setSessionTempo(mapped, 60);
+  eq(where(slower, trackClips(findTrack(slower, trackId)!)[0]!.startSec), '5|1',
+    'the clip held its bar');
+  // The whole tempo track scaled, so the song keeps its shape: the 90 is now 45.
+  const bpms = tempoMapOf(slower).tempos.map((t) => t.bpm);
+  eq(bpms.join(','), '60,45', 'and every tempo event halved with it');
+  // And the map is the one the seconds were computed from, not a stale copy.
+  close(secToBeat(tempoMapOf(slower), trackClips(findTrack(slower, trackId)!)[0]!.startSec), 16,
+    'the clip is still on beat 16', 1e-9);
+  void beatToSec;
+});
+
 check('setting the same tempo changes nothing but is still safe', () => {
   const { session } = sessionWith([createClip('f', 'c', { startSec: 3, durationSec: 1 })]);
   const { session: same, unwarpedClipIds } = setSessionTempo(session, 120);
@@ -517,13 +564,17 @@ check('setting the same tempo changes nothing but is still safe', () => {
   assert(clamped.tempoBpm <= 300, `tempo clamped, got ${clamped.tempoBpm}`);
 });
 
-check('retimeClip only touches clips that follow', () => {
-  const warp = warpFromBpm(120, 0, 2);
-  const following = createClip('f', 'a', { durationSec: 2, warp });
-  close(retimeClip(following, 120, 60).durationSec, 4, 'followed', 1e-9);
+check('a clip reports whether it is warped at all, and a beat is half a second at 120', () => {
+  // `retimeClip(clip, fromBpm, toBpm)` used to live here and stretch a
+  // tempo-following clip by a single ratio.  A tempo MAP has no single ratio —
+  // the rate varies along it — so the stretching moved into
+  // `model/tempo-reanchor.ts`, where it is measured between two points on the
+  // map, and the checks above ('halving the tempo doubles a warped clip', 'a
+  // clip pinned to its own tempo does not stretch') cover what it did.
   const plain = createClip('f', 'b', { durationSec: 2 });
-  eq(retimeClip(plain, 120, 60), plain, 'untouched');
-  eq(clipWarp(plain), null, 'and reports no warp');
+  eq(clipWarp(plain), null, 'an unwarped clip reports no warp');
+  eq(clipWarp({ ...plain, warp: { ...warpFromBpm(120, 0, 2), enabled: false } }), null,
+    'and neither does one whose warp is switched off');
   close(beatSeconds(120), 0.5, 'a beat at 120 BPM', 1e-12);
 });
 

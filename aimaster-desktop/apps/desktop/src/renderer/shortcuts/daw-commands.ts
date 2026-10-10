@@ -12,14 +12,18 @@
 // fake IPC.
 
 import type { DawState } from '../stores/dawStore.js';
-import { snapToGrid, targetTrackIds } from '../stores/dawStore.js';
+import { nudgeContext, snapToGrid, targetTrackIds } from '../stores/dawStore.js';
 import { MEM_DIGITS, ZOOM_DIGITS, type MemDigit, type ZoomDigit } from './definitions.js';
 import { clearFades, countSelectedClips } from '../daw/edit/batch-fade.js';
 import { setTrackNote, trackNote } from '../daw/model/track-header.js';
 import { describeSnapshot, diffSnapshot, takeSnapshot } from '../daw/model/mix-snapshot.js';
 import { buildPool, describePool, summarisePool } from '../daw/model/clip-pool.js';
 import { nextId } from '../daw/model/ids.js';
+// Electron's window.prompt throws; see ui/text-prompt.ts.
+import { askText } from '../ui/text-prompt.js';
+import { deleteTracks } from '../ui/delete-tracks.js';
 import { describeZoom, recallZoom } from '../daw/model/workspace-view.js';
+import { describeLayoutDiff, nextLayout } from '../daw/edit/layout-ops.js';
 import {
   clearLocation, describeLocation, locationAt, memoryLocations, recallLocation,
   slotForKey, storeLocation,
@@ -32,8 +36,13 @@ import {
   trimToSelection, hasRange,
   type TimeSelection,
 } from '../daw/edit/clip-edit.js';
-import { compRange, cyclePlaylist } from '../daw/edit/comping.js';
+import {
+  addPlaylist, compRange, cyclePlaylist, duplicatePlaylist, flattenComp,
+} from '../daw/edit/comping.js';
 import { nudgeClipPitch, resetClipPitch } from '../daw/edit/clip-edit.js';
+import {
+  formatNudgeAmount, nudgeAmountSec, nudgeProblem,
+} from '../daw/model/nudge.js';
 import { clipPitch, describePitch } from '../daw/model/clip-pitch.js';
 import { fitRange } from '../daw/model/viewport.js';
 import { describeGroup, editGroupsOf } from '../daw/edit/edit-groups.js';
@@ -47,9 +56,9 @@ import { formatLabel, TIME_FORMATS } from '../daw/model/spot-time.js';
 import { alignClipToGuide, describeAlign } from '../daw/edit/align-actions.js';
 import { consolidationSpans, describeOutcome, outcomeOf } from '../daw/edit/consolidate.js';
 import { editPoints, tabBackward, tabForward } from '../daw/edit/navigation.js';
-import {
-  addTrack, createTrack, findTrack, sessionEndSec,
-} from '../daw/model/session-ops.js';
+import { findTrack, sessionEndSec } from '../daw/model/session-ops.js';
+import { matchTrackToTrack } from '../daw/edit/match-between-tracks.js';
+import { slotLetter } from '../daw/edit/match-from-reference.js';
 import {
   clearAllMute, clearAllSolo, setSoloSafe, soloSafeCount, toggleMute, toggleSolo,
 } from '../daw/model/mixer-math.js';
@@ -57,6 +66,7 @@ import { createSession } from '../daw/model/session-ops.js';
 import {
   deserializeDawSession, importSessionData, serializeDawSession,
 } from '../daw/model/session-io.js';
+import { autosaveDriver } from '../daw/engine/autosave-driver.js';
 import { isEmptyPlan, planDrop } from '../daw/model/drop-target.js';
 import { describeImport, importIntoSession } from '../daw/edit/session-import.js';
 import {
@@ -85,7 +95,7 @@ import {
 import {
   describeOrder, nudgeSection, selectionForSection, songEnd,
 } from '../daw/edit/arrange-ops.js';
-import { applySlides, arpeggiate, strum } from '../daw/edit/note-tools.js';
+import { applySlides, arpeggiate, clearSlides, flam, strum } from '../daw/edit/note-tools.js';
 import { captureAsPattern } from '../daw/model/patterns.js';
 import { useIntelStore } from '../stores/intelStore.js';
 import { summarise as summariseFindings } from '../daw/ai/diagnose.js';
@@ -108,8 +118,8 @@ import { findLane } from '../daw/model/automation.js';
 import {
   addTempoEvent, barBeatAt, beatsPerBar, meterAtBeat, secToBeat, tempoAtBeat,
   tempoMapOf, updateTempoEvent,
-  withTempoMap,
 } from '../daw/model/tempo-map.js';
+import { withTempoMap } from '../daw/model/tempo-reanchor.js';
 import {
   availableTargets, ensureLane, setLaneVisible, visibleLanes,
 } from '../daw/edit/automation-lanes.js';
@@ -162,11 +172,13 @@ export type DawCommandId =
   | 'daw.createEditGroup' | 'daw.dissolveEditGroup' | 'daw.toggleGroupsEnabled'
   | 'daw.quantizeAudio' | 'daw.hideTracks' | 'daw.showAllTracks'
   | 'daw.copyChannel' | 'daw.pasteChannel'
+  | 'daw.matchPickModel' | 'daw.matchToModel'
   | 'daw.zoomToSelection' | 'daw.toggleFollowPlayhead' | 'daw.playFromSelection'
   | 'daw.duplicateTrack' | 'daw.cycleRulerFormat'
   | 'daw.nudgeForward' | 'daw.nudgeBack'
   | 'daw.fadeIn' | 'daw.fadeOut' | 'daw.crossfade'
   | 'daw.newTrack' | 'daw.playlistNext' | 'daw.playlistPrev' | 'daw.compSelection'
+  | 'daw.takeAdd' | 'daw.takeDuplicate' | 'daw.takeFlatten'
   | 'daw.freeze' | 'daw.commit' | 'daw.bounce' | 'daw.sendToMastering' | 'daw.exportStems'
   | 'daw.importAudio' | 'daw.importSession'
   | 'daw.zoomIn' | 'daw.zoomOut'
@@ -191,6 +203,7 @@ export type DawCommandId =
   | 'daw.showRestore' | 'daw.declick'
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
+  | 'daw.clearSlide' | 'daw.flam'
   | 'daw.showIntel' | 'daw.analyzeMixAi' | 'daw.aiCommand'
   | 'daw.tuneToGuide' | 'daw.riff'
   | 'daw.addChord' | 'daw.openVocalEditor'
@@ -204,6 +217,8 @@ export type DawCommandId =
   | 'daw.batchRename' | 'daw.historyPanel' | 'daw.toggleSoloSafe'
   | 'daw.openPool' | 'daw.batchFade' | 'daw.clearFades' | 'daw.trackNote'
   | 'daw.toggleLinkSelection' | 'daw.mixSnapshot' | 'daw.mixSnapshotPanel'
+  | 'daw.layoutMenu' | 'daw.layoutSave' | 'daw.layoutCycle'
+  | 'daw.deleteTracks'
   | ZoomCommandId;
 
 /** One store and one recall verb per zoom preset. */
@@ -459,6 +474,29 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     return sel;
   };
 
+  /**
+   * Move the selection by one nudge.
+   *
+   * The distance is resolved at the selection START, so inside a ritardando
+   * one press is one grid line of the bar being edited rather than of the
+   * tempo the song opened at.  The toast says the resolved time because the
+   * chosen unit may be musical: "+125ms 넛지" is checkable against the ruler,
+   * "+1/16 넛지" is not.
+   */
+  const nudgeBy = (direction: 1 | -1): void => {
+    const sel = needSelection();
+    if (!sel) return;
+    const state = daw();
+    const ctx = nudgeContext(sel.startSec);
+    const amount = nudgeAmountSec(state.nudge, ctx);
+    if (amount === null) {
+      notify(nudgeProblem(state.nudge, ctx) ?? '넛지 거리를 알 수 없습니다', 'warning');
+      return;
+    }
+    state.apply((s) => nudgeSelection(s, sel, direction * amount));
+    notify(`${direction > 0 ? '+' : '−'}${formatNudgeAmount(amount)} 넛지`);
+  };
+
   const tab = (direction: 1 | -1): void => {
     const state = daw();
     const tracks = targetTrackIds();
@@ -671,6 +709,55 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       notify(`${targets.length}개 채널에 붙여넣기 — ${describeChannel(settings)}`, 'success');
     },
 
+    /**
+     * Remember which track a match should copy the tone of.
+     *
+     * Two commands rather than one because a match needs two tracks and a
+     * single selection only names one — the same shape as copy/paste channel
+     * above, so the gesture is already learned.
+     */
+    'daw.matchPickModel': () => {
+      const state = daw();
+      const trackId = targetTrackIds()[0] ?? state.focusedTrackId;
+      if (!trackId) { notify('트랙을 먼저 고르세요', 'warning'); return; }
+      const track = findTrack(state.session, trackId);
+      if (!track) return;
+      if (trackClips(track).length === 0) {
+        notify(`${track.name} 에는 잴 오디오가 없습니다`, 'warning');
+        return;
+      }
+      state.setMatchModelTrackId(trackId);
+      notify(`매치 기준 — ${track.name}`);
+    },
+
+    'daw.matchToModel': async () => {
+      const state = daw();
+      const modelId = state.matchModelTrackId;
+      if (!modelId) {
+        notify('기준 트랙이 없습니다 — 먼저 Mod+Alt+Shift+Q', 'warning');
+        return;
+      }
+      const model = findTrack(state.session, modelId);
+      if (!model) {
+        state.setMatchModelTrackId(null);
+        notify('기준 트랙이 사라졌습니다 — 다시 지정하세요', 'warning');
+        return;
+      }
+      const targetId = targetTrackIds()[0] ?? state.focusedTrackId;
+      if (!targetId) { notify('맞출 트랙을 고르세요', 'warning'); return; }
+      const target = findTrack(state.session, targetId);
+      if (!target) return;
+      notify(`${model.name} 과 ${target.name} 를 재는 중…`);
+      const outcome = await matchTrackToTrack(state.session, modelId, targetId);
+      if (!outcome.ok) { notify(outcome.reason, 'error'); return; }
+      state.apply(() => outcome.session);
+      notify(
+        `${target.name} → ${model.name} 음색에 맞춤 — ${slotLetter(outcome.slot)} 슬롯`
+        + `${outcome.replaced ? ' 재측정' : ''}, 최대 ${outcome.peakDb.toFixed(1)} dB`,
+        'success',
+      );
+    },
+
     'daw.quantizeAudio': () => {
       const state = daw();
       const sel = currentSelection(state);
@@ -816,21 +903,8 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       notify('클립 피치 원음');
     },
 
-    'daw.nudgeForward': () => {
-      const sel = needSelection();
-      if (!sel) return;
-      const delta = daw().nudgeSec;
-      daw().apply((s) => nudgeSelection(s, sel, delta));
-      notify(`+${delta}s 넛지`);
-    },
-
-    'daw.nudgeBack': () => {
-      const sel = needSelection();
-      if (!sel) return;
-      const delta = daw().nudgeSec;
-      daw().apply((s) => nudgeSelection(s, sel, -delta));
-      notify(`−${delta}s 넛지`);
-    },
+    'daw.nudgeForward': () => nudgeBy(1),
+    'daw.nudgeBack': () => nudgeBy(-1),
 
     'daw.fadeIn': () => {
       const state = daw();
@@ -856,7 +930,9 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     },
 
     'daw.newTrack': () => {
-      daw().apply((s) => addTrack(s, createTrack(`Audio ${s.tracks.length}`, 'audio')));
+      // The same action the toolbar button runs — it used to be a second copy
+      // of the body, which is how the two drifted on where the track lands.
+      daw().addTrackHere('audio');
       notify('트랙을 추가했습니다');
     },
 
@@ -880,6 +956,40 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       }
       state.apply((s) => compRange(s, track.id, source.id, sel));
       notify(`${source.name} 구간을 메인에 반영했습니다`, 'success');
+    },
+
+    // Takes.  Cycling and comping were the only two of these the app could
+    // reach; adding a lane, duplicating one and committing the comp were
+    // written and tested and had no caller at all, so a comp could be built
+    // and never finished.
+    'daw.takeAdd': () => {
+      const state = daw();
+      const trackId = targetTrackIds()[0];
+      if (!trackId) { notify('트랙을 먼저 선택하세요', 'warning'); return; }
+      state.apply((s) => addPlaylist(s, trackId));
+      const track = findTrack(daw().session, trackId);
+      notify(`새 테이크: ${activeTakeName(track)}`, 'success');
+    },
+
+    'daw.takeDuplicate': () => {
+      const state = daw();
+      const trackId = targetTrackIds()[0];
+      if (!trackId) { notify('트랙을 먼저 선택하세요', 'warning'); return; }
+      state.apply((s) => duplicatePlaylist(s, trackId));
+      const track = findTrack(daw().session, trackId);
+      notify(`복제한 테이크: ${activeTakeName(track)}`, 'success');
+    },
+
+    'daw.takeFlatten': () => {
+      const state = daw();
+      const trackId = targetTrackIds()[0];
+      if (!trackId) { notify('트랙을 먼저 선택하세요', 'warning'); return; }
+      const track = findTrack(state.session, trackId);
+      if (!track) return;
+      const dropped = track.playlists.length - 1;
+      if (dropped <= 0) { notify('버릴 다른 테이크가 없습니다', 'warning'); return; }
+      state.apply((s) => flattenComp(s, trackId));
+      notify(`${activeTakeName(track)}만 남기고 ${dropped}개 테이크를 버렸습니다`, 'success');
     },
 
     'daw.freeze': async () => {
@@ -1388,10 +1498,13 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       if (!trackId) { notify('트랙을 먼저 고르세요', 'warning'); return; }
       const track = findTrack(state.session, trackId);
       if (!track) return;
-      const typed = globalThis.prompt?.(`${track.name} 메모`, trackNote(track));
-      if (typed === null || typed === undefined) return;
-      state.apply((s) => setTrackNote(s, trackId, typed));
-      notify(typed.trim() === '' ? '메모 삭제' : `메모 저장 — ${track.name}`);
+      void askText(`${track.name} 메모`, trackNote(track)).then((typed) => {
+        if (typed === null) return;
+        // Re-read the store: the dialog was on screen while the user could
+        // still undo, so the state captured before it opened may be stale.
+        daw().apply((s) => setTrackNote(s, trackId, typed));
+        notify(typed.trim() === '' ? '메모 삭제' : `메모 저장 — ${track.name}`);
+      });
     },
 
     'daw.toggleLinkSelection': () => {
@@ -1405,24 +1518,67 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
 
     'daw.mixSnapshot': () => {
       const state = daw();
-      const name = globalThis.prompt?.('스냅샷 이름', `믹스 ${state.snapshots.length + 1}`);
-      if (name === null || name === undefined) return;
-      const snapshot = takeSnapshot(state.session, name, nextId('snap'));
-      state.addSnapshot(snapshot);
-      notify(`스냅샷 저장 — ${snapshot.name} (채널 ${snapshot.channels.length}개)`);
+      void askText('스냅샷 이름', `믹스 ${state.snapshots.length + 1}`).then((name) => {
+        if (name === null) return;
+        const live = daw();
+        const snapshot = takeSnapshot(live.session, name, nextId('snap'));
+        live.addSnapshot(snapshot);
+        notify(`스냅샷 저장 — ${snapshot.name} (채널 ${snapshot.channels.length}개)`);
+      });
     },
 
     'daw.mixSnapshotPanel': () => {
       const state = daw();
+      // Closing needs no mixer and no snapshots; only opening does.
+      if (state.snapshotsOpen) { state.setSnapshotsOpen(false); return; }
+      state.setSnapshotsOpen(true);
+      state.setWindow('mix');
       if (state.snapshots.length === 0) {
         notify('저장된 스냅샷이 없습니다 — Mod+Alt+Shift+M 으로 찍으세요', 'warning');
         return;
       }
-      // Say what the newest one would change; the panel is the mixer's own.
+      // The list is on screen now, so this only has to say where to look.
       const latest = state.snapshots[state.snapshots.length - 1] as NonNullable<
         (typeof state.snapshots)[number]>;
-      notify(`${latest.name} — ${describeSnapshot(diffSnapshot(state.session, latest))}`);
-      state.setWindow('mix');
+      notify(`스냅샷 ${state.snapshots.length}개 — 최근 ${latest.name}: `
+        + describeSnapshot(diffSnapshot(state.session, latest)));
+    },
+
+    'daw.layoutMenu': () => {
+      const state = daw();
+      state.setLayoutsOpen(!state.layoutsOpen);
+      if (state.layoutsOpen) return;
+      if (state.layouts.length === 0) {
+        notify('저장된 작업 화면이 없습니다 — Mod+Alt+Shift+J 로 지금 화면을 저장하세요', 'warning');
+      }
+    },
+
+    'daw.layoutSave': () => {
+      const state = daw();
+      void askText('레이아웃 이름', state.currentLayout ?? `작업 ${state.layouts.length + 1}`)
+        .then((name) => {
+          if (name === null) return;
+          if (name.trim() === '') { notify('이름은 비울 수 없습니다', 'warning'); return; }
+          const live = daw();
+          const replacing = live.layouts.some((l) => l.name === name.trim());
+          live.saveWindowLayout(name);
+          notify(replacing ? `${name.trim()} 덮어씀` : `${name.trim()} 저장`);
+        });
+    },
+
+    'daw.layoutCycle': () => {
+      const state = daw();
+      const target = nextLayout(state.layouts, state.currentLayout);
+      if (!target) {
+        notify(state.layouts.length === 0
+          ? '저장된 작업 화면이 없습니다 — Mod+Alt+Shift+J 로 저장하세요'
+          : '저장된 화면이 하나뿐입니다 — 이미 그 화면입니다', 'warning');
+        return;
+      }
+      const diff = state.recallWindowLayout(target.name);
+      notify(diff && !diff.same
+        ? `${target.name} — ${describeLayoutDiff(diff)}`
+        : `${target.name} — 화면은 이미 그대로입니다`);
     },
 
     'daw.historyPanel': () => {
@@ -1430,16 +1586,24 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       state.setHistoryOpen(!state.historyOpen);
     },
 
+    'daw.deleteTracks': () => {
+      // Every selected track, not just the focused one: selecting eight lanes
+      // and pressing delete meaning one of them is not a mistake anybody
+      // makes, and the dialog names what it is about to take either way.
+      void deleteTracks(targetTrackIds());
+    },
+
     'daw.renameTrack': () => {
       const state = daw();
       const trackId = targetTrackIds()[0];
       if (!trackId) { notify('트랙을 먼저 고르세요', 'warning'); return; }
       const track = findTrack(state.session, trackId);
-      const typed = globalThis.prompt?.('트랙 이름', track?.name ?? '');
-      if (typed === null || typed === undefined) return;
-      if (cleanTrackName(typed).length === 0) { notify('이름은 비울 수 없습니다', 'warning'); return; }
-      state.apply((s: DawSession) => renameTrack(s, trackId, typed));
-      notify(`${cleanTrackName(typed)}`);
+      void askText('트랙 이름', track?.name ?? '').then((typed) => {
+        if (typed === null) return;
+        if (cleanTrackName(typed).length === 0) { notify('이름은 비울 수 없습니다', 'warning'); return; }
+        daw().apply((s: DawSession) => renameTrack(s, trackId, typed));
+        notify(`${cleanTrackName(typed)}`);
+      });
     },
 
     /**
@@ -1509,17 +1673,20 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       const current = target
         ? findClip(state.session, target.trackId, target.clipId)?.name ?? ''
         : '';
-      const typed = globalThis.prompt?.(many ? '선택한 클립들의 이름 (뒤에 번호가 붙습니다)' : '클립 이름', current);
-      if (typed === null || typed === undefined) return;
-      if (cleanClipName(typed).length === 0) { notify('이름은 비울 수 없습니다', 'warning'); return; }
+      const question = many ? '선택한 클립들의 이름 (뒤에 번호가 붙습니다)' : '클립 이름';
+      void askText(question, current).then((typed) => {
+        if (typed === null) return;
+        if (cleanClipName(typed).length === 0) { notify('이름은 비울 수 없습니다', 'warning'); return; }
 
-      if (many) {
-        state.apply((s: DawSession) => renameSelection(s, sel, typed));
-        notify(`${selectedAudioClips(state.session, sel).length}개 클립의 이름을 바꿨습니다`);
-      } else {
-        state.apply((s: DawSession) => renameClip(s, target!.trackId, target!.clipId, typed));
-        notify(`이름을 ${cleanClipName(typed)} 로 바꿨습니다`);
-      }
+        const live = daw();
+        if (many) {
+          live.apply((s: DawSession) => renameSelection(s, sel, typed));
+          notify(`${selectedAudioClips(live.session, sel).length}개 클립의 이름을 바꿨습니다`);
+        } else {
+          live.apply((s: DawSession) => renameClip(s, target!.trackId, target!.clipId, typed));
+          notify(`이름을 ${cleanClipName(typed)} 로 바꿨습니다`);
+        }
+      });
     },
 
     // ── Chord Track ───────────────────────────────────────────────────────
@@ -1657,12 +1824,17 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     },
 
     /**
-     * Move by a FRAME, not by the nudge amount.
+     * Move the PLAY HEAD by a frame — the nudge commands move the selection.
      *
-     * Against picture the only meaningful step is one frame, and at 23.976
-     * that is 41.7 ms — a number nobody would ever set the nudge to.  With no
-     * picture loaded there is no frame rate to step by, so it says so rather
-     * than inventing 25.
+     * This comment used to say 41.7 ms was "a number nobody would ever set
+     * the nudge to", which was true only because the nudge amount could not
+     * be set at all.  It can now, and `1 Frame` is one of the choices, so
+     * the two are no longer distinguished by the distance: these two step
+     * the cursor against picture, `daw.nudgeForward/Back` move the audio.
+     *
+     * With no picture loaded there is no frame rate to step by, so it says
+     * so rather than inventing 25 — the same refusal the nudge resolver
+     * makes for the same reason.
      */
     'daw.nudgeFrameBack': () => stepFramesWith(daw(), -1, notify),
     'daw.nudgeFrameForward': () => stepFramesWith(daw(), 1, notify),
@@ -2040,6 +2212,38 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
         : '붙일 만한 간격이 없습니다 (7반음 초과는 건너뜁니다)', changed > 0 ? 'success' : 'warning');
     },
 
+    // The way back out of `daw.slide`.  Portamento could be applied and not
+    // taken off: `clearSlides` was written and tested and had no route.
+    'daw.clearSlide': () => {
+      const context = midiContext();
+      if (!context) return;
+      const selected = context.notes.filter((n) => context.ids.has(n.id));
+      if (selected.length === 0) { notify('노트를 먼저 선택하세요', 'warning'); return; }
+      const had = selected.filter((n) =>
+        n.expression.some((e) => e.target.kind === 'pitchBend')).length;
+      if (had === 0) { notify('걷어낼 슬라이드가 없습니다', 'warning'); return; }
+      writeNotes(context.trackId, context.clipId, [
+        ...context.notes.filter((n) => !context.ids.has(n.id)),
+        ...clearSlides(selected),
+      ]);
+      notify(`슬라이드 ${had}개를 걷어냈습니다`, 'success');
+    },
+
+    'daw.flam': () => {
+      const context = midiContext();
+      if (!context) return;
+      const selected = context.notes.filter((n) => context.ids.has(n.id));
+      if (selected.length === 0) { notify('노트를 먼저 선택하세요', 'warning'); return; }
+      const flammed = flam(selected);
+      const added = flammed.length - selected.length;
+      if (added === 0) { notify('파트 앞이라 꾸밈음을 넣을 자리가 없습니다', 'warning'); return; }
+      writeNotes(context.trackId, context.clipId, [
+        ...context.notes.filter((n) => !context.ids.has(n.id)),
+        ...flammed,
+      ]);
+      notify(`꾸밈음 ${added}개를 붙였습니다`, 'success');
+    },
+
     'daw.capturePattern': () => {
       const state = daw();
       const open = useMidiEditorStore.getState().open;
@@ -2054,15 +2258,29 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     },
 
     // ── Recording ─────────────────────────────────────────────────────────
-    'daw.toggleArm': () => {
+    /**
+     * Arm, and then say what arming did.
+     *
+     * It used to say what arming was ABOUT to do, from the flag's value
+     * before the call, and drop the promise on the floor.  Opening the input
+     * can fail — no interface, permission refused, a saved device that is
+     * not plugged in — and the failure puts the flag back.  So the toast
+     * read "녹음 무장" over a track that was not armed, and the only
+     * thing correcting it was an effect watching the error string, which
+     * stays the same when the same interface is unplugged twice.  Measured
+     * in the app: first press reported "Requested device not found", every
+     * press after it reported success for 3.5 seconds.
+     */
+    'daw.toggleArm': async () => {
       const state = daw();
       const trackId = state.focusedTrackId
         ?? state.session.tracks.find((t) => t.kind === 'audio')?.id ?? null;
       if (!trackId) { notify('오디오 트랙이 없습니다', 'warning'); return; }
       const track = findTrack(state.session, trackId);
       if (!track) return;
-      void useRecordingStore.getState().toggleArm(trackId);
-      notify(track.recordArm ? `${track.name} 무장 해제` : `${track.name} 녹음 무장`);
+      const outcome = await useRecordingStore.getState().toggleArm(trackId);
+      if (outcome.error) { notify(outcome.error, 'warning'); return; }
+      notify(outcome.armed ? `${track.name} 녹음 무장` : `${track.name} 무장 해제`);
     },
 
     'daw.record': () => {
@@ -2291,6 +2509,11 @@ function audioClipAtPlayhead(state: DawState): { trackId: string; clipId: string
 function findClip(session: DawState['session'], trackId: string, clipId: string) {
   const track = findTrack(session, trackId);
   return track ? trackClips(track).find((c) => c.id === clipId) : undefined;
+}
+
+/** The name of the lane you are hearing, for a notification. */
+function activeTakeName(track: Track | undefined): string {
+  return track?.playlists.find((p) => p.id === track.activePlaylistId)?.name ?? '—';
 }
 
 function cyclePlaylistOn(state: DawState, direction: 1 | -1, notify: DawCommandDeps['notify']): void {
@@ -2542,15 +2765,25 @@ export function buildDawOverrides(deps: DawCommandDeps): Partial<Record<CommandI
       daw().loadSession(parsed.session);
       notify('세션을 열었습니다', 'success');
     },
+    // A save that lands makes the recovery file unnecessary, and saying so is
+    // the difference between opening the project tomorrow and being offered
+    // an older copy of it, under a banner claiming a crash that never
+    // happened.  The time is recorded as well as the file deleted: if the
+    // delete does not happen, the staleness rule still has something to
+    // compare the leftover against.
     'file.save': async () => {
-      const json = serializeDawSession(daw().session);
-      const dest = await invoke('session:save', json) as string | null;
-      if (dest) notify('세션 저장 완료', 'success');
+      const session = daw().session;
+      const dest = await invoke('session:save', serializeDawSession(session)) as string | null;
+      if (!dest) return;
+      await autosaveDriver.savedByHand(session.id);
+      notify('세션 저장 완료', 'success');
     },
     'file.saveAs': async () => {
-      const json = serializeDawSession(daw().session);
-      const dest = await invoke('session:save', json) as string | null;
-      if (dest) notify('세션 저장 완료', 'success');
+      const session = daw().session;
+      const dest = await invoke('session:save', serializeDawSession(session)) as string | null;
+      if (!dest) return;
+      await autosaveDriver.savedByHand(session.id);
+      notify('세션 저장 완료', 'success');
     },
     'file.export': async () => {
       const state = daw();

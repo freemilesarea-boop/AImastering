@@ -11,6 +11,25 @@
 // band.  Drag sideways for frequency, up and down for gain, wheel for width,
 // double-click to put a band back where it started.  The knobs stay below for
 // when a number is what you want; this is for when the sound is.
+//
+// ── And behind the curve, the signal ────────────────────────────────────────
+//
+// A curve on an empty grid still leaves the hardest question unanswered:
+// WHERE.  You can hear that something is boxy and the picture cannot tell you
+// it is at 340 Hz, so the technique everybody is taught is to sweep a narrow
+// boost around until it gets worse — a method that exists because there was
+// nothing better, not because four minutes of making a mix worse is a good
+// way to find one frequency.
+//
+// With the spectrum behind the curve the 340 is simply there, and the band
+// goes straight onto it.  Two lines: the fast one is now, the faint one is
+// what the last second and a half held, because "did that ever get loud" is
+// more often the question than "is it loud this instant".
+//
+// The arithmetic is in `spectrum-view.ts` and so are the four decisions it
+// turns on, including the one that matters most — the loudest bin in a pixel
+// wins rather than the average, or a one-bin whistle at 15 kHz averages away
+// to nothing and the analyser hides the single thing it is best at finding.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -19,7 +38,10 @@ import {
 import {
   eqNodes, nodeAt, nodeDragEdits, nodeQEdit, type EqNode, type NodeEdit, type ParamRange,
 } from '../../../daw/model/eq-nodes.js';
+import { DEFAULT_SCALE, dbToY } from '../../../daw/model/spectrum-view.js';
+import { useInsertSpectrum } from '../../../hooks/useInsertSpectrum.js';
 import { premium } from '../../../theme/premium.js';
+import type { TrackId } from '../../../daw/model/types.js';
 
 export interface EqCurveEditorProps {
   pluginId: string;
@@ -35,6 +57,11 @@ export interface EqCurveEditorProps {
   onEdit: (edits: readonly NodeEdit[]) => void;
   /** Pointer up: the drag was one undo step, not forty. */
   onCommit: () => void;
+  /** Which insert's input to draw behind the curve.  Null draws no spectrum. */
+  trackId: TrackId;
+  insertId: string | null;
+  /** The transport.  Stopped means there is nothing to analyse. */
+  playing: boolean;
 }
 
 /** ±dB the picture spans.  Wider than any single band so a stack still fits. */
@@ -57,6 +84,7 @@ function fmtHz(hz: number): string {
 
 export default function EqCurveEditor({
   pluginId, params, ranges, defaults, bypassed, width, height, onEdit, onCommit,
+  trackId, insertId, playing,
 }: EqCurveEditorProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [dragging, setDragging] = useState<string | null>(null);
@@ -102,7 +130,21 @@ export default function EqCurveEditor({
     return { id: node.id, x, y: yForDb(db), node };
   }), [nodes, width, yForDb]);
 
-  useEffect(() => {
+  // The spectrum's own vertical range is not the curve's.  The curve spans
+  // +/-24 dB of GAIN and the spectrum spans -96..-6 dBFS of LEVEL; they are
+  // different quantities and forcing them onto one axis would put a -40 dBFS
+  // signal somewhere on a gain scale, which means nothing.  So the spectrum
+  // is drawn against its own scale over the same plot area, which is what
+  // every analyser-behind-an-EQ does and why the dB numbers down the side
+  // belong to the curve.
+  const spectrumScale = useMemo(() => DEFAULT_SCALE, []);
+  const { frame, onFrame } = useInsertSpectrum({
+    trackId, insertId, columns: Math.max(1, Math.round(width)),
+    enabled: playing, scale: spectrumScale,
+  });
+  const drawRef = useRef<() => void>(() => {});
+
+  const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -114,6 +156,40 @@ export default function EqCurveEditor({
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
+
+    // The signal, behind everything.  Drawn first on purpose: the curve is
+    // what is being edited and has to stay readable over it, and a spectrum
+    // painted last would hide the handles it exists to help place.
+    const spectrum = frame.current;
+    if (spectrum.live) {
+      const floorY = plotBottom;
+      const yAt = (db: number): number =>
+        plotTop + dbToY(db, plotBottom - plotTop, spectrumScale);
+
+      ctx.beginPath();
+      ctx.moveTo(0, floorY);
+      for (let x = 0; x < spectrum.display.length && x < width; x++) {
+        ctx.lineTo(x, yAt(spectrum.display[x] ?? spectrumScale.bottomDb));
+      }
+      ctx.lineTo(Math.min(width, spectrum.display.length) - 1, floorY);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(126,200,255,0.13)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(126,200,255,0.34)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // The line that remembers.  Fainter than the live one, because it is
+      // history and the eye should read it as such.
+      ctx.beginPath();
+      for (let x = 0; x < spectrum.hold.length && x < width; x++) {
+        const y = yAt(spectrum.hold[x] ?? spectrumScale.bottomDb);
+        if (x === 0) ctx.moveTo(0, y); else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = 'rgba(126,200,255,0.20)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
 
     // Grid.
     ctx.font = '8px ui-monospace, monospace';
@@ -189,7 +265,18 @@ export default function EqCurveEditor({
       const label = point.node.label;
       ctx.fillText(label, point.x - ctx.measureText(label).width / 2, point.y + 2.5);
     }
-  }, [nodes, points, width, height, bypassed, dragging, hover, plotTop, plotBottom, yForDb]);
+  }, [nodes, points, width, height, bypassed, dragging, hover, plotTop, plotBottom,
+    yForDb, frame, spectrumScale]);
+
+  // One redraw when anything React knows about changes, and one per animation
+  // frame while the analyser is running.  The frame loop goes through a ref
+  // so that a moving picture never re-renders the window around it — see the
+  // note in `useInsertSpectrum`.
+  useEffect(() => { drawRef.current = draw; draw(); }, [draw]);
+  useEffect(() => {
+    onFrame(() => drawRef.current());
+    return () => onFrame(null);
+  }, [onFrame]);
 
   const local = (e: React.PointerEvent | React.MouseEvent | React.WheelEvent): { x: number; y: number } => {
     const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();

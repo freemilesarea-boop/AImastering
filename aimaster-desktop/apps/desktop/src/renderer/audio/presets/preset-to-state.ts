@@ -49,8 +49,9 @@ export function presetApplyPlan(preset: LouiPreset): PresetApplyPlan {
 
 /**
  * Build a FULL all-modules state from defaults + the preset's overrides.
- * Useful for stories / tests / headless consistency checks (the live app
- * applies via the parameter-state provider's `applyPreset`).
+ * Useful for stories / tests / headless consistency checks.  The live app
+ * does not come through here: StudioPage applies a preset with its own
+ * `applyPreset`, over its own state, from `presetApplyPlan` above.
  */
 export function presetToParameterState(
   preset: LouiPreset,

@@ -54,6 +54,8 @@ const SR = 48_000;
 interface WasmChain {
   setConfigJson(json: string): void;
   processStereo(left: Float32Array, right: Float32Array): void;
+  dynamicsGrDb(): number;
+  multibandGrDb(): Float64Array;
 }
 
 function loadChain(): (new (sr: number) => WasmChain) | null {
@@ -91,8 +93,15 @@ if (!Chain) {
   console.error('       pnpm --filter @loui/dsp-wasm run build:node');
   failed++;
 } else {
-  /** Settled output peak, in dBFS, for a steady tone at `inDb`. */
-  function settledOutputDb(state: AllModulesParameterState, inDb: number, hz = 1000): number {
+  /** What a settled steady tone at `inDb` came out at, and what the meters
+   *  said while it did.  One run: the reading has to describe the audio the
+   *  same run produced, or the comparison is between two different states.
+   */
+  function settled(
+    state: AllModulesParameterState,
+    inDb: number,
+    hz = 1000,
+  ): { outDb: number; dynamicsGr: number; bandGr: readonly number[] } {
     const chain = new Chain!(SR);
     chain.setConfigJson(chainConfigToJson(buildChainConfig({ state })));
     const amp = Math.pow(10, inDb / 20);
@@ -107,7 +116,16 @@ if (!Chain) {
     // Last quarter only: by then attack and release have settled.
     let peak = 0;
     for (let i = Math.floor(n * 0.75); i < n; i++) peak = Math.max(peak, Math.abs(left[i]!));
-    return 20 * Math.log10(Math.max(peak, 1e-12));
+    return {
+      outDb: 20 * Math.log10(Math.max(peak, 1e-12)),
+      dynamicsGr: chain.dynamicsGrDb(),
+      bandGr: Array.from(chain.multibandGrDb()),
+    };
+  }
+
+  /** Settled output peak, in dBFS, for a steady tone at `inDb`. */
+  function settledOutputDb(state: AllModulesParameterState, inDb: number, hz = 1000): number {
+    return settled(state, inDb, hz).outDb;
   }
 
   console.log('\n=== DYNAMICS GRAPH — drawn curve vs measured compression ===\n');
@@ -157,8 +175,10 @@ if (!Chain) {
   }
 
   {
-    // Parallel mix.  The model blends levels while the DSP sums signals, so
-    // this is the one place the curve is an approximation — pin how close.
+    // Parallel mix.  The curve sums the wet and dry SIGNALS, which is what
+    // the DSP does, so this is not an approximation and the tolerance says
+    // so: a model that blended the dB values instead would read several dB
+    // low here and nothing else in this file would notice.
     const state = withParams(neutralState(), 'dynamics', [
       ['thresholdDb', -24], ['ratio', 8], ['attackMs', 5], ['releaseMs', 400], ['mixPct', 50],
     ]);
@@ -166,9 +186,9 @@ if (!Chain) {
     const drawn = outputDbFor(curve, -6);
     const heard = settledOutputDb(state, -6);
     check(
-      'parallel mix is drawn within a dB of the audio',
-      Math.abs(drawn - heard) < 1.2,
-      `drawn ${drawn.toFixed(2)} / heard ${heard.toFixed(2)} dB (levels vs signals — approximate by construction)`,
+      'parallel mix is drawn where the audio lands',
+      Math.abs(drawn - heard) < 0.3,
+      `drawn ${drawn.toFixed(2)} / heard ${heard.toFixed(2)} dB`,
     );
   }
 
@@ -197,6 +217,82 @@ if (!Chain) {
       'the other bands stay out of it',
       Math.abs(untouched - -6) < 0.5,
       `${untouched.toFixed(2)} dB for a 300 Hz tone`,
+    );
+  }
+
+  console.log('\n=== DYNAMICS GRAPH — the reported reduction ===\n');
+
+  {
+    // The GR meter and the curve sit in the same panel and have to be the
+    // same number.  A meter that reports the WET path's reduction instead
+    // of the output's reads high the moment the mix comes off 100%, and
+    // the marker — placed by inverting the curve through that number —
+    // lands at a level the signal never reached.
+    const markers: number[] = [];
+    for (const mixPct of [100, 88, 50, 40]) {
+      const state = withParams(neutralState(), 'dynamics', [
+        ['thresholdDb', -30], ['ratio', 10], ['attackMs', 5], ['releaseMs', 400],
+        ['mixPct', mixPct],
+      ]);
+      const curve = buildDynamicsGraph('dynamics', state['dynamics'].parameters)!.curves[0]!.curve;
+      const inDb = -6;
+      const run = settled(state, inDb);
+      const heardGr = inDb - run.outDb;
+      check(
+        `the dynamics GR meter reports the reduction heard at ${mixPct}% wet`,
+        Math.abs(run.dynamicsGr - heardGr) < 0.35 && heardGr > 1,
+        `meter ${run.dynamicsGr.toFixed(2)} / heard ${heardGr.toFixed(2)} dB`,
+      );
+      markers.push(inputDbForReduction(curve, run.dynamicsGr) ?? NaN);
+    }
+    // The detector sits before the mix, so the same tone has to put the
+    // marker in the same place at every mix setting.  With a meter that
+    // scaled the wet figure by the mix, the dot slid down the curve as the
+    // user turned a knob that changes nothing the detector can see.
+    const spread = Math.max(...markers) - Math.min(...markers);
+    check(
+      'the live marker stays put as the wet mix changes',
+      spread < 0.2,
+      `${markers.map((m) => m.toFixed(2)).join(' / ')} dBFS across 100/88/50/40% wet`,
+    );
+    // And the place it stays is the level the DETECTOR settled on, which
+    // for a sine is a little under the crest: a peak follower is dragged
+    // toward the zero crossings between peaks, and at 5 ms attack / 400 ms
+    // release that costs 0.78 dB.  Measured independently, not asserted
+    // from the same code path.
+    const crest = -6;
+    check(
+      'the marker sits at the level the detector settled on',
+      Math.abs((markers[0] ?? NaN) - (crest - 0.78)) < 0.15,
+      `marker ${(markers[0] ?? NaN).toFixed(2)} dBFS for a ${crest.toFixed(2)} dBFS crest`,
+    );
+  }
+
+  {
+    // Same for a multiband band, whose meter used to leave the mix out
+    // altogether: the reading sat still while the band's output moved.
+    const readings: number[] = [];
+    for (const mixPct of [100, 50]) {
+      const state = withParams(neutralState(), 'multiband', [
+        ['crossover1Hz', 120], ['crossover2Hz', 400], ['crossover3Hz', 12_000],
+        ['band2ThresholdDb', -30], ['band2Ratio', 10], ['band2AttackMs', 5],
+        ['band2ReleaseMs', 400], ['band2MixPct', mixPct],
+      ]);
+      const inDb = -6;
+      const run = settled(state, inDb, 2000);
+      const heardGr = inDb - run.outDb;
+      const meter = run.bandGr[2] ?? 0;
+      readings.push(meter);
+      check(
+        `a multiband band's GR meter reports the reduction heard at ${mixPct}% wet`,
+        Math.abs(meter - heardGr) < 0.6 && heardGr > 1,
+        `meter ${meter.toFixed(2)} / heard ${heardGr.toFixed(2)} dB`,
+      );
+    }
+    check(
+      'halving a band\'s wet mix moves its GR reading',
+      (readings[0] ?? 0) - (readings[1] ?? 0) > 3,
+      `${(readings[0] ?? 0).toFixed(2)} dB at 100% wet, ${(readings[1] ?? 0).toFixed(2)} at 50%`,
     );
   }
 

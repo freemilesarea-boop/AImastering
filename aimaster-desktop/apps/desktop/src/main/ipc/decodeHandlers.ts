@@ -34,6 +34,7 @@
  */
 
 import { app, type IpcMain } from 'electron';
+import { validateAbsoluteFilePath } from '../utils/ipcValidation.js';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -216,16 +217,18 @@ export function registerDecodeHandlers(ipc: IpcMain, packaged: boolean, resource
 
   ipc.handle('daw:pcm-source', async (_e, req: unknown): Promise<PcmSourceResult> => {
     const request = req as Partial<PcmSourceRequest> | undefined;
-    const filePath = request?.path;
-    if (typeof filePath !== 'string' || filePath.length === 0 || filePath.includes('\0')) {
-      throw new Error('daw:pcm-source: path must be a non-empty string');
-    }
+    // Through the shared validator rather than its own copy of the string /
+    // null-byte checks.  The copy also accepted a RELATIVE path and resolved
+    // it against the main process's working directory, which the validator
+    // now refuses — the clip paths this receives come from dialogs and drops
+    // and are absolute already.
+    const filePath = validateAbsoluteFilePath(request?.path, 'daw:pcm-source');
     const sampleRate = Number(request?.sampleRate);
     if (!Number.isFinite(sampleRate) || sampleRate < 8000 || sampleRate > 384_000) {
       throw new Error('daw:pcm-source: sampleRate out of range');
     }
 
-    const resolved = path.resolve(filePath);
+    const resolved = filePath;
     const stat = await fs.promises.stat(resolved);
     if (!stat.isFile()) throw new Error('daw:pcm-source: not a regular file');
 

@@ -1,9 +1,19 @@
 // Central UI parameter state provider + hooks.
 //
 // Architecture
-//   <ModuleParameterStateProvider> mounts once near the top of
-//   ProductPage.  It owns the all-modules state snapshot, dispatches
-//   typed commands, and appends each command to a rolling log.
+//   <ModuleParameterStateProvider> owns the all-modules state snapshot,
+//   dispatches typed commands, and appends each command to a rolling log.
+//
+//   It mounted near the top of ProductPage.  ProductPage was retired when
+//   ResultPage became the canonical result screen (see App.tsx), and
+//   nothing in the shipped app mounts this provider now — only the
+//   stories do.  StudioPage, the page that replaced it, holds the same
+//   all-modules shape in a local `useState` and writes it with its own
+//   `setParam`.  So the clamping, the command log and the undo/redo below
+//   are real and tested, and the app reaches none of them.  That is a
+//   product decision waiting to be made, not a bug: see
+//   `reachable-files-selftest`, which holds this module's Storybook-only
+//   reachability as a deliberate state.
 //
 //   Panels consume their slice via `useModuleParameters(moduleId)`,
 //   which returns:
@@ -17,9 +27,10 @@
 //   The command log is exposed via `useEngineCommandLog()` for dev
 //   tooling / Storybook.
 //
-// NOTHING in this module touches the DSP chain.  When M3-P-NEXT-5B
-// arrives, the provider gains an `engineDispatcher` prop that
-// forwards each command to the real engine bridge.
+// NOTHING in this module touches the DSP chain itself.  The prop that
+// forwards commands onward is not pending — it is `dispatcher` below,
+// defaulting to `NOOP_DISPATCHER`, and `EngineDispatcher.stories.tsx`
+// drives a real one through it.
 
 import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
 import { ALL_MODULE_PARAMETER_DEFS } from './module-parameter-definitions.js';

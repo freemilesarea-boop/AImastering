@@ -62,11 +62,13 @@ export type CommandId =
   | 'daw.createEditGroup' | 'daw.dissolveEditGroup' | 'daw.toggleGroupsEnabled'
   | 'daw.quantizeAudio' | 'daw.hideTracks' | 'daw.showAllTracks'
   | 'daw.copyChannel' | 'daw.pasteChannel'
+  | 'daw.matchPickModel' | 'daw.matchToModel'
   | 'daw.zoomToSelection' | 'daw.toggleFollowPlayhead' | 'daw.playFromSelection'
   | 'daw.duplicateTrack' | 'daw.cycleRulerFormat'
   | 'daw.nudgeForward' | 'daw.nudgeBack'
   | 'daw.fadeIn' | 'daw.fadeOut' | 'daw.crossfade'
   | 'daw.newTrack' | 'daw.playlistNext' | 'daw.playlistPrev' | 'daw.compSelection'
+  | 'daw.takeAdd' | 'daw.takeDuplicate' | 'daw.takeFlatten'
   | 'daw.freeze' | 'daw.commit' | 'daw.bounce' | 'daw.sendToMastering' | 'daw.exportStems'
   | 'daw.importAudio' | 'daw.importSession'
   | 'daw.zoomIn' | 'daw.zoomOut'
@@ -95,6 +97,7 @@ export type CommandId =
   | 'daw.showRestore' | 'daw.declick'
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
+  | 'daw.clearSlide' | 'daw.flam'
   | 'daw.showIntel' | 'daw.analyzeMixAi' | 'daw.aiCommand'
   | 'daw.sectionNext' | 'daw.sectionPrev' | 'daw.sectionSelect' | 'daw.sectionAdd'
   | 'daw.sectionMoveBack' | 'daw.sectionMoveForward'
@@ -107,6 +110,8 @@ export type CommandId =
   | 'daw.batchRename' | 'daw.historyPanel' | 'daw.toggleSoloSafe'
   | 'daw.openPool' | 'daw.batchFade' | 'daw.clearFades' | 'daw.trackNote'
   | 'daw.toggleLinkSelection' | 'daw.mixSnapshot' | 'daw.mixSnapshotPanel'
+  | 'daw.layoutMenu' | 'daw.layoutSave' | 'daw.layoutCycle'
+  | 'daw.deleteTracks'
   | `daw.zoomStore.${ZoomDigit}` | `daw.zoomRecall.${ZoomDigit}`;
 
 /** The five zoom-preset slots, on the function keys. */
@@ -315,6 +320,12 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '플레이리스트(테이크) 레인 전환', available: true },
   { id: 'daw.compSelection', group: 'daw', label: '선택 구간 컴핑', chords: ['Mod+Alt+V'],
     note: '다른 테이크의 선택 구간을 메인 플레이리스트로', available: true },
+  { id: 'daw.takeAdd', group: 'daw', label: '새 테이크', chords: ['Alt+Shift+I'],
+    note: '빈 테이크 레인을 만들고 그 레인으로', available: true },
+  { id: 'daw.takeDuplicate', group: 'daw', label: '테이크 복제', chords: ['Alt+Shift+U'],
+    note: '지금 테이크를 복사해 놓고 거기서 컴핑', available: true },
+  { id: 'daw.takeFlatten', group: 'daw', label: '컴프 확정', chords: ['Alt+Shift+C'],
+    note: '지금 테이크만 남기고 나머지 레인을 버림', available: true },
   { id: 'daw.freeze', group: 'daw', label: '프리즈 / 해제', chords: ['Mod+Alt+F'],
     note: '인서트를 렌더링해 CPU 반환 (되돌릴 수 있음)', available: true },
   { id: 'daw.commit', group: 'daw', label: '커밋', chords: ['Mod+Alt+Shift+F'],
@@ -398,6 +409,10 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '인서트·센드·페이더·팬 — 클립과 오토메이션은 빼고', available: true },
   { id: 'daw.pasteChannel', group: 'daw', label: '채널 설정 붙여넣기', chords: ['Mod+Alt+Shift+X'],
     note: '선택한 트랙 전부에 — 인서트는 새 id 로 복사돼 서로 영향 없음', available: true },
+  { id: 'daw.matchPickModel', group: 'daw', label: '매치 기준 트랙 지정', chords: ['Mod+Alt+Shift+Q'],
+    note: '이 트랙의 음색을 본뜨겠다는 표시 — 커브가 아니라 트랙을 기억하므로 나중에 재면 그때의 소리를 잽니다', available: true },
+  { id: 'daw.matchToModel', group: 'daw', label: '기준 트랙 음색에 맞추기', chords: ['Mod+Alt+Shift+I'],
+    note: '선택한 트랙에 매치 EQ 를 걸어 기준 트랙과의 차이를 채웁니다 — 두 번 눌러도 같은 답이 나옵니다', available: true },
   { id: 'daw.quantizeAudio', group: 'daw', label: '오디오 퀀타이즈', chords: ['Mod+Shift+T'],
     note: '트랜지언트를 그리드로 — 강도·스윙·허용 오차를 정하고, 적용 전에 몇 개가 움직이는지 봅니다', available: true },
   { id: 'daw.createEditGroup', group: 'daw', label: '편집 그룹 만들기', chords: ['Mod+G'],
@@ -416,6 +431,9 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '마디 → 분:초 → 샘플 → 타임코드 순으로 돕니다', available: true },
   { id: 'daw.duplicateTrack', group: 'daw', label: '트랙 복제', chords: ['Mod+Alt+Shift+D'],
     note: '클립·인서트·센드·오토메이션까지 복사해 바로 아래에 — 프리즈와 녹음 무장은 빼고', available: true },
+  { id: 'daw.deleteTracks', group: 'daw', label: '트랙 삭제', chords: ['Mod+Backspace', 'Mod+Delete'],
+    note: '선택한 트랙을 지웁니다 — 무엇이 사라지는지 먼저 묻습니다 (스택은 안의 트랙을 남깁니다)',
+    available: true },
   { id: 'daw.renameTrack', group: 'daw', label: '트랙 이름 바꾸기', chords: ['Shift+Alt+K'],
     note: '헤더의 이름을 더블클릭해도 됩니다 · 색은 왼쪽 색 조각을 클릭', available: true },
   { id: 'daw.trackHeightUp', group: 'daw', label: '트랙 높이 키우기', chords: ['Shift+Alt+Equal'],
@@ -519,6 +537,10 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '블록 코드를 손으로 친 것처럼 — 끝은 함께 끝납니다', available: true },
   { id: 'daw.slide', group: 'daw', label: '슬라이드 (포르타멘토)', chords: ['Mod+Alt+Z'],
     note: '앞 노트에서 벤드해 들어옵니다 — 실제 피치벤드 데이터', available: true },
+  { id: 'daw.clearSlide', group: 'daw', label: '슬라이드 해제', chords: ['Alt+Shift+X'],
+    note: '선택 노트의 피치벤드 곡선을 걷어냄', available: true },
+  { id: 'daw.flam', group: 'daw', label: '플램', chords: ['Alt+Shift+D'],
+    note: '선택 노트 앞에 약한 꾸밈음을 붙임 — 드럼 롤', available: true },
   { id: 'daw.capturePattern', group: 'daw', label: '클립을 패턴으로', chords: ['Mod+Alt+O'],
     note: '노트를 라이브러리로 옮기고 클립을 링크로 만듭니다', available: true },
   { id: 'daw.showRestore', group: 'daw', label: 'Restoration (노이즈 · 클릭)', chords: ['Mod+Alt+N'],
@@ -561,6 +583,13 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '지금 믹서 상태를 저장 — 페이더 · 인서트 · 라우팅 (오토메이션은 제외)', available: true },
   { id: 'daw.mixSnapshotPanel', group: 'daw', label: '믹스 스냅샷 목록', chords: ['Mod+Alt+Shift+K'],
     note: '저장한 믹스들 — 뭐가 다른지 보고 되돌립니다', available: true },
+
+  { id: 'daw.layoutMenu', group: 'daw', label: '작업 화면 목록', chords: ['Mod+Alt+Shift+L'],
+    note: '저장한 작업 화면들 — 뭐가 달라지는지 보고 옮겨갑니다', available: true },
+  { id: 'daw.layoutSave', group: 'daw', label: '작업 화면 저장', chords: ['Mod+Alt+Shift+J'],
+    note: '지금 창 · 패널 · 띄운 창 · 줌을 이름 붙여 저장', available: true },
+  { id: 'daw.layoutCycle', group: 'daw', label: '다음 작업 화면', chords: ['Mod+Alt+Shift+W'],
+    note: '저장한 화면들을 차례로 — 트래킹용과 믹싱용을 오갈 때', available: true },
 
   // Zoom presets on the function keys — the number row is memory locations.
   ...ZOOM_DIGITS.flatMap((digit, i): ShortcutDef[] => {

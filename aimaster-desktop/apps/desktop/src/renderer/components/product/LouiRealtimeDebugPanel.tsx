@@ -6,6 +6,7 @@
 // realtime flag is on (and ideally behind a dev-only gate).
 
 import React from 'react';
+import { previewHealth } from '../../audio/realtime-health.js';
 import { surface, text, typography, meter, space, radius } from '../../theme/loui-theme.js';
 import type { RealtimeMetricsSnapshot } from '../../audio/realtime-metrics.js';
 import type { MasteringWorkletLoadState } from '../../audio/mastering-worklet-loader.js';
@@ -73,9 +74,26 @@ function Row({ label, value, status }: { label: string; value: string; status?: 
 
 export function LouiRealtimeDebugPanel(props: LouiRealtimeDebugPanelProps) {
   const m = props.metrics;
+  // One verdict, from `realtime-health`, instead of two thresholds decided
+  // here. The old pair disagreed with the transport's: this panel called
+  // any CUMULATIVE xrun danger, so a single glitch while the graph was
+  // being built left it red for the session.
+  const health = previewHealth({
+    avgProcessMs: m.avgProcessMs,
+    blockPeriodMs: m.blockPeriodMs,
+    recentXruns: m.recentXruns,
+    safetyEvents: m.safetyEvents,
+    processCalls: m.processCalls,
+    audioBlocks: m.audioBlocks,
+    nonSilentBlocks: m.nonSilentBlocks,
+    bypass: !props.active,
+  });
   const cpuPct = m.cpuLoad * 100;
-  const cpuStatus = cpuPct > 50 ? 'danger' : cpuPct > 25 ? 'warn' : 'ok';
-  const xrunStatus = m.totalXruns > 0 ? 'danger' : 'ok';
+  const cpuStatus = health.level === 'over' ? 'danger'
+    : health.level === 'tight' ? 'warn' : 'ok';
+  // Recent, not cumulative: the total stays on the row below it, where a
+  // number that only grows is the right thing to show.
+  const xrunStatus = m.recentXruns > 0 ? 'danger' : 'ok';
   return (
     <div style={{
       width: 240,
@@ -131,11 +149,17 @@ export function LouiRealtimeDebugPanel(props: LouiRealtimeDebugPanelProps) {
       {typeof props.sampleRate === 'number' && <Row label="rate" value={`${(props.sampleRate / 1000).toFixed(1)} kHz`} />}
       {typeof props.bufferSize === 'number' && <Row label="quantum" value={`${props.bufferSize} smp`} />}
       <div style={{ height: 1, background: surface.border, marginBlock: 4 }} />
-      <Row label="cpu (chain)" value={`${cpuPct.toFixed(1)}%`} status={cpuStatus} />
+      <Row label="health" value={health.level} status={cpuStatus} />
+      <Row
+        label="cpu (chain)"
+        value={m.cpuLoadKnown ? `${cpuPct.toFixed(1)}%` : '— (주기 미보고)'}
+        status={cpuStatus}
+      />
       <Row label="avg process" value={`${m.avgProcessMs.toFixed(3)} ms`} />
       <Row label="peak process" value={`${m.peakProcessMs.toFixed(3)} ms`} />
       <Row label="block period" value={`${m.blockPeriodMs.toFixed(3)} ms`} />
-      <Row label="xruns" value={`${m.totalXruns}`} status={xrunStatus} />
+      <Row label="xruns (최근)" value={`${m.recentXruns}`} status={xrunStatus} />
+      <Row label="xruns (누적)" value={`${m.totalXruns}`} />
       <Row label="safety bypass" value={`${m.safetyEvents}`} status={m.safetyEvents > 0 ? 'danger' : 'ok'} />
       <div style={{ marginBlock: 4 }}>
         <LouiGainReductionMeter grDb={m.limiterGrDb} available={props.active} compact label="limiter GR" />

@@ -17,6 +17,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { RealtimePreviewPhase } from '../../hooks/useRealtimePreview.js';
 import type { RealtimePreviewMetrics } from '../../audio/realtime-preview-store.js';
 import { resumeSharedContext } from '../../audio/shared-audio-graph.js';
+import { previewHealth } from '../../audio/realtime-health.js';
 import { surface, text, typography, space, radius, meter } from '../../theme/loui-theme.js';
 
 export interface LouiPreviewTransportProps {
@@ -125,6 +126,17 @@ export function LouiPreviewTransport(props: LouiPreviewTransportProps) {
         : text.muted;
 
   const progress = duration > 0 ? (time / duration) * 100 : 0;
+  // The same verdict the debug panel shows, so the two cannot disagree —
+  // which they did: this line judged the snapshot's xruns and the panel
+  // judged the cumulative total.
+  const health = previewHealth({
+    avgProcessMs: props.metrics.avgProcessMs,
+    blockPeriodMs: props.metrics.blockPeriodMs,
+    recentXruns: props.metrics.xruns,
+    safetyEvents: props.metrics.safetyEvents,
+    running: props.metrics.running,
+    bypass: props.metrics.bypass,
+  });
   const latencyMs = props.metrics.blockPeriodMs > 0 && props.metrics.latencySamples > 0
     ? (props.metrics.latencySamples / 48_000) * 1000
     : 0;
@@ -223,6 +235,9 @@ export function LouiPreviewTransport(props: LouiPreviewTransportProps) {
             fontVariantNumeric: 'tabular-nums',
           }}>
             {props.metrics.avgProcessMs.toFixed(2)} ms/블록
+            {health.load !== null && ` (예산의 ${(health.load * 100).toFixed(0)}%)`}
+            {health.level === 'tight' && ' · 여유 부족'}
+            {health.level === 'over' && ' · 마감 초과'}
             {props.metrics.xruns > 0 && ` · xrun ${props.metrics.xruns}`}
             {latencyMs > 0 && ` · 지연 ${latencyMs.toFixed(0)} ms`}
             {props.metrics.safetyEvents > 0 && ` · 안전복구 ${props.metrics.safetyEvents}`}

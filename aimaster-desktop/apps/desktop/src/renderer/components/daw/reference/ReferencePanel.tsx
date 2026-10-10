@@ -15,6 +15,9 @@ import { useReferenceStore, type OverlayTab } from '../../../stores/referenceSto
 import { formatMetric, spectrumDelta, type ComparisonRow, type ReferenceAnalysis } from '../../../daw/analysis/reference.js';
 import { renderSession, sessionRange } from '../../../daw/engine/offline-render.js';
 import { decodeAudioFile, decodeContext } from '../../../daw/engine/audio-cache.js';
+import {
+  matchEqFromReference, matchTargetTrack, slotLetter,
+} from '../../../daw/edit/match-from-reference.js';
 import { premium } from '../../../theme/premium.js';
 
 const TABS: { id: OverlayTab; label: string }[] = [
@@ -65,6 +68,36 @@ export default function ReferencePanel() {
     } finally { setBusy(null); }
   }, [notify, setMix]);
 
+  /**
+   * The difference on screen, as a filter on the master.
+   *
+   * This is the one thing the comparison could not do before: it could say
+   * the mix was 1.7 dB darker up top and draw where, and there was no way to
+   * act on it. The device has been in the rack the whole time with a flat
+   * curve, because nothing ever measured one into it.
+   */
+  const takeMatch = useCallback((): void => {
+    const current = useDawStore.getState().session;
+    const { reference: ref, mix: mixNow } = useReferenceStore.getState();
+    if (!ref || !mixNow) {
+      notify(ref ? '먼저 현재 믹스를 분석하세요' : '먼저 레퍼런스를 불러오세요', 'warning');
+      return;
+    }
+    const trackId = matchTargetTrack(current);
+    if (!trackId) { notify('마스터 트랙이 없습니다', 'error'); return; }
+
+    const outcome = matchEqFromReference(current, trackId, ref.spectrum, mixNow.spectrum);
+    if (!outcome.ok) { notify(outcome.reason, 'error'); return; }
+    useDawStore.getState().apply(() => outcome.session);
+    notify(
+      `${outcome.replaced ? '매치 EQ 를 다시 측정했습니다' : `마스터 ${slotLetter(outcome.slot)} 슬롯에 매치 EQ 를 걸었습니다`}`
+        + ` — 최대 ${outcome.peakDb.toFixed(1)} dB`,
+      'success',
+    );
+  }, [notify]);
+
+  const canMatch = Boolean(reference && mix);
+
   return (
     <div className="flex-1 flex flex-col overflow-auto" style={{ background: premium.surface.abyss }}>
       <div className="flex items-center gap-3 px-4 py-2"
@@ -78,6 +111,13 @@ export default function ReferencePanel() {
         <div className="flex-1" />
         <Btn onClick={() => void loadReference()}>레퍼런스 불러오기</Btn>
         <Btn onClick={() => void analyzeMix()} primary>현재 믹스 분석</Btn>
+        {/* Never disabled: a greyed button says only "not now", while the
+            click can say WHICH of the two is missing. The guard in
+            `takeMatch` is the one that speaks, so it has to be reachable. */}
+        <Btn onClick={takeMatch} primary={canMatch}
+             title="지금 그려진 차이를 마스터의 매치 EQ 커브로 씁니다">
+          매치 EQ 로 걸기
+        </Btn>
         {busy && <span style={{ fontSize: 11, color: premium.accent.base }}>{busy}</span>}
       </div>
 
@@ -338,10 +378,12 @@ function buildPaths(tab: OverlayTab, reference: ReferenceAnalysis | null, mix: R
 }
 
 function Btn(
-  { children, onClick, primary }: { children: React.ReactNode; onClick: () => void; primary?: boolean },
+  { children, onClick, primary, title }: {
+    children: React.ReactNode; onClick: () => void; primary?: boolean; title?: string;
+  },
 ) {
   return (
-    <button onClick={onClick} style={{
+    <button onClick={onClick} {...(title ? { title } : {})} style={{
       height: 26, padding: '0 12px', borderRadius: 4,
       fontFamily: premium.type.sans, fontSize: 11,
       color: primary ? premium.text.onAccent : premium.text.secondary,

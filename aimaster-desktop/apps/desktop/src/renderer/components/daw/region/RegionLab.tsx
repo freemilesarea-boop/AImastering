@@ -39,6 +39,7 @@ import { partitionInstrument } from '../../../daw/engine/plugin-presets-instrume
 import { premium } from '../../../theme/premium.js';
 import Knob from '../plugin/Knob.js';
 import type { Clip, Insert, TailMode, Track } from '../../../daw/model/types.js';
+import { knobParams } from '../../../daw/engine/plugin-kit.js';
 
 /** Seconds of the neighbouring material drawn either side of the piece. */
 const CONTEXT_SEC = 2;
@@ -434,7 +435,7 @@ export default function RegionLab() {
                 ))}
               </div>
               <div className="flex flex-wrap gap-2">
-                {descriptor.params.map((def) => (
+                {knobParams(descriptor.params).map((def) => (
                   <Knob
                     key={def.id}
                     label={def.name}

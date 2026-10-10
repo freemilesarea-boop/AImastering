@@ -49,7 +49,8 @@ import {
 import {
   serializeDawSession, deserializeDawSession, importSessionData, uniqueName,} from '../src/renderer/daw/model/session-io.js';
 import { encodeWav, interleave} from '../src/renderer/daw/engine/wav.js';
-import { PLUGINS, defaultParams, findPlugin, pluginLatencySamples, timeConstantToHz} from '../src/renderer/daw/engine/plugins.js';
+import { PLUGINS, defaultParams, findPlugin, pluginLatencySamples } from '../src/renderer/daw/engine/plugins.js';
+import { DETECTOR_MIN_MS, DETECTOR_POLES, DETECTOR_SETTLE, detectorTau } from '../src/renderer/daw/engine/plugin-kit.js';
 import type { Clip, DawSession, Track} from '../src/renderer/daw/model/types.js';
 
 interface T { name: string; pass: boolean; detail: string }
@@ -589,9 +590,13 @@ check('path latency accumulates through the bus chain', () => {
   eq(pathLatency(s, kick.id), 288, 'kick + aux downstream');
   eq(pathLatency(s, aux.id), 192, 'aux alone');
 
-  // A bypassed plugin reports nothing.
+  // A bypassed plugin still reports what it costs, and this line used to
+  // expect 192 — the aux alone, with the kick's limiter written off.  In the
+  // graph a bypassed device keeps delaying its dry path by its declaration,
+  // so reporting zero moved the channel by exactly that much.  Removing the
+  // device is what gives the latency back; see bypass-freeze-selftest.
   const bypassed = setInsert(s, kick.id, { ...findTrack(s, kick.id)!.inserts[0]!, bypass: true });
-  eq(pathLatency(bypassed, kick.id), 192, 'bypass removes the latency');
+  eq(pathLatency(bypassed, kick.id), 288, 'bypass keeps the latency');
 });
 
 check('delay compensation lines every path up to the longest one', () => {
@@ -601,7 +606,13 @@ check('delay compensation lines every path up to the longest one', () => {
   const adc = computeDelayCompensation(s);
   eq(adc.maxSamples, 288, 'longest path');
   eq(adc.perTrack.get(kick.id), 0, 'longest path needs no delay');
-  eq(adc.perTrack.get(aux.id), 288 - 192, 'aux delayed to match');
+  // The aux gets NOTHING, and this line used to read `288 - 192`.  A delay on
+  // a channel a bus feeds lands in series with everything flowing through it,
+  // so it does not move the aux relative to the mix — it moves the kick, and
+  // the kick came out 96 samples behind a track going straight to the master.
+  // Only channels that ORIGINATE audio are delayed; see send-pdc-selftest,
+  // which renders it.
+  eq(adc.perTrack.get(aux.id), 0, 'a bus feeds the aux, so a delay there is in series');
 
   const off = computeDelayCompensation({ ...s, delayCompensation: false });
   eq(off.maxSamples, 0, 'switch off reports nothing');
@@ -790,8 +801,18 @@ check('the limiter reports its look-ahead as real latency', () => {
 });
 
 check('detector time constants map to sane corner frequencies', () => {
-  assert(timeConstantToHz(10) > timeConstantToHz(100), 'faster attack → higher corner');
-  close(timeConstantToHz(1000 / (2 * Math.PI)), 1, '1 s/2π → 1 Hz', 1e-3);
+  // The mapping used to be 1/(2πτ), which is ONE pole's time constant on a
+  // detector that runs several — so every knob here took 3.379× as long as it
+  // said.  `detectorTau` divides the pole count out, and `upward-selftest`
+  // holds the rendered step response to the number on the panel.
+  assert(detectorTau(100) > detectorTau(10), 'a slower knob is a longer time constant');
+  close(detectorTau(100) / detectorTau(10), 10, 'and proportionally so', 1e-9);
+  close(detectorTau(1000) * DETECTOR_SETTLE, 1, 'the settling time is what it says', 1e-9);
+  close(detectorTau(0.001), detectorTau(DETECTOR_MIN_MS), 'under the ceiling is the ceiling', 1e-12);
+  // Real poles, because a Butterworth cascade overshoots and an envelope that
+  // overshoots goes negative — see `DETECTOR_POLES`.
+  assert(DETECTOR_POLES >= 4, `${DETECTOR_POLES} poles is not enough to reject the ripple`);
+
   // Sidechain moved to its own device: Web Audio's compressor cannot take an
   // external key, and a plugin that changes its DSP depending on how it is
   // wired is a plugin you cannot trust.

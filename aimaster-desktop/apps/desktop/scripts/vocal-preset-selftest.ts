@@ -168,6 +168,60 @@ if (!Chain) {
     (cfg.imager?.bandWidthPct?.[3] ?? 100) < 90 && (cfg.imager?.widthPct ?? 100) === 100,
     `high band ${cfg.imager?.bandWidthPct?.[3] ?? 100}% · overall ${cfg.imager?.widthPct ?? 100}%`,
   );
+
+  {
+    // And the same claim in AUDIO, because the check above only reads the
+    // config it just built.  Reading a config is how a per-band width can look
+    // dead: `bandWidthPct` is written in `chain-config.ts` and read nowhere in
+    // this app — the reader is the Rust deserialiser on the other side of
+    // `setConfigJson`, spelled `band_width_pct`.  Grepping TypeScript for the
+    // name finds only the writer, and that is not evidence of anything.
+    //
+    // The tones are decorrelated on purpose: `render` above feeds the same
+    // samples to both channels, which has no side signal at all, so it could
+    // not measure a width if it tried.
+    const sideAt = (hz: number, state: AllModulesParameterState): number => {
+      const chain = new Chain!(SR);
+      chain.setConfigJson(chainConfigToJson(buildChainConfig({ state })));
+      const n = 1 << 15;
+      const left = new Float32Array(n);
+      const right = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        const low = Math.sin((2 * Math.PI * 200 * i) / SR) * 0.3;
+        const high = Math.sin((2 * Math.PI * hz * i) / SR) * 0.2;
+        left[i] = low + high;
+        right[i] = low - high;          // the high tone lives entirely in the side
+      }
+      for (let off = 0; off < n; off += 512) {
+        const end = Math.min(off + 512, n);
+        chain.processStereo(left.subarray(off, end), right.subarray(off, end));
+      }
+      const side = new Float32Array(n);
+      for (let i = 0; i < n; i++) side[i] = (left[i]! - right[i]!) / 2;
+      return magnitudeAt(side, hz);
+    };
+
+    const flattened: AllModulesParameterState = {
+      ...state,
+      imager: {
+        ...state.imager,
+        parameters: {
+          ...state.imager.parameters,
+          bandHighPct: 100, bandMidHighPct: 100,
+        },
+      },
+    };
+    const narrowed = sideAt(9000, state);
+    const flat = sideAt(9000, flattened);
+    const movedDb = 20 * Math.log10(narrowed / Math.max(flat, 1e-12));
+    // 78 % of the side is −2.2 dB; the crossover's own skirt takes a little
+    // more off, so the bound is "clearly narrower", not the exact figure.
+    check(
+      'and the top really is narrower in the audio, not just in the config',
+      movedDb < -1.5,
+      `${movedDb.toFixed(2)} dB of side at 9 kHz against flat bands`,
+    );
+  }
   check(
     'it does not decide how loud the record is',
     (cfg.limiter?.ceilingDbtp ?? 0) === -1,

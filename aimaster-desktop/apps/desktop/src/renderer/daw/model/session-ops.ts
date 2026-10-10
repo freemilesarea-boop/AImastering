@@ -16,6 +16,7 @@ import {
 } from './types.js';
 import { nextId } from './ids.js';
 import { DEFAULT_MIDI_CONFIG } from './midi.js';
+import { removeBus } from './buses.js';
 import type { ChordEvent } from './chords.js';
 import { EMPTY_RACK } from './macros.js';
 import { emptyGrid } from './session-view.js';
@@ -263,6 +264,31 @@ export function updateClip(
 
 // ── Track management ──────────────────────────────────────────────────────────
 
+/**
+ * Where a new track goes when some tracks are selected: right after them.
+ *
+ * `undefined` means the end, which is what `addTrack` does with no index —
+ * so "nothing selected" and "the id is not in this session" both fall back to
+ * appending, and a caller can pass this straight through.
+ *
+ * After the LAST of a multi-selection, not the first: selecting three drum
+ * tracks and adding a fourth puts it under the group rather than into the
+ * middle of it.
+ */
+export function indexAfterTracks(
+  session: DawSession, ids: readonly TrackId[],
+): number | undefined {
+  let last = -1;
+  for (const id of ids) {
+    const at = session.tracks.findIndex((t) => t.id === id);
+    // The master is always last and cannot be a neighbour to insert after:
+    // `addTrack` clamps above it, so a selected master would mean "the end"
+    // anyway — which is what leaving it out of the maximum gives.
+    if (at > last && session.tracks[at]!.kind !== 'master') last = at;
+  }
+  return last === -1 ? undefined : last + 1;
+}
+
 export function addTrack(session: DawSession, track: Track, atIndex?: number): DawSession {
   const tracks = [...session.tracks];
   // Master always stays last, like the far-right strip in a console.
@@ -273,18 +299,64 @@ export function addTrack(session: DawSession, track: Track, atIndex?: number): D
   return { ...session, tracks };
 }
 
+/**
+ * Take a track out of the session, and every reference to it with it.
+ *
+ * The master is refused: it is the output, not a channel.
+ *
+ * DELETING A FOLDER DOES NOT DELETE WHAT IS IN IT.  Its children are promoted
+ * to wherever the folder itself was, exactly as `unpackStack` promotes them,
+ * because "delete this folder" and "delete these eight takes of a vocal" are
+ * different requests and only one of them was made.  Anyone who means the
+ * second selects the children too.
+ *
+ * The folder's summing bus goes through `removeBus`, which already knows the
+ * four ways a bus is referred to.  Measured, on a stack with an Aux reading
+ * its bus, a send into it and a sidechain off it: an earlier version of this
+ * dropped the bus and cleaned only the outputs, leaving the Aux reading a bus
+ * that was not there, one dangling send and one dangling sidechain.  Before
+ * that it did not drop the bus at all, and left both children routed into it
+ * — audio passing through a bus with no fader anywhere on screen.
+ */
 export function removeTrack(session: DawSession, id: TrackId): DawSession {
   const target = findTrack(session, id);
   if (!target || target.kind === 'master') return session;
+
+  // The bus first, with everything that pointed at it; then the track.
+  const folderBus = target.kind === 'folder' ? target.input : null;
+  const base = folderBus !== null ? removeBus(session, folderBus) : session;
+
   return {
-    ...session,
-    tracks: session.tracks
+    ...base,
+    tracks: base.tracks
       .filter((t) => t.id !== id)
-      // Drop dangling VCA assignments and group memberships.
-      .map((t) => (t.vcaId === id ? { ...t, vcaId: null } : t)),
-    groups: session.groups.map((g) =>
+      .map((t) => {
+        let next = t;
+        // Drop dangling VCA assignments.
+        if (next.vcaId === id) next = { ...next, vcaId: null };
+        // Children inherit the folder's place rather than being orphaned.
+        if (next.parentId === id) next = { ...next, parentId: target.parentId };
+        return next;
+      }),
+    groups: base.groups.map((g) =>
       g.memberIds.includes(id) ? { ...g, memberIds: g.memberIds.filter((m) => m !== id) } : g),
   };
+}
+
+/**
+ * Remove several tracks at once.
+ *
+ * Plainly one at a time, in the order given.  An earlier version sorted
+ * folders first and said in a comment that it had to, so a folder would find
+ * its children still there to promote — which is not true, and the test
+ * written to prove it could not fail.  `removeTrack` promotes whoever is left
+ * at the time, so the result is the same whichever order a selection was
+ * clicked in; the check below holds that, rather than the sort.
+ */
+export function removeTracks(session: DawSession, ids: readonly TrackId[]): DawSession {
+  let next = session;
+  for (const id of ids) next = removeTrack(next, id);
+  return next;
 }
 
 export function moveTrack(session: DawSession, id: TrackId, toIndex: number): DawSession {

@@ -37,14 +37,24 @@ import {
   meterFftSize, newBallistics, newLatch,
   type ChannelMeterReading, type MeterBallistics, type MeterLatch,
 } from '../model/channel-meter.js';
-import { findPlugin, type PluginInstance } from './plugins.js';
+
+/**
+ * The window the EQ spectrum is measured over.
+ *
+ * 8192 samples — 171 ms at 48 kHz, a bin every 5.9 Hz.  The cost of the extra
+ * resolution is that the analyser looks further back, which for a PICTURE is
+ * the right trade and for a peak meter is the wrong one; that is why this is
+ * a second node rather than a wider setting on the first.
+ */
+const SPECTRUM_FFT_SIZE = 8192;
+import { createInstance, findPlugin, type PluginInstance } from './plugins.js';
 import { parsePluginParamKey, pluginParamKey } from '../model/automation.js';
 import type { AutomatableParam } from './plugin-kit.js';
 import { descriptorFor } from './external-device.js';
 import {
   MACROS, materializeRack, moduleParams, overrideKey, type RackModuleId,
 } from '../model/macros.js';
-import { macroCoverage } from '../model/macro-automation.js';
+import { macroCoverage, rackModulesNeeded } from '../model/macro-automation.js';
 import { paramsDrivenBy } from './plugin-kit.js';
 import { applyChainParams, buildDeviceChain, type BuiltChain } from './device-chain.js';
 
@@ -90,6 +100,11 @@ interface SendNodes {
   /** Level and mute; the automation lane for `sendLevel` rides this. */
   gain: GainNode;
   panner: StereoPannerNode;
+  /**
+   * What this send owes the channel's other routes, so the return comes back
+   * level with the dry rather than ahead of it (see `align` below).
+   */
+  align: DelayNode;
 }
 
 /**
@@ -131,6 +146,18 @@ export interface Channel {
   fader: GainNode;
   panner: StereoPannerNode;
   postFaderTap: GainNode;
+  /**
+   * The main output's share of the ROUTE alignment.
+   *
+   * `adc` above lines this channel up with the other channels; this one lines
+   * the channel up with ITSELF.  A channel sending to a reverb bus that
+   * carries a latent device has two paths to the master, and the dry one is
+   * the short one — measured at 511 samples, 10.6 ms, on a send into a
+   * linear-phase EQ, and `adc` could not close it because the send tap sits
+   * after `adc` and moved with it.  Whichever route is longest gets nothing
+   * here and every shorter one gets the difference.
+   */
+  outputAlign: DelayNode;
   sends: Map<string, SendNodes>;
   meter: ChannelMeterTap | null;
   /**
@@ -144,6 +171,27 @@ export interface Channel {
    * two readings of two different signals, disagreeing in public.
    */
   insertMeters: Map<string, AnalyserNode>;
+  /**
+   * A SECOND analyser per insert, for the spectrum drawn behind an EQ.
+   *
+   * It is separate from `insertMeters` rather than the same node read twice,
+   * and the reason is that the two want opposite windows.
+   *
+   *   · The meter above reads `getFloatTimeDomainData` and takes a PEAK, and
+   *     a peak taken over a longer window is a higher number: at 1024 samples
+   *     it looks back 21 ms, which is roughly what a compressor's detector
+   *     does.  Widening that window would move the dot on the device's curve
+   *     without anything about the audio having changed.
+   *   · The spectrum reads `getFloatFrequencyData`, where the window is
+   *     RESOLUTION.  1024 samples at 48 kHz is a bin every 47 Hz — which puts
+   *     the whole of the bottom two octaves into the first four bins, so a
+   *     boxiness at 250 Hz and a rumble at 60 are the same two pixels.  8192
+   *     gives a bin every 5.9 Hz, and that is the difference between an
+   *     analyser you can point at something with and a decoration.
+   *
+   * So: one node each, at the window each of them needs.
+   */
+  insertSpectra: Map<string, AnalyserNode>;
 }
 
 /**
@@ -167,31 +215,6 @@ export function carriesAudio(track: Track): boolean {
  */
 function insertsKey(track: Track): string {
   return JSON.stringify(track.inserts.map((i) => [i.id, i.slot, i.pluginId, i.sidechainSource]));
-}
-
-/**
- * Rack modules a channel must actually BUILD.
- *
- * Not just the ones a macro is turning on right now: a macro sitting at zero
- * makes no module active, and if the graph were built from that, a lane
- * ramping the macro up would have nothing to ramp — the compressor it means
- * to open would not exist.  So a module a macro LANE can reach is built too,
- * bypassed-by-neutrality until the lane moves it.
- */
-function rackModulesNeeded(track: Track): Set<RackModuleId> {
-  const needed = new Set<RackModuleId>();
-  if (!track.macros.enabled) return needed;
-  for (const resolved of materializeRack(track.macros)) {
-    if (resolved.active) needed.add(resolved.module.id);
-  }
-  for (const lane of track.automation) {
-    const target = lane.target;
-    if (target.kind !== 'macro' || lane.mode === 'off') continue;
-    const macro = MACROS.find((m) => m.id === target.macroId);
-    if (!macro) continue;
-    for (const moving of macroCoverage(macro, track.macros).moving) needed.add(moving.module);
-  }
-  return needed;
 }
 
 /** Structural fingerprint — changing it forces a graph rebuild. */
@@ -290,14 +313,20 @@ export class MixerEngine {
       try { node.disconnect(); } catch { /* already gone */ }
     }
     ch.insertMeters.clear();
+    for (const node of ch.insertSpectra.values()) {
+      try { node.disconnect(); } catch { /* already gone */ }
+    }
+    ch.insertSpectra.clear();
 
     let cursor: AudioNode = ch.insertChainIn;
     for (const insert of [...track.inserts].sort((a, b) => a.slot - b.slot)) {
       const descriptor = descriptorFor(insert);
       if (!descriptor) continue;
-      const instance = descriptor.create(this.ctx, { ...insert.params });
+      const instance = createInstance(descriptor, this.ctx, { ...insert.params });
       const tapped = this.tap(cursor);
       if (tapped) ch.insertMeters.set(insert.id, tapped);
+      const spectrum = this.spectrumTap(cursor);
+      if (spectrum) ch.insertSpectra.set(insert.id, spectrum);
       cursor.connect(instance.input);
       cursor = instance.output;
       ch.inserts.set(insert.id, instance);
@@ -366,6 +395,21 @@ export class MixerEngine {
   reduction(trackId: TrackId, insertId: string): number | null {
     const instance = this.channels.get(trackId)?.inserts.get(insertId);
     return instance?.reduction?.() ?? null;
+  }
+
+  /**
+   * The stereo picture at one insert, written into the caller's arrays.
+   *
+   * Written in place for the same reason `insertSpectrum` is: this runs every
+   * animation frame, and a fresh pair of Float32Arrays sixty times a second
+   * is garbage the collector comes back for in the audio thread's
+   * neighbourhood.
+   */
+  insertScope(
+    trackId: TrackId, insertId: string, left: Float32Array, right: Float32Array,
+  ): boolean {
+    const instance = this.channels.get(trackId)?.inserts.get(insertId);
+    return instance?.scope?.(left, right) ?? false;
   }
 
   /** What a metering insert is reading, for devices whose job is to measure. */
@@ -444,16 +488,19 @@ export class MixerEngine {
       const ch = this.channels.get(track.id);
       if (!ch) continue;
 
+      // Everything leaves through `outputAlign`, which is already fed from
+      // `postFaderTap`, so the main output carries its share of the route
+      // alignment whether or not this channel has any sends.
       if (track.kind === 'master') {
-        ch.postFaderTap.connect(this.destination);
+        ch.outputAlign.connect(this.destination);
       } else if (track.output.kind === 'master') {
         const master = session.tracks.find((t) => t.kind === 'master');
         const masterCh = master ? this.channels.get(master.id) : undefined;
-        if (masterCh) ch.postFaderTap.connect(masterCh.input);
-        else ch.postFaderTap.connect(this.destination);
+        if (masterCh) ch.outputAlign.connect(masterCh.input);
+        else ch.outputAlign.connect(this.destination);
       } else if (track.output.kind === 'bus') {
         const bus = this.buses.get(track.output.busId)?.input;
-        if (bus) ch.postFaderTap.connect(bus);
+        if (bus) ch.outputAlign.connect(bus);
       }
 
       // Aux input: a bus feeds this channel.
@@ -466,7 +513,8 @@ export class MixerEngine {
         if (!node || !bus) continue;
         (send.preFader ? ch.preFaderTap : ch.panner).connect(node.gain);
         node.gain.connect(node.panner);
-        node.panner.connect(bus);
+        node.panner.connect(node.align);
+        node.align.connect(bus);
       }
 
       // Sidechain keys.
@@ -497,6 +545,29 @@ export class MixerEngine {
     // smoothing constant would lag the GR number it sits next to.
     node.fftSize = 1024;
     node.smoothingTimeConstant = 0;
+    source.connect(node);
+    return node;
+  }
+
+  /**
+   * The analyser the EQ's spectrum is drawn from, or null when metering is off.
+   *
+   * `smoothingTimeConstant` is 0.5 and here it DOES do something, unlike on
+   * the channel meter where the same property is documented as inert: that
+   * setting smooths the FFT magnitudes, which is exactly what this node is
+   * read for.  It takes the worst of the frame-to-frame flicker off before
+   * `advanceSpectrum` applies the ballistics that make it readable, and a
+   * value much above this starts hiding transients instead.
+   */
+  private spectrumTap(source: AudioNode): AnalyserNode | null {
+    if (!this.withMeters) return null;
+    const ctx = this.ctx as AudioContext;
+    if (typeof ctx.createAnalyser !== 'function') return null;
+    const node = ctx.createAnalyser();
+    node.fftSize = SPECTRUM_FFT_SIZE;
+    node.smoothingTimeConstant = 0.5;
+    node.minDecibels = -110;
+    node.maxDecibels = 0;
     source.connect(node);
     return node;
   }
@@ -586,7 +657,7 @@ export class MixerEngine {
         if (!needed.has(resolved.module.id)) continue;
         const descriptor = findPlugin(resolved.module.pluginId);
         if (!descriptor) continue;
-        const instance = descriptor.create(ctx, moduleParams(resolved));
+        const instance = createInstance(descriptor, ctx, moduleParams(resolved));
         cursor.connect(instance.input);
         cursor = instance.output;
         rack.set(resolved.module.id, instance);
@@ -612,13 +683,16 @@ export class MixerEngine {
     const insertChainIn = cursor;
     const inserts = new Map<string, PluginInstance>();
     const insertMeters = new Map<string, AnalyserNode>();
+    const insertSpectra = new Map<string, AnalyserNode>();
     for (const insert of [...track.inserts].sort((a, b) => a.slot - b.slot)) {
       const descriptor = descriptorFor(insert);
       if (!descriptor) continue;
-      const instance = descriptor.create(ctx, { ...insert.params });
+      const instance = createInstance(descriptor, ctx, { ...insert.params });
       // Tapped BEFORE the connection, so it reads the device's input.
       const tapped = this.tap(cursor);
       if (tapped) insertMeters.set(insert.id, tapped);
+      const spectrum = this.spectrumTap(cursor);
+      if (spectrum) insertSpectra.set(insert.id, spectrum);
       cursor.connect(instance.input);
       cursor = instance.output;
       inserts.set(insert.id, instance);
@@ -632,16 +706,24 @@ export class MixerEngine {
 
     const meter = this.buildMeter(postFaderTap);
 
+    const outputAlign = ctx.createDelay(MAX_DELAY_LINE_SEC);
+    postFaderTap.connect(outputAlign);
+
     const sends = new Map<string, SendNodes>();
     for (const send of track.sends) {
-      sends.set(send.id, { gain: ctx.createGain(), panner: ctx.createStereoPanner() });
+      sends.set(send.id, {
+        gain: ctx.createGain(),
+        panner: ctx.createStereoPanner(),
+        align: ctx.createDelay(MAX_DELAY_LINE_SEC),
+      });
     }
 
     void session;
     return {
       trackId: track.id, input, adc, insertIn, insertOut, insertChainIn, inserts, insertMeters,
+      insertSpectra,
       rack, chain,
-      preFaderTap, fader, panner, postFaderTap, sends, meter,
+      preFaderTap, fader, panner, postFaderTap, outputAlign, sends, meter,
     };
   }
 
@@ -662,6 +744,14 @@ export class MixerEngine {
       const delaySamples = compensation.perTrack.get(track.id) ?? 0;
       ch.adc.delayTime.value = Math.min(
         MAX_DELAY_LINE_SEC, delaySamples / this.ctx.sampleRate + signalDelaySec(track));
+
+      const sec = (samples: number): number =>
+        Math.min(MAX_DELAY_LINE_SEC, Math.max(0, samples) / this.ctx.sampleRate);
+      ch.outputAlign.delayTime.value = sec(compensation.perOutput.get(track.id) ?? 0);
+      for (const send of track.sends) {
+        const node = ch.sends.get(send.id);
+        if (node) node.align.delayTime.value = sec(compensation.perSend.get(send.id) ?? 0);
+      }
 
       const audible = isAudible(session, track);
       if (!this.isAutomated(track.id, 'volume')) {
@@ -739,6 +829,34 @@ export class MixerEngine {
    * the curve where the GR meter says it should.  An RMS reading of the same
    * signal sits several dB lower and makes the picture argue with the number.
    */
+  /**
+   * Fill `out` with the spectrum arriving at one insert, in dB.
+   *
+   * Takes the array rather than returning one: this is read every animation
+   * frame while an EQ window is open, and allocating a 4096-element
+   * Float32Array sixty times a second is garbage the collector has to come
+   * back for in the middle of the audio thread's neighbourhood.
+   *
+   * Returns false when there is nothing to read, so a caller can leave the
+   * last frame up rather than drawing a floor that looks like silence.
+   */
+  insertSpectrum(trackId: TrackId, insertId: string, out: Float32Array): boolean {
+    const node = this.channels.get(trackId)?.insertSpectra.get(insertId);
+    if (!node || out.length < node.frequencyBinCount) return false;
+    // The cast is the lib.dom types insisting the array be backed by a plain
+    // ArrayBuffer and not a SharedArrayBuffer.  `out` is an ordinary one —
+    // the caller allocates it with `new Float32Array(n)` — and there is no
+    // way to say so in the type of a parameter that has to accept any
+    // Float32Array a caller already has.
+    node.getFloatFrequencyData(out as Float32Array<ArrayBuffer>);
+    return true;
+  }
+
+  /** How many bins `insertSpectrum` writes — the size its array has to be. */
+  spectrumBins(): number {
+    return SPECTRUM_FFT_SIZE / 2;
+  }
+
   insertInputLevel(trackId: TrackId, insertId: string): number | null {
     const node = this.channels.get(trackId)?.insertMeters.get(insertId);
     if (!node) return null;
@@ -806,11 +924,11 @@ export class MixerEngine {
       }
       try { ch.chain?.dispose(); } catch { /* ignore */ }
       for (const node of [ch.input, ch.adc, ch.insertIn, ch.insertOut,
-        ch.preFaderTap, ch.fader, ch.panner, ch.postFaderTap]) {
+        ch.preFaderTap, ch.fader, ch.panner, ch.postFaderTap, ch.outputAlign]) {
         try { node.disconnect(); } catch { /* ignore */ }
       }
       for (const s of ch.sends.values()) {
-        for (const node of [s.gain, s.panner]) {
+        for (const node of [s.gain, s.panner, s.align]) {
           try { node.disconnect(); } catch { /* ignore */ }
         }
       }

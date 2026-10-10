@@ -5,12 +5,21 @@
 // The state model is a single source of truth for every parameter the
 // user can twist in the product layout slide-over panels.  It is:
 //
-//   • UI-state-only — no DSP value is written from this module.
-//   • Engine-agnostic — each parameter carries a `binding` field
-//     pointing to a future EngineSchema target; the binding is what
-//     M2-full / M3-P-NEXT-5B will consume to write to the real DSP.
-//   • Validated — `engine-command.ts` provides clamp/quantise helpers
-//     so every value entering state is in-range and step-aligned.
+//   • UI-state-only — no DSP value is written from THIS module.  The
+//     state it defines does reach the DSP; `chain-config.ts` turns an
+//     all-modules state into the offline render's config and the
+//     preview's alike.
+//   • Engine-agnostic — each parameter carries a `binding` field naming
+//     its EngineSchema target.  The binding is read today, not someday:
+//     `engine-bridge/engine-dispatcher.ts` refuses a command whose
+//     binding is not `wired`, `export-parameter-adapter.ts` grades a
+//     parameter's export support from it, and `pending-summary.ts`
+//     counts what is still unimplemented.
+//   • Validated — `engine-command.ts` provides clamp/quantise helpers.
+//     They are reached through `makeSetParamCommand`, which means
+//     through `ModuleParameterStateProvider` — see the note in
+//     `useModuleParameterState.tsx` about who mounts that, because the
+//     page the app ships writes this state WITHOUT them.
 //
 // Reference docs:
 //   docs/redesign/loui-mastering-v2/m3-product-next-5a/00-OVERVIEW.md
@@ -68,10 +77,23 @@ export interface EngineBindingTarget {
    */
   path: string;
   /**
-   * Whether any adapter currently writes / reads this binding.
-   *   - `'wired'`: ready today (e.g. limiter ceiling already exists)
-   *   - `'pending'`: M2-full plans to wire it
-   *   - `'unavailable'`: not on any roadmap (export-only / debug-only)
+   * Whether the chain the Studio render runs on carries this value.
+   *   - `'wired'`: it does.  `parameter-reach-selftest` measures this by
+   *     moving the parameter and rebuilding the render's chain config, and
+   *     fails a `wired` entry that moves nothing.
+   *   - `'pending'`: it does not yet.  Measured too, in the other
+   *     direction: an entry that says `pending` while already moving the
+   *     config fails, because that is how this field went stale before —
+   *     twenty-three entries promised "M2-full will add it" for fields the
+   *     Rust engine had all along.
+   *   - `'unavailable'`: there is no DSP module to carry it, and there is
+   *     not going to be.  The export module's format / rate / depth are
+   *     render-stage decisions, not chain stages, and the sweep skips them.
+   *
+   * The preview hears the same thing: `useRealtimePreview` takes a
+   * `ChainConfigWire` — the config `buildChainConfig` makes for the render —
+   * and posts it to the worklet, so there is no second, narrower config
+   * standing between a wired parameter and the preview.
    */
   status: 'wired' | 'pending' | 'unavailable';
   /** Optional adapter-specific note for diagnostics. */
@@ -99,6 +121,26 @@ interface BaseParameterDef {
   automatable: boolean;
   /** Engine binding target — see {@link EngineBindingTarget}. */
   binding: EngineBindingTarget;
+  /**
+   * Set when NOTHING implements this parameter yet.
+   *
+   * Different from `binding.status`, which says whether the render's chain
+   * carries the value.  (That doc used to say "the Python preview render",
+   * which is a third thing again — Python is the fallback, not the path a
+   * Studio render takes — and reading it is what sent one audit looking for
+   * twenty-three missing features that were all present.)  This says the
+   * value reaches no engine at all:
+   * move it and neither chain config changes, so no renderer, preview or
+   * export can behave differently.
+   *
+   * Measured rather than asserted — `scripts/parameter-reach-selftest.ts`
+   * moves every parameter with its module forced into the config and fails
+   * both ways: an undeclared parameter that reaches nothing, and a declared
+   * one that has started working and needs the flag taken off.  A panel that
+   * shows a control the engine has never heard of is the failure this
+   * prevents; the string is what it tells the user.
+   */
+  unimplemented?: string;
 }
 
 export interface NumericParameterDef extends BaseParameterDef {

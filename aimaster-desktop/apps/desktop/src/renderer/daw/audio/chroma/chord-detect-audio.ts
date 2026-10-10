@@ -101,11 +101,19 @@ export function detectChordsFromAudio(
   let bassIsStem = false;
   if (bass && bass.length > 0) {
     onProgress?.(0.75, '베이스 분석');
+    // NO suppression, and the reason is the transform's range.  The bass
+    // plays below C2, which is the lowest bin there is, so what the CQT holds
+    // is a harmonic series with its fundamental missing — and a step that
+    // removes partials removes the whole note.  Measured over the twelve
+    // roots at MIDI 24…35: unsuppressed names 11 and is unsure about one;
+    // at 0.6 it names 4; at 0.95 it names none.
+    //
+    // Nothing is lost by turning it off, either.  Suppression is for
+    // POLYPHONY, where one note's partials look like another note; a bass
+    // line is one note at a time, and harmonics 1, 2, 4 and 8 all fold onto
+    // that note's own pitch class, so the root wins the argmax by counting.
     const bassGram = chromagram(bass, sampleRate, {
-      ...options.chroma,
-      // The bass line is one note at a time, so suppressing its harmonics is
-      // the whole job — an unsuppressed bass reads as a chord of its own.
-      harmonicSuppression: 0.6,
+      ...options.chroma, harmonicSuppression: 0,
     });
     bassPitches = bassPitchesFor(bassGram.frames, bassGram.hopSec, grid.times);
     bassIsStem = true;

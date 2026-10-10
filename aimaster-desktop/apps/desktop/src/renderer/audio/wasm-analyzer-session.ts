@@ -301,7 +301,14 @@ class WasmAnalyzerSession implements AnalyzerSession {
 
     // Receive audio blocks from worklet → push to WASM analyzers on main.
     this.tapNode.port.onmessage = (event: MessageEvent) => {
-      if (!_diagFirstMsg) { _diagFirstMsg = true; /* eslint-disable-next-line no-console */ console.error('[wasm-analyzer] FIRST tapNode.port.onmessage'); }
+      if (!_diagFirstMsg) {
+        _diagFirstMsg = true;
+        // The disable used to sit INLINE on this one line, where it applied to
+        // the line below instead of to the call beside it — so this warning
+        // stayed live and the next line was the one being silenced.
+        // eslint-disable-next-line no-console
+        console.error('[wasm-analyzer] FIRST tapNode.port.onmessage');
+      }
       const data = event.data as { left: Float32Array; right?: Float32Array };
       if (!data || !data.left) return;
       this.processBlock(data.left, data.right);

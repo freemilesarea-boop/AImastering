@@ -195,6 +195,14 @@ impl VintageCompressor {
     }
 
     /// Gain reduction (dB, ≥ 0) on the last block.
+    /// Gain reduction (dB, ≥ 0) on the last block.
+    ///
+    /// The reduction the OUTPUT shows, parallel mix included.  At 50% wet a
+    /// gain computer asking for 19 dB moves the output by 5 — the dry copy
+    /// is summed back as a signal, and the two copies are correlated, so
+    /// they add in the linear domain.  Saturation and makeup are left out:
+    /// the first is colour, not level, and the second is what was handed
+    /// back afterwards.
     pub fn gain_reduction_db(&self) -> f64 { self.last_gr_db }
 }
 
@@ -211,7 +219,9 @@ impl StereoModule for VintageCompressor {
         let makeup = 10f64.powf(self.cfg.makeup_db.clamp(-12.0, 24.0) / 20.0);
         let drive = (self.cfg.character_pct / 100.0).clamp(0.0, 1.0);
         let mix = (self.cfg.mix_pct / 100.0).clamp(0.0, 1.0);
-        let mut block_gr = 0.0f64;
+        // Deepest output factor over the block, converted to dB once at the
+        // end — see `gain_reduction_db`.
+        let mut min_factor = 1.0f64;
 
         for i in 0..n {
             let l = left[i] as f64;
@@ -248,8 +258,9 @@ impl StereoModule for VintageCompressor {
             }
             .clamp(0.0, 30.0);
 
-            if reduction > block_gr { block_gr = reduction; }
             let g = 10f64.powf(-reduction / 20.0);
+            let factor = 1.0 - mix + mix * g;
+            if factor < min_factor { min_factor = factor; }
 
             // Saturation rides with the gain reduction: the harder it works,
             // the more colour it adds.
@@ -264,7 +275,7 @@ impl StereoModule for VintageCompressor {
             left[i] = ((l * (1.0 - mix) + wl * mix) * makeup) as f32;
             right[i] = ((r * (1.0 - mix) + wr * mix) * makeup) as f32;
         }
-        self.last_gr_db = block_gr;
+        self.last_gr_db = (-20.0 * min_factor.max(1e-12).log10()).max(0.0);
     }
 
     fn reset(&mut self) {
@@ -621,5 +632,38 @@ mod tests {
         let mut r = l.clone();
         t.process_stereo(&mut l, &mut r);
         assert!(l.iter().all(|s| s.is_finite()));
+    }
+
+    /// The vari-mu's GR meter against the level its output loses.  The
+    /// saturation is turned off for the measurement because it is colour
+    /// rather than gain, and the meter deliberately leaves it out; makeup
+    /// is off for the same reason.  `mix_pct` used to be missing from the
+    /// meter entirely — it read 19 dB at 50% wet, where the output moves 5.
+    #[test]
+    fn comp_gr_meter_follows_the_parallel_mix() {
+        let amp = 0.891_25f32;
+        let mut deepest = f64::INFINITY;
+        for &mix_pct in &[100.0f64, 88.0, 50.0, 40.0] {
+            let mut c = VintageCompressor::new(48_000.0, VintageCompressorConfig {
+                threshold_db: -24.0, ratio: 6.0, attack_ms: 10.0, makeup_db: 0.0,
+                character_pct: 0.0, mix_pct, bypass: false,
+            });
+            let n = 48_000;
+            let mut l = vec![amp; n];
+            let mut r = vec![amp; n];
+            c.process_stereo(&mut l, &mut r);
+            let applied = -20.0 * (l[n - 1] as f64 / amp as f64).log10();
+            let meter = c.gain_reduction_db();
+            assert!(
+                (meter - applied).abs() < 0.02,
+                "mix {mix_pct}%: meter says {meter:.2} dB, output moved {applied:.2}",
+            );
+            assert!(applied > 1.0, "mix {mix_pct}%: nothing to measure ({applied:.2} dB)");
+            assert!(
+                applied < deepest,
+                "mix {mix_pct}%: less wet must mean less reduction, got {applied:.2}",
+            );
+            deepest = applied;
+        }
     }
 }

@@ -92,6 +92,24 @@ const _PH3 = new Float32Array([
   -0.1024169921875, 0.9721679687500, 0.1373291015625,-0.0594482421875,
    0.0332031250000,-0.0196533203125, 0.0109863281250, 0.0017089843750,
 ]);
+// Each branch must pass DC at unity.  _PH2 as tabulated sums to 0.752319
+// while _PH1 and _PH3 sum to 1.001465, which dips the half-sample position
+// by 2.5 dB and made the meter under-report true peak by up to 1.52 dB —
+// see audio/truePeak.ts for the measurements.  Normalised here for the same
+// reason and in the same way, because this file is the audio-thread copy of
+// that table and the two must not disagree about level.
+function _norm(p) {
+  let sum = 0;
+  for (let i = 0; i < p.length; i++) sum += p[i];
+  if (!(Math.abs(sum) > 1e-9)) return p;
+  const out = new Float32Array(p.length);
+  for (let i = 0; i < p.length; i++) out[i] = p[i] / sum;
+  return out;
+}
+const _P1 = _norm(_PH1);
+const _P2 = _norm(_PH2);
+const _P3 = _norm(_PH3);
+
 const _NTAPS = 12;
 
 class _TPChannel {
@@ -110,9 +128,9 @@ class _TPChannel {
     let idx = this.head;
     for (let k = 0; k < _NTAPS; k++) {
       const v = this.ring[idx];
-      a1 += v * _PH1[k];
-      a2 += v * _PH2[k];
-      a3 += v * _PH3[k];
+      a1 += v * _P1[k];
+      a2 += v * _P2[k];
+      a3 += v * _P3[k];
       idx = (idx + 1) % _NTAPS;
     }
     p = Math.abs(a1); if (p > this.peak) this.peak = p;

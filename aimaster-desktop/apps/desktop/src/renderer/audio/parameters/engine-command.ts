@@ -1,10 +1,16 @@
 // Engine command contract.
 //
-// All UI parameter changes flow through this command shape on their way
-// to the (future) DSP engine.  For now nothing downstream consumes
-// commands — the provider in `useModuleParameterState.tsx` only keeps a
-// rolling log for inspection.  M3-P-NEXT-5B will dispatch commands to
-// the engine bridge.
+// All UI parameter changes flow through this command shape, which is where
+// validation and clamping happen.  Nothing downstream consumes the COMMANDS:
+// the provider in `useModuleParameterState.tsx` keeps a rolling log for
+// inspection, and the app installs the no-op dispatcher.
+//
+// That is not the same as "parameter changes do not reach the engine".  They
+// do, by a different route: the parameter STATE those commands produce is
+// turned into a chain config (`chain-config.ts` for the render,
+// `realtime-mastering-chain.ts` for the preview) and sent to the mastering
+// worklet on every edit — which is why the transport can tell the user a
+// change is audible immediately.
 //
 // Why an explicit command type:
 //   • Validation and clamping happen exactly once, when the command is
@@ -47,6 +53,37 @@ export type CommandKind =
 
 // ── Validation ───────────────────────────────────────────────────────────
 
+/**
+ * How close two parameter values have to be to count as the same value.
+ *
+ * Nothing this product controls is meaningful at 1e-9 — the finest step any
+ * definition declares is 0.01 — so a difference below this is arithmetic,
+ * not a parameter change.
+ */
+const SAME_VALUE = 1e-9;
+
+/**
+ * Snap to the grid the USER'S control uses, which is `min + n*step` — not
+ * `n*step`.
+ *
+ * A range input's allowed values are anchored at `min`, so a quantiser
+ * anchored at zero disagrees with the slider the value came from for every
+ * parameter whose `min` is not itself a multiple of `step`.  That was one
+ * parameter — the bus compressor's Attack, declared [0.1 .. 100 / 0.5] —
+ * and for it the two grids never agreed on a single value: the slider could
+ * only produce 0.1, 0.6, 1.1 ..., and this function corrected every one of
+ * them.  The definition has since been fixed; the anchor is fixed here so
+ * that the next off-grid definition is a slider question, not also a
+ * silent rewrite.
+ *
+ * The result is rounded because `min + n*step` lands a hair off the decimal
+ * the user sees (0.5 + 19*0.5 = 9.999999999999998), and comparing against
+ * that hair is how a value nobody changed came to be reported as corrected.
+ */
+function snapToGrid(value: number, min: number, step: number): number {
+  return Number((min + Math.round((value - min) / step) * step).toPrecision(12));
+}
+
 export type ValidationResult =
   | { status: 'ok';       value: ParameterValue }
   | { status: 'clamped';  from: ParameterValue; to: ParameterValue; reason: string }
@@ -74,17 +111,20 @@ export function validateParameterValue(
       }
       // Step quantisation (snap to grid before clamping so the clamp
       // result is always a valid step value).
-      const quant = def.step > 0
-        ? Math.round(candidate / def.step) * def.step
-        : candidate;
+      const quant = def.step > 0 ? snapToGrid(candidate, def.min, def.step) : candidate;
       const clamped = Math.max(def.min, Math.min(def.max, quant));
-      // Compare against original `candidate`, not `quant` — the user
-      // cares that we deviated from the value they sent, not that we
-      // rounded internally.
-      if (clamped !== candidate) {
-        const reason = clamped !== quant ? 'out-of-range' : 'step-quantised';
+      // Compare against the original `candidate` — the user cares that we
+      // deviated from the value they sent, not that we rounded internally.
+      // Which is exactly why the comparison needs a tolerance: with an
+      // exact `!==`, 1837 of the 165333 values the definitions can produce
+      // came back `clamped` with a correction of 1e-16, and the UI this
+      // feeds would have said "you tried 1.4 dB; we clamped it to 1.4 dB".
+      if (Math.abs(clamped - candidate) > SAME_VALUE) {
+        const reason = Math.abs(clamped - quant) > SAME_VALUE ? 'out-of-range' : 'step-quantised';
         return { status: 'clamped', from: candidate, to: clamped, reason };
       }
+      // `clamped`, not `candidate`: the snapped value is the clean decimal,
+      // so state stores 1.4 rather than 1.4000000000000001.
       return { status: 'ok', value: clamped };
     }
     case 'boolean': {

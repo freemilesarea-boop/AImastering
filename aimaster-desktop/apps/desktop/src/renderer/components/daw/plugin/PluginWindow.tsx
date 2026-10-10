@@ -19,6 +19,7 @@ import { resolvePreset } from '../../../daw/engine/plugin-presets.js';
 import type { PluginPreset } from '../../../daw/engine/plugin-presets.js';
 import { partitionGenre } from '../../../daw/engine/plugin-presets-genre.js';
 import { partitionInstrument } from '../../../daw/engine/plugin-presets-instrument.js';
+import { partitionVoice } from '../../../daw/engine/plugin-presets-voice.js';
 import {
   allPresetGroups, canSaveUserPreset, deleteUserPreset, exportUserPresets,
   importUserPresets, isUserPresetId, overwriteUserPreset, saveUserPreset, describeImport,
@@ -34,8 +35,11 @@ import { premium } from '../../../theme/premium.js';
 import Knob from './Knob.js';
 import PluginVisual from './PluginVisual.js';
 import EqCurveEditor from './EqCurveEditor.js';
+import AnalyzerView from './AnalyzerView.js';
 import { eqNodes, type NodeEdit, type ParamRange } from '../../../daw/model/eq-nodes.js';
+import { lfoPictureFor } from '../../../daw/model/plugin-shapes.js';
 import { wantsSquareVisual } from '../../../daw/model/plugin-shapes.js';
+import { knobParams } from '../../../daw/engine/plugin-kit.js';
 
 /**
  * A row of preset chips for one closed set.
@@ -276,6 +280,11 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
   // write, both values.
   const eqBands = eqNodes(insert.pluginId, params);
   const isEq = eqBands.length > 0;
+  // A band editor and a picture are an either/or below, and for one device
+  // that is the wrong answer: the linear-phase EQ's whole cost is the impulse
+  // response, which a magnitude curve cannot show at all.  So a device that
+  // has BOTH gets both, the editor above and the trace underneath.
+  const alsoDraws = isEq && lfoPictureFor(insert.pluginId, params) !== null;
   const visualHeight = wantsSquareVisual(insert.pluginId) ? SQUARE_HEIGHT : VISUAL_HEIGHT;
 
   const paramRanges: Record<string, ParamRange> = {};
@@ -333,7 +342,10 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
   // track" and the genre answers "what should the record sound like";
   // neither answers the other, so neither replaces the other.
   const { genre: genrePresets, rest: afterGenre } = partitionGenre(groups);
-  const { instrument: instrumentPresets, rest: menuGroups } = partitionInstrument(afterGenre);
+  const { instrument: instrumentPresets, rest: afterInstrument } = partitionInstrument(afterGenre);
+  // Two chips, and the narrowest question of the three: genre asks about the
+  // record, instrument about the track, this about who is singing.
+  const { voice: voicePresets, rest: menuGroups } = partitionVoice(afterInstrument);
   const loadPreset = (presetId: string): void => {
     const preset = groups.flatMap((g) => g.presets).find((entry) => entry.id === presetId);
     if (!preset) return;
@@ -422,7 +434,7 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
         slot: insert.slot,
         selection: useDawStore.getState().selection,
       });
-      const result = adviseFor(insert.pluginId, profile);
+      const result = adviseFor(insert.pluginId, profile, params);
       if (!result.ok) {
         setAdvice(null);
         setAdviceError(result.reason);
@@ -464,7 +476,7 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
       className="fixed rounded-xl overflow-hidden"
       style={{
         left: win.x, top: win.y, zIndex: pluginWindowLayer(win.z),
-        width: (isEq ? EQ_WIDTH : VISUAL_WIDTH) + 28,
+        width: (isEq || insert.pluginId === 'analyzer' ? EQ_WIDTH : VISUAL_WIDTH) + 28,
         background: premium.surface.frame,
         border: `1px solid ${insert.bypass ? 'rgba(120,120,140,0.35)' : premium.accent.deep}`,
         boxShadow: premium.shadow.panel,
@@ -548,6 +560,7 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
             so they become places on the window rather than menus to search.
             Instrument first, because you know what is on the track before you
             know what you want it to become. */}
+        <ChipRow label="목소리" presets={voicePresets} loadedPreset={loadedPreset} onPick={loadPreset} />
         <ChipRow label="악기" presets={instrumentPresets} loadedPreset={loadedPreset} onPick={loadPreset} />
         <ChipRow label="장르" presets={genrePresets} loadedPreset={loadedPreset} onPick={loadPreset} />
 
@@ -671,7 +684,20 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
       )}
 
       <div className="p-3.5 flex flex-col gap-3">
-        {isEq ? (
+        {insert.pluginId === 'analyzer' ? (
+          // The one device whose panel IS the measurement.  It has no curve to
+          // edit and no shape to preview — what a still picture could show is
+          // the tilt, and that is in the visual below the live one.
+          <AnalyzerView
+            trackId={win.trackId}
+            insertId={insertId}
+            params={params}
+            bypassed={insert.bypass}
+            playing={isPlaying}
+            width={EQ_WIDTH}
+            height={Math.round(EQ_HEIGHT * 0.82)}
+          />
+        ) : isEq ? (
           <EqCurveEditor
             pluginId={insert.pluginId}
             params={params}
@@ -682,6 +708,9 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
             height={EQ_HEIGHT}
             onEdit={applyEdits}
             onCommit={commitEdits}
+            trackId={win.trackId}
+            insertId={insertId}
+            playing={isPlaying}
           />
         ) : (
           <PluginVisual
@@ -696,7 +725,20 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
           />
         )}
 
-        {descriptor.params.filter(isChoice).map((def) => {
+        {alsoDraws && (
+          <PluginVisual
+            pluginId={insert.pluginId}
+            params={params}
+            bypassed={insert.bypass}
+            level={level}
+            reduction={reduction}
+            analysis={analysis}
+            width={VISUAL_WIDTH}
+            height={Math.round(visualHeight * 0.6)}
+          />
+        )}
+
+        {knobParams(descriptor.params).filter(isChoice).map((def) => {
           const index = Math.round(params[def.id] ?? def.default);
           return (
             <div key={def.id} className="flex flex-col gap-1">
@@ -725,7 +767,7 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
         })}
 
         <div className="flex flex-wrap gap-x-1 gap-y-2 justify-center">
-          {descriptor.params.filter((def) => !isChoice(def)).map((def) => (
+          {knobParams(descriptor.params).filter((def) => !isChoice(def)).map((def) => (
             <Knob
               key={def.id}
               label={def.name}

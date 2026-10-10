@@ -30,6 +30,9 @@ import { MAX_PX_PER_SEC, MIN_PX_PER_SEC, type Viewport } from '../src/renderer/d
 import {
   addTrack, createClip, createSession, createTrack, updateClips,
 } from '../src/renderer/daw/model/session-ops.js';
+import {
+  createStack, setTracksHidden, toggleCollapsed, visibleTracks,
+} from '../src/renderer/daw/model/stacks.js';
 import { resetIds } from '../src/renderer/daw/model/ids.js';
 import type { DawSession } from '../src/renderer/daw/model/types.js';
 
@@ -150,12 +153,62 @@ check('blocks land where the clips are', () => {
 });
 
 check('a hidden track has no row at all', () => {
+  // The rows the ARRANGEMENT draws, taken from the session.
+  //
+  // This check used to hand `universeRows` a set of ids it had built itself,
+  // through an option — and the strip, the only caller, never passed one.  So
+  // the check passed for years while the app drew a stripe for every hidden
+  // track: with one of three hidden the arrangement drew two lanes and the
+  // strip drew three, and every stripe below the gap named the wrong lane.
+  // A test that supplies the input the product does not supply is a test of
+  // the test.
   const s = song([[0, 0, 10], [1, 0, 10], [2, 0, 10]]);
   const all = universeRows(s, STRIP);
-  const hidden = new Set([all[1]?.trackId as string]);
-  const some = universeRows(s, STRIP, { hiddenTrackIds: hidden });
+  const gone = all[1]!.trackId;
+  const some = universeRows(setTracksHidden(s, [gone], true), STRIP);
   assert(some.length === 2, `two rows left — got ${some.length}`);
-  assert(!some.some((r) => r.trackId === all[1]?.trackId), 'and not that one');
+  assert(!some.some((r) => r.trackId === gone), 'and not that one');
+  // Row for row with the window beside it, which is the whole point.
+  const lanes = visibleTracks(setTracksHidden(s, [gone], true))
+    .filter((t) => t.kind !== 'master').map((t) => t.id);
+  assert(some.map((r) => r.trackId).join() === lanes.join(),
+    `strip rows ${some.map((r) => r.trackId).join()} against lanes ${lanes.join()}`);
+});
+
+check('a folded stack has one row, carrying what is folded into it', () => {
+  // A collapsed folder stands in for its children in the arrange window too.
+  // The strip has to agree about the ROW — otherwise the stripes below it all
+  // shift — and it has to keep the MATERIAL, because that row is the only
+  // place the folded takes have left to appear.
+  const s = song([[0, 0, 10], [1, 0, 10], [2, 0, 10]]);
+  const ids = universeRows(s, STRIP).map((r) => r.trackId);
+  const stacked = createStack(s, 'Folder', [ids[1]!, ids[2]!]);
+  const open = universeRows(stacked.session, STRIP);
+  assert(open.length === 4, `four rows with the folder open — got ${open.length}`);
+  const folder = open.find((r) => r.trackId === stacked.folderId);
+  assert(folder?.blocks.length === 0, 'an open folder has no clips of its own');
+
+  const folded = universeRows(toggleCollapsed(stacked.session, stacked.folderId), STRIP);
+  assert(folded.length === 2, `the folder and the track outside it — got ${folded.length}`);
+  const row = folded.find((r) => r.trackId === stacked.folderId);
+  assert(row?.blocks.length === 2,
+    `the folded row carries both children's clips — got ${row?.blocks.length}`);
+  const lanes = visibleTracks(toggleCollapsed(stacked.session, stacked.folderId))
+    .filter((t) => t.kind !== 'master').map((t) => t.id);
+  assert(folded.map((r) => r.trackId).join() === lanes.join(),
+    `strip rows ${folded.map((r) => r.trackId).join()} against lanes ${lanes.join()}`);
+});
+
+check('the readout counts the rows it is describing', () => {
+  // It counted every clip track in the session, which read "3개 트랙" over a
+  // strip showing two — and the one it was counting was the one hidden.
+  const s = song([[0, 0, 10], [1, 0, 10], [2, 0, 10]]);
+  const view: Viewport = { scrollSec: 0, pxPerSec: 20, widthPx: 600 };
+  assert(describeUniverse(s, view).startsWith('3개 트랙 ·'),
+    `all visible: ${describeUniverse(s, view)}`);
+  const hidden = setTracksHidden(s, [universeRows(s, STRIP)[1]!.trackId], true);
+  assert(describeUniverse(hidden, view).startsWith('2개 트랙 (1개 숨김)'),
+    `one hidden: ${describeUniverse(hidden, view)}`);
 });
 
 check('rows share the height, down to a floor', () => {

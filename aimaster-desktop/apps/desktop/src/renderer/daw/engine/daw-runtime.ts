@@ -13,7 +13,7 @@ import { MixerEngine } from './mixer-engine.js';
 import type { ChannelMeterReading } from '../model/channel-meter.js';
 import { LoudnessStream, type LiveLoudnessMetrics } from '../../audio/loudnessStream.js';
 import { trackClips } from '../model/session-ops.js';
-import { ClipPlayer } from './clip-player.js';
+import { ClipPlayer, FIRST_WINDOW_SEC } from './clip-player.js';
 import { ControlRoomNode } from './control-room-node.js';
 import { DEFAULT_CONTROL_ROOM, type ControlRoomState } from '../model/control-room.js';
 import {
@@ -23,8 +23,9 @@ import {
 import { midiInsertsOf } from '../model/midi-insert-track.js';
 import { getCached, pinFiles, preloadAll } from './audio-cache.js';
 import { findInstrument } from './instruments.js';
-import { InputCapture, openCapture, scheduleCountIn } from './recorder.js';
+import { InputCapture, openCapture } from './recorder.js';
 import { Metronome } from './metronome.js';
+import { SlotPlayer, type SlotVoice } from './slot-player.js';
 import { tempoMapOf } from '../model/tempo-map.js';
 import { noteSpan, partClock } from '../model/note-time.js';
 import {
@@ -114,7 +115,23 @@ class DawRuntime {
    */
   private sessionOrigin: number | null = null;
   private sessionBarSec = 2;
-  private slotVoices = new Map<TrackId, Array<{ stop: (at: number) => void }>>();
+  /**
+   * Session View slots.  The repeat is the SlotPlayer's; the sounds are made
+   * here and handed to it — see `slot-player.ts` for why a slot cannot lean
+   * on the transport's tick.
+   */
+  private slotPlayer = new SlotPlayer(() => this.ctx?.currentTime ?? 0, LOOKAHEAD_SEC);
+  /** Runs only while a slot is live; the transport's own timer may be off. */
+  private slotTimer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * How far ahead the scheduler is currently asked to reach.
+   *
+   * It starts small when playback begins and grows to `LOOKAHEAD_SEC` — see
+   * `fillLookahead`.  The transport's timer reads the SAME number, or it
+   * would race the staged fill and do the whole remaining second in one
+   * block, which is the thing being avoided.
+   */
+  private reachSec = LOOKAHEAD_SEC;
 
   /** Position updates while the transport runs (seconds). */
   onPosition: ((sec: number) => void) | null = null;
@@ -677,12 +694,13 @@ class DawRuntime {
 
     let lead = 0.06;
     if (plan.countInSec > 0) {
-      scheduleCountIn(ctx, ctx.destination, {
-        tempoBpm: session.tempoBpm,
-        beatsPerBar: session.timeSignature[0],
-        bars: Math.round(plan.countInSec / (session.timeSignature[0] * (60 / session.tempoBpm))),
-        when: ctx.currentTime + lead,
-      });
+      // Every number comes from the plan, which read them off the tempo map at
+      // the record point.  Re-deriving any of them here is what counted a take
+      // in at the session's opening tempo — see `RecordPlan.countInBeats`.
+      this.metronome.countIn(
+        ctx.currentTime + lead,
+        plan.countInBeats, plan.countInBeatSec, plan.countInBeatsPerBar,
+      );
       lead += plan.countInSec;
     }
 
@@ -757,6 +775,10 @@ class DawRuntime {
       this.controlRoom.apply(this.controlRoomState);
       this.engine = new MixerEngine(this.ctx, this.controlRoom.input, { meters: true });
       this.player = new ClipPlayer(this.engine);
+      // The locators are usually set before the first transport gesture — a
+      // context only exists once the user has asked for sound — so the loop is
+      // handed over here as well as in `setLoop`.
+      this.setLoop(this.loop);
       // The click is heard in the room, so it goes through the room.  Attached
       // here rather than only in `setMetronome`, which never ran at all if the
       // click was switched on before there was a context to attach to.
@@ -782,7 +804,17 @@ class DawRuntime {
     this.engine.sync(session);
   }
 
-  setLoop(loop: LoopState): void { this.loop = loop; }
+  setLoop(loop: LoopState): void {
+    this.loop = loop;
+    // The scheduler owns the repeat — see `ClipPlayer.setLoop` for the
+    // measurements that moved it there.  This object keeps its copy because
+    // the record path reads the locators.
+    this.player?.setLoop(
+      loop.enabled && loop.endSec > loop.startSec
+        ? { startSec: loop.startSec, endSec: loop.endSec }
+        : null,
+    );
+  }
 
   /**
    * Decode what the transport needs.
@@ -794,7 +826,8 @@ class DawRuntime {
    */
   async preload(session: DawSession): Promise<void> {
     if (!this.ctx) return;
-    await preloadAll(this.ctx, playableFiles(session));
+    const failures = await preloadAll(this.ctx, playableFiles(session));
+    void failures;
   }
 
   /**
@@ -817,10 +850,14 @@ class DawRuntime {
     if (!this.player) return;
 
     this.player.start(session, fromSec);
+    this.primeClick(session);
     this.startTicking();
+    this.fillLookahead(session);
 
     // Fill in anything still missing behind the play head.
-    void this.preload(session).catch(() => { /* reported per file already */ });
+    // Failures are announced by the cache (`onMissingFile`); this catch is for the
+    // context itself going away mid-preload.
+    void this.preload(session).catch(() => { /* context gone */ });
   }
 
   stop(): void {
@@ -846,7 +883,9 @@ class DawRuntime {
     this.metronome.reset();
     if (wasPlaying) {
       this.player?.start(session, Math.max(0, toSec));
+      this.primeClick(session);
       this.startTicking();
+      this.fillLookahead(session);
     } else {
       this.onPosition?.(Math.max(0, toSec));
     }
@@ -868,7 +907,30 @@ class DawRuntime {
     return this.engine?.analyse(trackId, insertId) ?? null;
   }
 
+  /** The stereo picture at one insert, for a device that draws a scope. */
+  insertScope(
+    trackId: TrackId, insertId: string, left: Float32Array, right: Float32Array,
+  ): boolean {
+    return this.engine?.insertScope(trackId, insertId, left, right) ?? false;
+  }
+
   /** Peak arriving at one insert, linear.  Null when metering is off. */
+  /**
+   * The spectrum arriving at one insert, written into `out`.
+   *
+   * `out` has to be at least `spectrumBins()` long, and it is the caller's to
+   * keep between frames — see the engine's note on why this does not return
+   * a fresh array sixty times a second.
+   */
+  insertSpectrum(trackId: TrackId, insertId: string, out: Float32Array): boolean {
+    return this.engine?.insertSpectrum(trackId, insertId, out) ?? false;
+  }
+
+  /** How long an array `insertSpectrum` will fill has to be. */
+  spectrumBins(): number {
+    return this.engine?.spectrumBins() ?? 0;
+  }
+
   insertInputLevel(trackId: TrackId, insertId: string): number | null {
     return this.engine?.insertInputLevel(trackId, insertId) ?? null;
   }
@@ -940,6 +1002,58 @@ class DawRuntime {
     );
   }
 
+  /**
+   * Fill the rest of the look-ahead after the sound has started, a slice at a
+   * time.
+   *
+   * `player.start` schedules only `FIRST_WINDOW_SEC`, so the first sample is
+   * not waiting on a second of work — measured, that took 82.6 ms on a
+   * 48-track session against a 60 ms lead, and fourteen notes went into the
+   * graph already behind the clock.  The rest of the second still has to be
+   * scheduled, and doing it in one go simply moves an 80 ms block a few
+   * milliseconds later, where it is a dropped frame instead of a flam.  So
+   * it is extended in `FIRST_WINDOW_SEC` steps, one per timeout, each about
+   * the cost of the first — small enough to sit inside a frame.
+   *
+   * It also closes a gap the 50 ms timer would leave on its own: a first
+   * tick late enough that the play head is already past the short window
+   * would SKIP the notes in between, because a note whose moment has passed
+   * is dropped rather than fired late.
+   */
+  private fillLookahead(session: DawSession): void {
+    this.reachSec = Math.min(LOOKAHEAD_SEC, FIRST_WINDOW_SEC);
+    const step = (): void => {
+      globalThis.setTimeout(() => {
+        const player = this.player;
+        // A stop, or a different session, and this fill is about the past.
+        if (!player?.isPlaying || this.session !== session) return;
+        this.reachSec = Math.min(LOOKAHEAD_SEC, this.reachSec + FIRST_WINDOW_SEC);
+        player.tick(session, this.reachSec);
+        this.primeClick(session);
+        if (this.reachSec < LOOKAHEAD_SEC) step();
+      }, 0);
+    };
+    step();
+  }
+
+  /**
+   * Click the first window as soon as playback starts, not on the first tick.
+   *
+   * `player.start` places its first second of material synchronously, while
+   * the transport's timer does not fire for at least TICK_MS — and the lead
+   * is 60 ms, measured.  So by the time the first tick asked the metronome
+   * for clicks, the click ON the play position was already in the past and
+   * was dropped as late: measured in the app, nine notes out of ten shared
+   * their moment with a click and the FIRST one had none.  The clips do not
+   * have this problem because nothing waits for a timer to place them; this
+   * gives the click the same head start, out of the same window list.
+   */
+  private primeClick(session: DawSession): void {
+    const player = this.player;
+    if (!player) return;
+    this.metronome.tickWindows(tempoMapOf(session), player.lastWindows);
+  }
+
   private startTicking(): void {
     this.startPositionFrames();
     if (this.timer) return;
@@ -958,22 +1072,25 @@ class DawRuntime {
         return;
       }
 
-      // Loop: wrap at the right locator by re-arming the scheduler there.
-      if (this.loop.enabled && this.loop.endSec > this.loop.startSec && pos >= this.loop.endSec) {
-        player.stop();
-        player.start(session, this.loop.startSec);
-        this.onPosition?.(this.loop.startSec);
-        return;
-      }
+      // No wrap here.  This used to notice the loop end had gone by, stop every
+      // voice and start again 60 ms later, and the loop came out about a tenth
+      // of a second long every pass — measured in the app, a 1.000 s loop ran
+      // 1.0999 and a 4.000 s one 4.0960, a constant ~99 ms rather than a rate
+      // error.  The scheduler wraps its own look-ahead window now, so the next
+      // pass is in the graph before the current one ends.
 
       // Meters ride the transport tick so the over latch is fed during
       // playback whether or not the Mix window is open.
       this.engine?.pollMeters();
 
-      player.tick(session, LOOKAHEAD_SEC);
-      // The click rides the same tick and the same origin as the clips, so a
-      // beat and a kick on that beat are scheduled to the same context time.
-      this.metronome.tick(tempoMapOf(session), pos, LOOKAHEAD_SEC, player.originSec);
+      player.tick(session, this.reachSec);
+      // The click rides the same tick and the same WINDOWS as the clips — the
+      // list the player just walked, per-pass origins and all — so a beat and
+      // a kick on that beat are scheduled to the same context time, and a
+      // loop cannot leave the click behind.  It used to be handed the
+      // position and a lookahead and work the rest out itself, which inside a
+      // loop meant it stopped clicking altogether.
+      this.metronome.tickWindows(tempoMapOf(session), player.lastWindows);
       // The cursor is NOT reported from here — see `startPositionFrames`.
 
       // Stop at the end of the last clip (plus a tail for effects).
@@ -1051,8 +1168,13 @@ class DawRuntime {
   }
 
   /**
-   * Play a Session slot on a track, looping.  Audio clips loop natively;
-   * MIDI parts are scheduled a few passes ahead and topped up by the tick.
+   * Play a Session slot on a track, looping.
+   *
+   * Audio repeats inside the source node.  A MIDI part is topped up pass by
+   * pass by `SlotPlayer` on a timer of its own — NOT by the transport's tick,
+   * which only runs while the play head is moving and a slot is fired with it
+   * parked.  This docblock used to say the tick did it; nothing did, and a
+   * looping part stopped after four passes.  See `slot-player.ts`.
    */
   startSlot(session: DawSession, trackId: TrackId, clip: Clip, loop: boolean): void {
     if (!this.ensure(session.sampleRate)) return;
@@ -1061,68 +1183,103 @@ class DawRuntime {
     if (!ctx || !channel) return;
 
     this.stopSlot(trackId);
-    const voices: Array<{ stop: (at: number) => void }> = [];
     const startAt = ctx.currentTime + 0.03;
 
     if (clip.kind === 'audio') {
       const cached = getCached(clip.fileId);
       if (!cached) return;
-      const source = ctx.createBufferSource();
-      source.buffer = cached.buffer;
-      source.loop = loop;
-      source.loopStart = clip.offsetSec;
-      source.loopEnd = clip.offsetSec + clip.durationSec;
-      const gain = ctx.createGain();
-      gain.gain.value = Math.pow(10, clip.gainDb / 20);
-      source.connect(gain).connect(channel.input);
-      source.start(startAt, clip.offsetSec, loop ? undefined : clip.durationSec);
-      voices.push({
-        stop: (at: number) => {
-          try { source.stop(at); } catch { /* already stopped */ }
-          try { source.disconnect(); gain.disconnect(); } catch { /* ignore */ }
+      // Audio repeats in the source node, so there is one pass however long
+      // the slot is held.
+      this.slotPlayer.start(trackId, {
+        lengthSec: clip.durationSec, loop: false, startAt,
+        schedule: (at): SlotVoice[] => {
+          const source = ctx.createBufferSource();
+          source.buffer = cached.buffer;
+          source.loop = loop;
+          source.loopStart = clip.offsetSec;
+          source.loopEnd = clip.offsetSec + clip.durationSec;
+          const gain = ctx.createGain();
+          gain.gain.value = Math.pow(10, clip.gainDb / 20);
+          source.connect(gain).connect(channel.input);
+          source.start(at, clip.offsetSec, loop ? undefined : clip.durationSec);
+          return [{
+            endsAt: loop ? Number.POSITIVE_INFINITY : at + clip.durationSec,
+            stop: (stopAt: number) => {
+              try { source.stop(stopAt); } catch { /* already stopped */ }
+              try { source.disconnect(); gain.disconnect(); } catch { /* ignore */ }
+            },
+          }];
         },
       });
-    } else {
-      const track = session.tracks.find((t) => t.id === trackId);
-      const instrument = findInstrument(track?.instrumentId ?? 'polysynth');
-      if (!instrument) return;
-      const passes = loop ? 4 : 1;
-      // A Session slot is fired by hand, not placed on the timeline, so its
-      // notes are read against the tempo map from the clip's own start.
-      const clock = partClock(tempoMapOf(session), clip.startSec);
-      for (let pass = 0; pass < passes; pass++) {
+      this.startSlotTicking();
+      return;
+    }
+
+    const track = session.tracks.find((t) => t.id === trackId);
+    const instrument = findInstrument(track?.instrumentId ?? 'polysynth');
+    if (!instrument) return;
+    // A Session slot is fired by hand, not placed on the timeline, so its
+    // notes are read against the tempo map from the clip's own start.
+    const clock = partClock(tempoMapOf(session), clip.startSec);
+
+    this.slotPlayer.start(trackId, {
+      lengthSec: clip.durationSec, loop, startAt,
+      schedule: (at): SlotVoice[] => {
+        const made: SlotVoice[] = [];
         for (const note of clip.notes) {
           if (note.muted) continue;
           const span = noteSpan(clock, note);
+          const when = at + (span.startSec - clip.startSec);
           const voice = instrument.playNote({
             ctx,
             destination: channel.input,
             note,
             config: clip.midiConfig,
-            when: startAt + pass * clip.durationSec + (span.startSec - clip.startSec),
+            when,
             durationSec: span.durationSec,
             params: { ...(track?.instrumentParams ?? {}) },
           });
-          voices.push(voice);
+          // The voice's own end, not the note's plus a margin: a sampler
+          // zone's release comes out of its library and can outlast any
+          // margin, and a drum has finished long before one.
+          made.push(voice);
         }
-      }
-    }
+        return made;
+      },
+    });
+    this.startSlotTicking();
+  }
 
-    this.slotVoices.set(trackId, voices);
+  /**
+   * The slot timer: it exists because the transport's does not.
+   *
+   * A slot is played without the play head moving, so `startTicking` is not
+   * running — which is exactly how a looping part came to be scheduled four
+   * passes deep and then abandoned.  It stops itself as soon as the last slot
+   * is released, so an idle window has no timer.
+   */
+  private startSlotTicking(): void {
+    if (this.slotTimer !== null) return;
+    this.slotTimer = setInterval(() => {
+      if (this.slotPlayer.liveKeys.length === 0) { this.stopSlotTicking(); return; }
+      this.slotPlayer.tick();
+    }, TICK_MS);
+  }
+
+  private stopSlotTicking(): void {
+    if (this.slotTimer === null) return;
+    clearInterval(this.slotTimer);
+    this.slotTimer = null;
   }
 
   stopSlot(trackId: TrackId): void {
-    const voices = this.slotVoices.get(trackId);
-    if (!voices) return;
-    const at = this.ctx?.currentTime ?? 0;
-    for (const voice of voices) {
-      try { voice.stop(at); } catch { /* ignore */ }
-    }
-    this.slotVoices.delete(trackId);
+    this.slotPlayer.stop(trackId, this.ctx?.currentTime ?? 0);
+    if (this.slotPlayer.liveKeys.length === 0) this.stopSlotTicking();
   }
 
   stopAllSlots(): void {
-    for (const trackId of [...this.slotVoices.keys()]) this.stopSlot(trackId);
+    this.slotPlayer.stopAll(this.ctx?.currentTime ?? 0);
+    this.stopSlotTicking();
   }
 
   dispose(): void {

@@ -115,32 +115,44 @@ export function LimiterParameterPanel(props: ControlledPanelProps = {}) {
             }}>
               Character
             </span>
-            <span style={{
-              fontFamily: typography.family.sans,
-              fontSize: 9,
-              fontWeight: typography.weight.semi,
-              letterSpacing: '0.06em',
-              padding: '2px 5px',
-              borderRadius: 4,
-              color: text.muted,
-              border: `1px solid ${surface.border}`,
-            }}>
-              준비 중
-            </span>
           </div>
+          {/* These four were badged 준비 중 and locked, on a note that said
+              only "glue" mapped to the Python limiter.  That is still true
+              of Python — and no longer the whole story, because a song with
+              Studio work renders through the Rust chain, which distinguishes
+              all four.  Measured over a transient-heavy 3 s render, each
+              holding the -1 dBFS ceiling:
+
+                glue        → smooth        GR 0.41 dB   (the reference)
+                transparent → transparent   GR 0.25 dB   Δ -26.5 dB
+                aggressive  → aggressive    GR 0.00 dB   Δ -15.6 dB
+                classic     → punchy        GR 0.00 dB   Δ -18.5 dB
+
+              Unlocking the opacity alone would have been worse than the
+              lock: the cards are plain divs and never had an `onClick`, so
+              they would have looked live and done nothing.  They select
+              now. */}
           <div style={{
             display: 'grid',
             gridTemplateColumns: 'repeat(2, 1fr)',
             gap: space['2'],
-            opacity: 0.4,
-            pointerEvents: 'none',
           }}>
             {CHARACTERS.map((c) => {
               const active = s.character === c.id;
               return (
                 <div
                   key={c.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => update('character')(c.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      update('character')(c.id);
+                    }
+                  }}
                   style={{
+                    cursor: 'pointer',
                     display: 'flex',
                     flexDirection: 'column',
                     alignItems: 'flex-start',

@@ -23,6 +23,7 @@ import {
   MACROS, RACK_MODULES, materializeRack, overrideKey,
   type MacroDef, type MacroId, type MacroRack, type RackModuleId,
 } from './macros.js';
+import type { Track } from './types.js';
 
 /** A parameter a macro lane will actually move. */
 export interface MovingTarget {
@@ -177,4 +178,35 @@ export function describeCoverage(coverage: MacroCoverage): string {
 /** The macros that cannot be automated at all, for the menu's absence to be explicable. */
 export function unautomatableMacros(rack: MacroRack): MacroCoverage[] {
   return MACROS.map((macro) => macroCoverage(macro, rack)).filter((c) => c.moving.length === 0);
+}
+
+/**
+ * Rack modules a channel must actually BUILD.
+ *
+ * Not just the ones a macro is turning on right now: a macro sitting at zero
+ * makes no module active, and if the graph were built from that, a lane
+ * ramping the macro up would have nothing to ramp — the compressor it means
+ * to open would not exist.  So a module a macro LANE can reach is built too,
+ * bypassed-by-neutrality until the lane moves it.
+ *
+ * It lives here rather than in the engine because the graph and the delay
+ * compensation have to agree about it.  A module the engine builds and the
+ * compensation does not count is a channel that plays exactly that module's
+ * latency late — 512 samples, once the compressor and the saturation stopped
+ * lying about theirs — and nothing in the mix says why.
+ */
+export function rackModulesNeeded(track: Track): Set<RackModuleId> {
+  const needed = new Set<RackModuleId>();
+  if (!track.macros.enabled) return needed;
+  for (const resolved of materializeRack(track.macros)) {
+    if (resolved.active) needed.add(resolved.module.id);
+  }
+  for (const lane of track.automation) {
+    const target = lane.target;
+    if (target.kind !== 'macro' || lane.mode === 'off') continue;
+    const macro = MACROS.find((m) => m.id === target.macroId);
+    if (!macro) continue;
+    for (const moving of macroCoverage(macro, track.macros).moving) needed.add(moving.module);
+  }
+  return needed;
 }

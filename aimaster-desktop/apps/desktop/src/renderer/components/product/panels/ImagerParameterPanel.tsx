@@ -106,43 +106,49 @@ export function ImagerParameterPanel(props: ControlledPanelProps = {}) {
           format={(v) => v.toFixed(0)}
           onChange={update('lowMonoHz')}
         />
-        {/* Stereoize — not yet implemented */}
-        <div style={{ opacity: 0.4, pointerEvents: 'none' }}>
-          <LouiTogglePill
-            label="Stereoize"
-            hint="준비 중 — 아직 적용되지 않습니다"
-            value={s.stereoize}
-            onChange={update('stereoize')}
-          />
-        </div>
+        {/* Stereoize.  Locked and badged "준비 중 — 아직 적용되지 않습니다"
+            until now, and it has worked since the stereoizer was built: the
+            toggle reaches `chain-config.ts`, which emits it for the Rust
+            chain the preview and the export both run.  Measured through
+            that chain on decorrelated material, switching it on moves the
+            side energy by +3.46 dB.
+
+            Nobody was shown the stale label — the app renders every module
+            through the generic `ModuleParameterPanel`, and this file is
+            reached only from Storybook — but a story is where somebody goes
+            to find out what a control does. */}
+        <LouiTogglePill
+          label="Stereoize"
+          hint="Widen a narrow source by decorrelating the sides"
+          value={s.stereoize}
+          onChange={update('stereoize')}
+        />
       </LouiSectionCard>
 
-      {/* Width by Band — not yet implemented; per-band processing is not in the current DSP chain */}
-      <LouiSectionCard
-        title="Width by Band"
-        trailing={
-          <span style={{
-            fontFamily: typography.family.sans,
-            fontSize: 9,
-            fontWeight: typography.weight.semi,
-            letterSpacing: '0.06em',
-            padding: '2px 5px',
-            borderRadius: 4,
-            color: text.muted,
-            border: `1px solid ${surface.border}`,
-          }}>
-            준비 중
-          </span>
-        }
-      >
+      {/* Width by Band.  This section used to be locked, badged 준비 중, and
+          captioned "다음 업데이트에서 지원됩니다" — and it worked the whole time.
+          The path is this panel → `chain-config.ts` → `chainConfigToJson` →
+          `Chain.setConfigJson` → the Rust `ImagerConfig.band_width_pct`, and
+          the reason it reads as dead from here is that the only consumer is a
+          serde deserialiser on the other side of a JSON string.  Measured
+          through the chain the app actually runs: the AI-vocal preset's 78 %
+          top band takes 2.01 dB off the side at 9 kHz, against 2.16 dB for a
+          perfect 78 %.  The app was already shipping presets that set these
+          bands and an analysis that narrowed the top from them, with the user
+          locked out of the controls.
+
+          This file is reached only from Storybook — the app renders every
+          module through the generic `ModuleParameterPanel`, which has always
+          shown these four as ordinary sliders.  So nobody was shown the wrong
+          message; what was wrong was the story, and a story is where somebody
+          goes to find out what a control does. */}
+      <LouiSectionCard title="Width by Band">
         <div style={{
           display: 'flex',
           alignItems: 'flex-end',
           justifyContent: 'space-between',
           gap: space['2'],
           paddingBlock: space['2'],
-          opacity: 0.35,
-          pointerEvents: 'none',
         }}>
           {BAND_KEYS.map((key, i) => (
             <BandBar
@@ -160,7 +166,8 @@ export function ImagerParameterPanel(props: ControlledPanelProps = {}) {
           color: text.muted,
           lineHeight: 1.5,
         }}>
-          밴드별 폭 조절은 다음 업데이트에서 지원됩니다. 현재는 전체 Width 슬라이더가 적용됩니다.
+          대역 경계는 120 Hz · 800 Hz · 5 kHz 입니다. 위의 전체 Width 가 각 대역 값에 곱해지므로,
+          저역만 좁히고 고역만 넓히는 식으로 대역마다 다르게 둘 수 있습니다.
         </p>
       </LouiSectionCard>
     </>

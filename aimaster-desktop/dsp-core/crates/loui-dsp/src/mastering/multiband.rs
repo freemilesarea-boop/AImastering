@@ -71,6 +71,10 @@ impl Multiband {
     }
 
     /// Gain reduction per band on the last block (dB, ≥ 0).
+    ///
+    /// Per band this is the reduction that band's OUTPUT shows, parallel
+    /// mix included — not the gain computer's figure, which a band mixed
+    /// below 100% wet never actually applies.  Makeup gain is excluded.
     pub fn band_gain_reduction_db(&self) -> [f64; BANDS] {
         [self.state[0].last_gr_db, self.state[1].last_gr_db,
          self.state[2].last_gr_db, self.state[3].last_gr_db]
@@ -143,7 +147,10 @@ impl StereoModule for Multiband {
         }
         let n = left.len().min(right.len());
         let any_solo = self.cfg.bands.iter().any(|b| b.solo);
-        let mut peak_gr = [0.0f64; BANDS];
+        // Deepest output factor per band; converted to dB once at the end.
+        // A band that is bypassed, muted or soloed out never moves it, and
+        // a factor of 1.0 is 0 dB of reduction.
+        let mut min_factor = [1.0f64; BANDS];
 
         for i in 0..n {
             let bl = self.xo_l.split(left[i] as f64);
@@ -169,12 +176,10 @@ impl StereoModule for Multiband {
                     st.env_db = in_db + coeff * (st.env_db - in_db);
 
                     let gain_db = Self::computed_gain_db(&cfg, st.env_db);
-                    let gr = -gain_db;
-                    if gr > peak_gr[k] { peak_gr[k] = gr; }
-
                     let mix = (cfg.mix_pct / 100.0).clamp(0.0, 1.0);
                     let g = 10f64.powf(gain_db / 20.0);
                     let wet = 1.0 - mix + mix * g;
+                    if wet < min_factor[k] { min_factor[k] = wet; }
                     l *= wet;
                     r *= wet;
                 }
@@ -189,7 +194,7 @@ impl StereoModule for Multiband {
         }
 
         for k in 0..BANDS {
-            self.state[k].last_gr_db = peak_gr[k];
+            self.state[k].last_gr_db = (-20.0 * min_factor[k].max(1e-12).log10()).max(0.0);
         }
     }
 
@@ -335,5 +340,68 @@ mod tests {
         let mut r = l.clone();
         m.process_stereo(&mut l, &mut r);
         assert!(l.iter().all(|s| s.is_finite()));
+    }
+
+    /// A band's GR meter against the level that band's output actually
+    /// loses.  Measuring it needs the crossover held still: the other three
+    /// bands are muted so nothing else reaches the sum, and the reference
+    /// run bypasses band 0's dynamics while still splitting and summing
+    /// through the same filters.  What is left between the two runs is the
+    /// band's own gain, and nothing else.
+    ///
+    /// The signal is a settled constant rather than a tone.  An LR4 low band
+    /// passes it at unity, and it holds the detector still: with a tone the
+    /// envelope's deepest point lags the crest by the attack time, so the
+    /// output's peak and the block's deepest gain are a fraction of a cycle
+    /// apart and the comparison measures that lag instead of the meter.
+    ///
+    /// The warm-up is a separate call, and only the second block is read.
+    /// The meter is a peak hold over its block, and an LR4 step response
+    /// overshoots: a block that contains the onset holds a gain deeper than
+    /// the one the level settles on, which is the meter doing its job, not
+    /// a disagreement with the output.
+    fn band0_measured_and_metered(mix_pct: f64, bypass_dynamics: bool) -> (f64, f64) {
+        let quiet = MultibandBandConfig { mute: true, ..flat_band() };
+        let band0 = MultibandBandConfig {
+            threshold_db: -24.0, ratio: 6.0, attack_ms: 1.0, release_ms: 50.0,
+            mix_pct, bypass: bypass_dynamics, ..flat_band()
+        };
+        let mut m = Multiband::new(
+            48_000.0,
+            MultibandConfig { bands: [band0, quiet, quiet, quiet], ..cfg() },
+        );
+        let mut warm = vec![0.891_25f32; 48_000];
+        let mut warm_r = warm.clone();
+        m.process_stereo(&mut warm, &mut warm_r);
+        let n = 4_800;
+        let mut l = vec![0.891_25f32; n];
+        let mut r = l.clone();
+        m.process_stereo(&mut l, &mut r);
+        (l[n - 1] as f64, m.band_gain_reduction_db()[0])
+    }
+
+    /// The per-band GR meter must report what the band's output loses, not
+    /// what the gain computer asked for.  `mix_pct` used to be missing from
+    /// the meter entirely: the reading sat at 18.5 dB while the band moved
+    /// anywhere from 15 dB to 3.5 as the mix came down.
+    #[test]
+    fn band_gr_meter_follows_the_parallel_mix() {
+        let (reference, _) = band0_measured_and_metered(100.0, true);
+        assert!(reference > 0.1, "reference band carries nothing ({reference:.4})");
+        let mut deepest = f64::INFINITY;
+        for &mix_pct in &[100.0f64, 88.0, 50.0, 40.0] {
+            let (peak, meter) = band0_measured_and_metered(mix_pct, false);
+            let applied = -20.0 * (peak / reference).log10();
+            assert!(
+                (meter - applied).abs() < 0.05,
+                "mix {mix_pct}%: meter says {meter:.2} dB, band moved {applied:.2}",
+            );
+            assert!(applied > 1.0, "mix {mix_pct}%: nothing to measure ({applied:.2} dB)");
+            assert!(
+                applied < deepest,
+                "mix {mix_pct}%: less wet must mean less reduction, got {applied:.2}",
+            );
+            deepest = applied;
+        }
     }
 }

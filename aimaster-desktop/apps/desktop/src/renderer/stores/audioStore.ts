@@ -135,6 +135,16 @@ export interface QueueItem {
    * every row parsing storage on every render.
    */
   studioSavedAt?: number;
+  /**
+   * Which render path this row actually came out of, once it is done.
+   *
+   * `renderSong` has always returned it "for the queue row to report
+   * honestly" and the caller always threw it away, so a row that was
+   * mastered WITHOUT the user's saved settings looked exactly like one that
+   * was mastered with them.  Saving is only trustworthy if the result says
+   * the settings arrived.
+   */
+  renderedPath?: 'studio' | 'classic';
 }
 
 export const MAX_QUEUE_SIZE = 20;
@@ -164,7 +174,7 @@ export interface RealtimeDspOverrides {
   dynThresholdDb?: number; dynRatio?:     number;
   dynAttackMs?:    number; dynReleaseMs?: number;
   dynMixPct?:      number;
-  imgWidthPct?:  number; imgLowMonoHz?: number;
+  imgWidthPct?:  number; imgLowMonoHz?: number; imgStereoize?: boolean;
   limCeilingDbtp?: number;
   eqBypass?: boolean; dynBypass?: boolean; imgBypass?: boolean; limBypass?: boolean;
   masterBypass?: boolean;
@@ -218,6 +228,7 @@ const defaultRtOverrides: RealtimeDspOverrides = {
   dynMixPct:      100,
   imgWidthPct:    100,
   imgLowMonoHz:   120,
+  imgStereoize:   false,
   limCeilingDbtp: -1,
   eqBypass:       false,
   dynBypass:      false,

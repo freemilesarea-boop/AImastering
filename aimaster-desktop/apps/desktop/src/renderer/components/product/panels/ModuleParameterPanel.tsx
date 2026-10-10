@@ -391,7 +391,13 @@ export function ModuleParameterPanel(props: ModuleParameterPanelProps) {
             // sentence REPLACES the English hint rather than joining it:
             // two explanations of the same control is not twice as clear.
             const g = glossaryFor(props.moduleId, p.id);
-            const hint = g?.plain ?? p.hint;
+            // A parameter nothing implements says so INSTEAD of explaining
+            // what it would do, and cannot be moved.  This panel renders every
+            // module in the suite from the definitions and had no notion of
+            // it, so the one parameter in the suite that reaches no engine —
+            // the imager's Stereoize — drew as an ordinary live toggle.
+            const hint = p.unimplemented ?? g?.plain ?? p.hint;
+            const dead = p.unimplemented !== undefined;
 
             if (p.kind === 'boolean') {
               return (
@@ -402,7 +408,7 @@ export function ModuleParameterPanel(props: ModuleParameterPanelProps) {
                   {...(p.offLabel ? { offLabel: p.offLabel } : {})}
                   {...(p.onLabel ? { onLabel: p.onLabel } : {})}
                   value={typeof raw === 'boolean' ? raw : p.default}
-                  disabled={disabled}
+                  disabled={disabled || dead}
                   onChange={(v) => props.onChange(p.id, v)}
                 />
               );
@@ -419,7 +425,7 @@ export function ModuleParameterPanel(props: ModuleParameterPanelProps) {
                   {...(p.hints ? { hints: p.hints } : {})}
                   values={p.values}
                   value={typeof raw === 'string' ? raw : p.default}
-                  disabled={disabled}
+                  disabled={disabled || dead}
                   onChange={(v) => props.onChange(p.id, v)}
                 />
               );
@@ -436,7 +442,7 @@ export function ModuleParameterPanel(props: ModuleParameterPanelProps) {
                 min={p.min}
                 max={p.max}
                 step={p.step}
-                disabled={disabled}
+                disabled={disabled || dead}
                 onChange={(v) => props.onChange(p.id, v)}
               />
             );

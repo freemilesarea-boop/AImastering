@@ -43,10 +43,29 @@ import {
   DRUM_PATTERNS, describePattern, findPattern, patternFill, patternNotes,
 } from '../../daw/engine/drum-patterns.js';
 import { exportMidiFile } from '../../daw/io/midi-file.js';
+import WaveSynthPanel from './instrument/WaveSynthPanel.js';
+import AnalogPanel from './instrument/AnalogPanel.js';
+import FmPanel from './instrument/FmPanel.js';
+import DrumPanel from './instrument/DrumPanel.js';
+import BowedPanel from './instrument/BowedPanel.js';
 import {
   CATEGORY_LABEL, categoriesFor, patchParams, patchesFor,
 } from '../../daw/engine/instrument-patches.js';
 import { findInstrument } from '../../daw/engine/instruments.js';
+import { BOW_BODIES, BOW_BODY_NAMES } from '../../daw/engine/bowed-string.js';
+
+/** The lowest and highest notes one of the bowed bodies can actually play. */
+function bowedRangeNote(index: number): string {
+  const body = BOW_BODIES[Math.max(0, Math.min(BOW_BODIES.length - 1, index))];
+  if (!body) return '';
+  const names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  const spell = (pitch: number): string => `${names[pitch % 12]}${Math.floor(pitch / 12) - 1}`;
+  const low = body.strings[0] ?? 55;
+  // Two and a half octaves above the top string is about where a player stops
+  // being able to reach, and where this engine stops holding Helmholtz motion.
+  const high = (body.strings[body.strings.length - 1] ?? 76) + 24;
+  return `${spell(low)} – ${spell(high)}`;
+}
 
 export default function InstrumentRack({ onClose }: { onClose: () => void }) {
   const session = useDawStore((s) => s.session);
@@ -82,7 +101,8 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
     // Track, part and (for a kit) its map arrive as one value — see
     // `addInstrumentSlot`, which exists so a test can check the map is there
     // rather than grep for the call that adds it.
-    apply((s) => addInstrumentSlot(s, track, part));
+    const at = useDawStore.getState().insertIndex();
+    apply((s) => addInstrumentSlot(s, track, part, at));
     useDawStore.getState().setFocusedTrack(track.id);
     useMidiEditorStore.getState().openPart({ trackId: track.id, clipId: part.id });
     setWindow('midi');
@@ -371,13 +391,103 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
               </span>
             </div>
 
-            {openSlot === slot.trackId && (
+            {/* The wavetable synth gets its own panel rather than the knob
+                grid.  A hundred and thirteen knobs in one flat row is every
+                control and no way to find one, and half of them describe
+                things — a table's frames, a filter's curve — that a number
+                cannot show.  Same knobs, same parameter definitions, laid
+                out along the signal path with the pictures beside them. */}
+            {openSlot === slot.trackId && slot.instrumentId === 'wavesynth' && (
+              <WaveSynthPanel
+                params={slot.params}
+                onDrag={(id, v) => dragParam(slot.trackId, slot.instrumentId, id, v)}
+                onCommit={() => useDawStore.getState().commitEdit()}
+              />
+            )}
+
+            {/* The analogue synth gets its own too, and a DIFFERENT one: it is
+                a signal path you follow with your finger rather than a table
+                and a matrix, so the panel is VCO → mixer → ladder → VCA with
+                the fixed sends a hardware front panel has always had. */}
+            {openSlot === slot.trackId && slot.instrumentId === 'analog' && (
+              <AnalogPanel
+                params={slot.params}
+                onDrag={(id, v) => dragParam(slot.trackId, slot.instrumentId, id, v)}
+                onCommit={() => useDawStore.getState().commitEdit()}
+              />
+            )}
+
+            {/* And the FM synth, whose ninety-one parameters are the same
+                twelve repeated six times plus an algorithm.  One operator at
+                a time, chosen from the diagram, because six copies of the
+                same twelve knobs would be a wall that teaches nothing. */}
+            {openSlot === slot.trackId && slot.instrumentId === 'fm' && (
+              <FmPanel
+                params={slot.params}
+                onDrag={(id, v) => dragParam(slot.trackId, slot.instrumentId, id, v)}
+                onCommit={() => useDawStore.getState().commitEdit()}
+              />
+            )}
+
+            {/* And the drum machine: a row of pads, the selected voice's
+                controls, and one mixer row — which is what the front panel of
+                every machine this models looked like. */}
+            {openSlot === slot.trackId && slot.instrumentId === 'drummachine' && (
+              <DrumPanel
+                params={slot.params}
+                onDrag={(id, v) => dragParam(slot.trackId, slot.instrumentId, id, v)}
+                onCommit={() => useDawStore.getState().commitEdit()}
+              />
+            )}
+
+            {/* And the bowed strings, whose two most important knobs — how
+                hard the bow presses and where it sits — are numbers with a
+                narrow window of good values and no obvious meaning.  The
+                panel draws the stick-slip cycle those two produce, so the
+                window is something you can see rather than hunt for. */}
+            {openSlot === slot.trackId && slot.instrumentId === 'bowed' && (
+              <BowedPanel
+                params={slot.params}
+                onDrag={(id, v) => dragParam(slot.trackId, slot.instrumentId, id, v)}
+                onCommit={() => useDawStore.getState().commitEdit()}
+              />
+            )}
+
+            {openSlot === slot.trackId && slot.instrumentId !== 'wavesynth'
+              && slot.instrumentId !== 'analog' && slot.instrumentId !== 'fm'
+              && slot.instrumentId !== 'drummachine' && slot.instrumentId !== 'bowed' && (
               <ParamKnobs
                 instrumentId={slot.instrumentId}
                 params={slot.params}
                 onDrag={(id, v) => dragParam(slot.trackId, slot.instrumentId, id, v)}
                 onCommit={() => useDawStore.getState().commitEdit()}
               />
+            )}
+
+            {/* The bowed strings get a second line too, for the one knob that
+                is not a knob: which of the four instruments this is.  A
+                number from 0 to 3 on a slider says nothing, and the choice
+                changes the range as well as the body — asking a cello for a
+                violin's top string is a real mistake to be able to see. */}
+            {slot.instrumentId === 'bowed' && (
+              <div className="flex items-center gap-2 mt-1.5 pt-1.5"
+                   style={{ borderTop: `1px solid ${premium.surface.hairline}` }}>
+                <span style={{ fontSize: 9, color: premium.text.muted }}>악기</span>
+                <select
+                  value={Math.round(slot.params['body'] ?? 0)}
+                  onChange={(e) => {
+                    dragParam(slot.trackId, slot.instrumentId, 'body', Number(e.target.value));
+                    useDawStore.getState().commitEdit();
+                  }}
+                  title="몸통이 바뀌면 울림도 줄도 바뀝니다"
+                  className="h-6 px-1.5 rounded text-[10px] bg-zinc-900 border border-zinc-700 text-zinc-200"
+                >
+                  {BOW_BODY_NAMES.map((n, i) => <option key={n} value={i}>{n}</option>)}
+                </select>
+                <span className="flex-1 truncate" style={{ fontSize: 10, color: premium.text.muted }}>
+                  {bowedRangeNote(Math.round(slot.params['body'] ?? 0))}
+                </span>
+              </div>
             )}
 
             {/* Drums get a second line: what the kit SOUNDS like, and what it
@@ -455,6 +565,40 @@ function ParamKnobs({ instrumentId, params, onDrag, onCommit }: {
          }}>
       {instrument.params.map((p) => {
         const value = params[p.id] ?? p.default;
+        // A parameter that SELECTS something gets a picker, not a slider.
+        //
+        // Every instrument parameter used to be a range with a number beside
+        // it, which is right for an amount and wrong for a list: the reed
+        // family's five pipes read as 0.000 to 4.000, so choosing a bass
+        // clarinet meant knowing that a bass clarinet is 1.  The bowed family
+        // was spared only because it has a panel of its own that holds the
+        // list; nothing here knew about any of them.
+        if (p.choices !== undefined && p.choices.length > 0) {
+          const index = Math.round(Math.max(p.min, Math.min(p.max, value)));
+          const note = p.choiceNotes?.[index - Math.round(p.min)];
+          return (
+            <label key={p.id} className="flex flex-col gap-0.5" title={note ?? p.name}>
+              <span className="flex items-center gap-1.5">
+                <span className="w-[52px] shrink-0 truncate"
+                      style={{ fontSize: 9, color: premium.text.muted }}>{p.name}</span>
+                <select
+                  value={index}
+                  onChange={(e) => { onDrag(p.id, Number(e.target.value)); onCommit(); }}
+                  className="flex-1 min-w-0 h-5 rounded bg-zinc-900 border border-zinc-700 px-1"
+                  style={{ fontSize: 9, color: premium.text.primary }}
+                >
+                  {p.choices.map((label, i) => (
+                    <option key={label} value={Math.round(p.min) + i}>{label}</option>
+                  ))}
+                </select>
+              </span>
+              {note !== undefined && (
+                <span className="pl-[58px] truncate"
+                      style={{ fontSize: 8, color: premium.text.muted }}>{note}</span>
+              )}
+            </label>
+          );
+        }
         return (
           <label key={p.id} className="flex items-center gap-1.5" title={`${p.min} … ${p.max} ${p.unit}`}>
             <span className="w-[52px] shrink-0 truncate"

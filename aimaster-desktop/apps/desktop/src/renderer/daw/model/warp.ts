@@ -402,23 +402,6 @@ export function warpedDuration(warp: WarpConfig, sessionBpm: number | WarpTempo,
   return sourceToDest(map, from + sourceDurationSec) - sourceToDest(map, from);
 }
 
-/**
- * Resize a tempo-following clip for a new session tempo.  Called when the
- * tempo changes: the clip keeps its musical length and changes its seconds.
- */
-export function retimeClip(clip: Clip, fromBpm: number, toBpm: number): Clip {
-  const warp = clipWarp(clip);
-  if (!warp || !warp.followTempo || fromBpm <= 0 || toBpm <= 0) return clip;
-  const ratio = fromBpm / toBpm;
-  if (Math.abs(ratio - 1) < 1e-12) return clip;
-  return {
-    ...clip,
-    durationSec: clip.durationSec * ratio,
-    fadeIn: { ...clip.fadeIn, durationSec: clip.fadeIn.durationSec * ratio },
-    fadeOut: { ...clip.fadeOut, durationSec: clip.fadeOut.durationSec * ratio },
-  };
-}
-
 // ── Validation ────────────────────────────────────────────────────────────────
 
 export interface WarpProblem {
@@ -474,76 +457,4 @@ export function describeWarp(warp: WarpConfig | null, sessionBpm: number): strin
   return constant
     ? `Warp · ${warp.mode} · ${(1 / rate).toFixed(3)}× @ ${bpm.toFixed(1)} BPM`
     : `Warp · ${warp.mode} · 마커 ${warp.markers.length}개 @ ${bpm.toFixed(1)} BPM`;
-}
-
-// ── Tempo change ──────────────────────────────────────────────────────────────
-
-export interface TempoChangeResult {
-  session: DawSession;
-  /** Audio clips that could not follow because warp is off — they keep their
-   *  length while everything around them moved. */
-  unwarpedClipIds: string[];
-}
-
-const scalePoints = <T extends { timeSec: number }>(points: T[], ratio: number): T[] =>
-  points.map((p) => ({ ...p, timeSec: p.timeSec * ratio }));
-
-/**
- * Change the session tempo, moving the arrangement with it.
- *
- * The timeline is stored in seconds, but the ARRANGEMENT is musical: bar 9 has
- * to stay bar 9 when the tempo changes.  So every position scales by the tempo
- * ratio, and lengths scale for anything that can stretch — MIDI parts always,
- * audio clips only when they are warped and following.  MIDI NOTES are the
- * exception that needs no work: they are stored in beats and were never in
- * the seconds domain this function rescales.
- *
- * An unwarped audio clip is the one thing that cannot follow.  It is moved
- * (its start is musical) but keeps its length, and its id is returned so the
- * UI can say so rather than letting the user discover it by ear.
- */
-export function setSessionTempo(session: DawSession, bpm: number): TempoChangeResult {
-  const from = session.tempoBpm;
-  const to = Math.max(20, Math.min(300, bpm));
-  const unwarpedClipIds: string[] = [];
-  if (from <= 0 || Math.abs(from - to) < 1e-9) {
-    return { session: { ...session, tempoBpm: to }, unwarpedClipIds };
-  }
-  const ratio = from / to;
-
-  const retimeClipAt = (clip: Clip): Clip => {
-    const moved: Clip = { ...clip, startSec: clip.startSec * ratio };
-    if (clip.kind === 'midi') {
-      // Notes and their curves are in BEATS, so they need no rescaling: the
-      // tempo map moved under them and they are still on the beats they were
-      // written on.  Only the part's own seconds — where it sits and how long
-      // its box is — follow the ratio.
-      return {
-        ...moved,
-        durationSec: clip.durationSec * ratio,
-        fadeIn: { ...clip.fadeIn, durationSec: clip.fadeIn.durationSec * ratio },
-        fadeOut: { ...clip.fadeOut, durationSec: clip.fadeOut.durationSec * ratio },
-      };
-    }
-    const warp = clipWarp(clip);
-    if (!warp || !warp.followTempo) {
-      unwarpedClipIds.push(clip.id);
-      return moved;
-    }
-    return retimeClip(moved, from, to);
-  };
-
-  return {
-    session: {
-      ...session,
-      tempoBpm: to,
-      tracks: session.tracks.map((track) => ({
-        ...track,
-        playlists: track.playlists.map((p) => ({ ...p, clips: p.clips.map(retimeClipAt) })),
-        automation: track.automation.map((lane) => ({ ...lane, points: scalePoints(lane.points, ratio) })),
-      })),
-      chordTrack: session.chordTrack.map((c) => ({ ...c, timeSec: c.timeSec * ratio })),
-    },
-    unwarpedClipIds,
-  };
 }

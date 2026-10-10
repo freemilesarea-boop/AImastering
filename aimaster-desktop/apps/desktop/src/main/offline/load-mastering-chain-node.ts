@@ -8,6 +8,7 @@
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import fs from 'node:fs';
+import { ancestorCandidates } from '../utils/workspace-paths.js';
 
 /** One band in the free parametric EQ (RUST-OFFLINE-RENDER-FREE-EQ). */
 export interface OfflineParametricBand {
@@ -22,12 +23,10 @@ export interface OfflineParametricBand {
 /**
  * The flat config passed to the WASM chain's `setConfig`.
  *
- * Covers the original five modules only.  `suiteConfig` carries everything
- * the Ozone-class suite added; when it is present the render uses the JSON
- * path instead, which is the same object the realtime preview sends — that
- * is what keeps preview and export from drifting apart.
+ * Covers the original five modules only — everything the Ozone-class suite
+ * added travels as `suiteConfig` instead (see `OfflineSuiteChainConfig`).
  */
-export interface OfflineChainConfig {
+export interface OfflineFlatChainConfig {
   inputGainDb: number;
   eqLowCutHz: number; eqLowShelfDb: number; eqPresenceDb: number; eqAirDb: number;
   eqAdaptive: boolean; eqBypass: boolean;
@@ -39,12 +38,46 @@ export interface OfflineChainConfig {
   masterBypass: boolean;
   /** Optional free parametric EQ bands.  Absent / empty = no parametric EQ. */
   parametricBands?: OfflineParametricBand[];
-  /**
-   * Full module-suite config (the renderer's `ChainConfigWire`).  When set,
-   * it is applied via `setConfigJson` and the flat fields above are ignored
-   * — the suite config already carries their values.
-   */
-  suiteConfig?: Record<string, unknown>;
+  /** Never set on this member — it is what distinguishes the two. */
+  suiteConfig?: undefined;
+}
+
+/**
+ * A render driven by the full module-suite config (the renderer's
+ * `ChainConfigWire`), applied via `setConfigJson`.
+ *
+ * It is the same object the realtime preview sends, which is what keeps
+ * preview and export from drifting apart.
+ *
+ * The flat fields are optional here, and that is the point: `render-song`
+ * sends `{ suiteConfig }` and nothing else, while this type used to require
+ * all 22 of them.  Nothing complained, because the IPC boundary is cast
+ * rather than checked — so the declared shape of the one config the Studio
+ * actually renders with had never been true.
+ */
+export interface OfflineSuiteChainConfig
+  extends Partial<Omit<OfflineFlatChainConfig, 'suiteConfig'>> {
+  suiteConfig: Record<string, unknown>;
+}
+
+export type OfflineChainConfig = OfflineFlatChainConfig | OfflineSuiteChainConfig;
+
+/**
+ * Whether the Python engine may stand in for a failed Rust render.
+ *
+ * It may only when there is nothing for it to drop.  `masterFile` takes
+ * five scalar options and has no way to apply a chain config, so standing
+ * in for a request that carried one produces a master the user did not ask
+ * for — which was reported, correctly, as "설정 저장을 눌렀는데 원본으로
+ * 돌아간다".
+ *
+ * A pure predicate rather than a condition inlined in the IPC handler, so
+ * the rule can be tested without an Electron main process.
+ */
+export function pythonFallbackMayStandIn(
+  chainConfig: { suiteConfig?: unknown } | null | undefined,
+): boolean {
+  return !chainConfig?.suiteConfig;
 }
 
 /** Structural type of the WASM chain (avoids a hard dep on the typings). */
@@ -116,16 +149,45 @@ export interface WasmAnalyzer {
 
 const require_ = createRequire(__filename);
 
-/** Candidate locations for the node-target WASM glue (.cjs). */
-function candidatePaths(): string[] {
-  const file = 'loui_dsp_wasm.cjs';
+/** Where the node-target WASM glue sits, relative to the workspace root. */
+const WASM_NODE_REL  = path.join('packages', 'dsp-wasm', 'pkg-node');
+const WASM_NODE_FILE = 'loui_dsp_wasm.cjs';
+/**
+ * The directory electron-builder copies `pkg-node` into, under
+ * `process.resourcesPath`.
+ *
+ * Exported because two places have to agree on it — this loader and the
+ * `extraResources` entry in electron-builder.yml — and a test checks that
+ * they still do.  They did not: there was no entry at all, so the packaged
+ * candidate pointed at a directory nothing ever created.
+ */
+export const WASM_NODE_RESOURCE_DIR = 'dsp-wasm-node';
+
+/**
+ * Candidate locations for the node-target WASM glue, in priority order.
+ *
+ * The workspace copy is found by WALKING UP from `fromDir`, not by counting
+ * directories.  The count was `../../../../../packages/dsp-wasm/pkg-node`,
+ * which is correct from `src/main/offline` — where tsx runs this, so every
+ * selftest found the module — and one level too high from
+ * `dist-electron/main`, where esbuild puts the bundled main process.  So the
+ * tests passed and the app never loaded the chain: `isRustOfflineAvailable()`
+ * was false in every dev run and every packaged build, and the three
+ * features that need it (the Studio's offline render, the song profile, the
+ * Match EQ reference) all silently took their failure path.
+ *
+ * Walking up cannot be made wrong again by moving the build output.
+ *
+ * Takes its starting directory as an argument so a test can ask about a
+ * directory it is not running in — which is the only way to check the one
+ * that matters.
+ */
+export function wasmNodeCandidates(fromDir: string, resourcesPath?: string | null): string[] {
   const c: string[] = [];
-  // 1) explicit override
-  if (process.env['LOUI_WASM_NODE_PATH']) c.push(process.env['LOUI_WASM_NODE_PATH']!);
-  // 2) workspace dev layout (apps/desktop/src/main/offline → packages/dsp-wasm/pkg-node)
-  c.push(path.resolve(__dirname, '../../../../../packages/dsp-wasm/pkg-node', file));
-  // 3) packaged resources
-  if (process.resourcesPath) c.push(path.join(process.resourcesPath, 'dsp-wasm-node', file));
+  const override = process.env['LOUI_WASM_NODE_PATH'];
+  if (override) c.push(override);
+  c.push(...ancestorCandidates(fromDir, path.join(WASM_NODE_REL, WASM_NODE_FILE)));
+  if (resourcesPath) c.push(path.join(resourcesPath, WASM_NODE_RESOURCE_DIR, WASM_NODE_FILE));
   return c;
 }
 
@@ -135,7 +197,7 @@ let cached: WasmModule | null | undefined;
  *  (caller falls back to the Python engine). */
 export function loadWasmModule(): WasmModule | null {
   if (cached !== undefined) return cached;
-  for (const p of candidatePaths()) {
+  for (const p of wasmNodeCandidates(__dirname, process.resourcesPath)) {
     try {
       if (!fs.existsSync(p)) continue;
       const mod = require_(p) as WasmModule;
@@ -163,28 +225,41 @@ export function createOfflineAnalyzer(sampleRate: number, channels = 2): WasmAna
 /**
  * Apply a config to a chain.
  *
- * Prefers the full-suite JSON path when the config carries one and the WASM
- * build supports it; otherwise falls back to the flat positional call, which
- * still covers the original five modules.  Falling back is not silent —
- * `usedSuiteConfig` in the return value says which path ran, so the caller
- * can report an old WASM build rather than shipping a render that quietly
- * dropped half the chain.
+ * A config that carries a `suiteConfig` is applied through
+ * `setConfigJson` — the same object the realtime preview sends, which is
+ * what keeps preview and export from drifting apart.  A WASM build too old
+ * to have that entry point cannot honour it, so this THROWS.
+ *
+ * It used to fall through to the flat positional call instead, and return a
+ * `usedSuiteConfig: false` flag so "the caller can report an old WASM build
+ * rather than shipping a render that quietly dropped half the chain".  No
+ * caller ever read the flag.  Worse, the fall-through could not work: the
+ * only producer of a `suiteConfig` (`render-song`) sends `{ suiteConfig }`
+ * and nothing else, so `applyOfflineConfig` would have passed `undefined`
+ * into all 22 arguments of `setConfig`.  Refusing is the only honest
+ * answer — a master that silently is not what the user set is the bug this
+ * whole change is about.
  */
 export function applyChainConfigForRender(
   chain: WasmMasteringChain,
   c: OfflineChainConfig,
-): { usedSuiteConfig: boolean } {
-  if (c.suiteConfig && typeof chain.setConfigJson === 'function') {
+): void {
+  if (c.suiteConfig) {
+    if (typeof chain.setConfigJson !== 'function') {
+      throw new Error(
+        'this WASM build has no setConfigJson, so the module-suite config cannot be applied '
+        + '(rebuild: pnpm --filter @loui/dsp-wasm run build:node)',
+      );
+    }
     chain.setConfigJson(JSON.stringify(c.suiteConfig));
-    return { usedSuiteConfig: true };
+    return;
   }
   applyOfflineConfig(chain, c);
-  return { usedSuiteConfig: false };
 }
 
 /** Apply a flat config to a chain (spreads the 22 args in setConfig order).
  *  Also applies the optional free parametric EQ band list. */
-export function applyOfflineConfig(chain: WasmMasteringChain, c: OfflineChainConfig): void {
+export function applyOfflineConfig(chain: WasmMasteringChain, c: OfflineFlatChainConfig): void {
   chain.setConfig(
     c.inputGainDb,
     c.eqLowCutHz, c.eqLowShelfDb, c.eqPresenceDb, c.eqAirDb, c.eqAdaptive, c.eqBypass,

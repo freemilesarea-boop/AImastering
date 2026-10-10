@@ -203,7 +203,7 @@ const DEESS_DEFS: ModuleParameterDefinitions = {
     },
     {
       kind: 'number', id: 'thresholdDb', label: 'Threshold',
-      unit: 'dB', min: -60, max: 0, default: -30, step: 0.5,
+      unit: 'dB', min: -60, max: 0, default: -36, step: 0.5,
       format: fmt.db, automatable: true, binding: wired('deess.thresholdDb'),
     },
     {

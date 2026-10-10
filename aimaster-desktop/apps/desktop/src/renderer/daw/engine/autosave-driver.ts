@@ -16,10 +16,21 @@
 // asynchronous, so edits can arrive while it is in flight.  Marking the
 // CURRENT revision clean when an OLDER one is what landed is exactly how an
 // autosave quietly loses the last thing you did.
+//
+// EVERY PATH THAT CHANGES THE SESSION HAS TO SAY SO.  This one used to be
+// told by the store's `apply` alone, which left out `applyTransient` — the
+// path every drag takes, and so every clip move, fade, automation curve,
+// note drag and plugin knob — and undo and redo besides.  A mixing pass made
+// entirely of drags produced no autosave at all, and an undo left the disk
+// holding the thing that had just been taken back.  The rules in
+// model/autosave.ts were written for exactly that traffic: the idle gate is
+// there so a drag's hundred changes a second are not written, and the
+// ceiling is there so a long pass is not lost for never going idle.
 
 import {
   INITIAL_AUTOSAVE, isDirty, noteChange, noteSaved, shouldSave, type AutosaveState,
 } from '../model/autosave.js';
+import { lastManualSaveMs, noteManualSave } from '../model/manual-save.js';
 import { serializeDawSession } from '../model/session-io.js';
 import type { DawSession } from '../model/types.js';
 
@@ -57,14 +68,43 @@ export class AutosaveDriver {
   /**
    * Tell the driver the session changed.
    *
-   * Called from the store's own `apply`, which is the one place a real edit
-   * goes through — far more reliable than diffing on a timer.
+   * Called from every store path that replaces the session — `apply`,
+   * `applyTransient`, undo and redo — far more reliable than diffing on a
+   * timer.  Cheap enough to call on every mouse move: an identity check, a
+   * clock read and one small object.
    */
   noteEdit(session: DawSession): void {
     const now = this.deps?.now?.() ?? Date.now();
     if (session === this.lastSeen) return;
     this.lastSeen = session;
     this.state = noteChange(this.state, now);
+  }
+
+  /**
+   * A different project is on screen now.
+   *
+   * The baseline moves with it and the dirty flag goes back to nothing: a
+   * project that has just been opened has no unsaved work to recover, and
+   * carrying the previous one's dirty state across would write THIS
+   * project's file to satisfy an edit made to THAT one.
+   */
+  noteLoaded(session: DawSession): void {
+    this.lastSeen = session;
+    this.state = INITIAL_AUTOSAVE;
+  }
+
+  /**
+   * A manual save landed.
+   *
+   * Two things, in one call so a caller cannot do half of it: the time goes
+   * on the record, and the recovery file goes away.  The file being gone is
+   * what normally stops the next launch offering an older copy of a project
+   * the user has already saved; the recorded time is what catches it when
+   * the delete does not happen.
+   */
+  async savedByHand(sessionId: string): Promise<void> {
+    noteManualSave(sessionId, this.deps?.now?.() ?? Date.now());
+    await this.clear(sessionId);
   }
 
   /** A clean manual save makes the recovery file unnecessary. */
@@ -128,9 +168,11 @@ export async function findRecoveries(
     const out: RecoveryOffer[] = [];
     for (const entry of raw as RecoveryInfo[]) {
       if (!entry || typeof entry.path !== 'string') continue;
-      // No manual-save time is known here, so the caller passes null: the
-      // session that was open is the one that knows when it was last saved.
-      if (!isRecoverable(entry, null).offer) continue;
+      // A project saved by hand after this file was written makes it stale,
+      // and offering a stale one is how somebody loses the save they made on
+      // purpose.  A clean save deletes the file outright; this is what
+      // catches the case where that delete did not happen.
+      if (!isRecoverable(entry, lastManualSaveMs(entry.sessionId ?? '')).offer) continue;
       out.push({ info: entry, label: describeRecovery(entry, nowMs) });
     }
     return out;

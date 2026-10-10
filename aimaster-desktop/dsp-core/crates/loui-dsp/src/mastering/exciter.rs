@@ -19,6 +19,14 @@
 //! Post-saturation each band is level-matched to its dry input, so turning
 //! `amount` up changes the *character* rather than smuggling in a volume
 //! boost — the classic reason exciters sound better than they are.
+//!
+//! An asymmetric curve is asymmetric about zero, which means it has a mean:
+//! the second harmonic these modes exist to make comes with a DC term.
+//! Measured on a 220 Hz tone at 0.3 through the whole chain, DC against the
+//! output's own RMS — `Triode` at -19.9 dB and `Retro` at -37.3 dB, while
+//! `Warm`, `Tape` and `Tube` sat below -67 (the `Tube` curve carries its own
+//! compensation term).  A constant eats headroom where no meter shows it and
+//! biases the peak the limiter sees, so the output is DC-blocked.
 
 use crate::crossover::{Crossover4, BANDS};
 use super::config::{ExciterConfig, ExciterMode};
@@ -26,6 +34,48 @@ use super::StereoModule;
 
 /// Level-matching detector time constant, in seconds.
 const MATCH_TAU_S: f64 = 0.05;
+
+/// Where the output is DC-blocked, in hertz.
+///
+/// Low on purpose.  The job is to remove a constant, and a highpass has no
+/// gain at zero whatever its corner, so the corner is chosen for what it does
+/// to the MUSIC rather than to the offset: at 5 Hz a 30 Hz fundamental loses
+/// 0.004 dB and the phase rotation that would otherwise reshape a waveform's
+/// crest stays below the audible band.  (Measured elsewhere in this repo: a
+/// 20 Hz second-order corner moved one instrument patch's true peak by
+/// 1.33 dB while leaving its loudness untouched.)
+const DC_BLOCK_HZ: f64 = 5.0;
+
+/// A one-pole DC blocker: `y = x - x[-1] + r * y[-1]`.
+///
+/// One pole rather than a biquad because only the constant has to go; the
+/// gentler phase is the point.
+#[derive(Clone, Copy, Default)]
+struct DcBlock {
+    r: f64,
+    x1: f64,
+    y1: f64,
+}
+
+impl DcBlock {
+    fn new(sample_rate: f64) -> Self {
+        let r = 1.0 - (2.0 * std::f64::consts::PI * DC_BLOCK_HZ / sample_rate.max(1.0));
+        Self { r: r.clamp(0.0, 0.999_999), x1: 0.0, y1: 0.0 }
+    }
+
+    #[inline]
+    fn step(&mut self, x: f64) -> f64 {
+        let y = x - self.x1 + self.r * self.y1;
+        self.x1 = x;
+        self.y1 = y;
+        y
+    }
+
+    fn reset(&mut self) {
+        self.x1 = 0.0;
+        self.y1 = 0.0;
+    }
+}
 
 /// Apply the mode's non-linearity to a drive-scaled sample.
 #[inline]
@@ -70,6 +120,8 @@ pub struct Exciter {
     match_l: [BandMatch; BANDS],
     match_r: [BandMatch; BANDS],
     env_coeff: f64,
+    dc_l: DcBlock,
+    dc_r: DcBlock,
 }
 
 impl Exciter {
@@ -82,6 +134,8 @@ impl Exciter {
             match_l: [BandMatch::default(); BANDS],
             match_r: [BandMatch::default(); BANDS],
             env_coeff: (-1.0 / (MATCH_TAU_S * sample_rate)).exp(),
+            dc_l: DcBlock::new(sample_rate),
+            dc_r: DcBlock::new(sample_rate),
         }
     }
 
@@ -157,8 +211,8 @@ impl StereoModule for Exciter {
                 sum_l += Self::excite_band(mode, drive[k], amount[k], coeff, &mut self.match_l[k], bl[k]);
                 sum_r += Self::excite_band(mode, drive[k], amount[k], coeff, &mut self.match_r[k], br[k]);
             }
-            left[i] = (sum_l * post) as f32;
-            right[i] = (sum_r * post) as f32;
+            left[i] = (self.dc_l.step(sum_l) * post) as f32;
+            right[i] = (self.dc_r.step(sum_r) * post) as f32;
         }
     }
 
@@ -167,6 +221,8 @@ impl StereoModule for Exciter {
         self.xo_r.reset();
         self.match_l = [BandMatch::default(); BANDS];
         self.match_r = [BandMatch::default(); BANDS];
+        self.dc_l.reset();
+        self.dc_r.reset();
     }
 }
 
@@ -270,6 +326,32 @@ mod tests {
             e.process_stereo(&mut l, &mut r);
             let delta = 20.0 * (rms(&l[n / 2..]) / rms(&input[n / 2..])).log10();
             assert!(delta.abs() < 3.0, "{mode:?} drifted {delta:.1} dB");
+        }
+    }
+
+    #[test]
+    fn no_mode_leaves_dc_behind() {
+        // The second harmonic these modes exist to make comes with a mean.
+        // Measured through the whole chain before the output was blocked:
+        // Triode at -19.9 dB of the output's own RMS and Retro at -37.3,
+        // which is a constant sitting under the music, eating headroom where
+        // no meter shows it and biasing the peak the limiter sees.
+        for mode in [ExciterMode::Warm, ExciterMode::Retro, ExciterMode::Tape,
+                     ExciterMode::Tube, ExciterMode::Triode] {
+            let mut c = cfg();
+            c.mode = mode;
+            c.band_amount_pct = [100.0; BANDS];
+            c.drive_db = 12.0;
+            let mut e = Exciter::new(48_000.0, c);
+            let n = 48_000 * 2;
+            let mut l = tone(n, 220.0, 48_000.0, 0.3);
+            let mut r = l.clone();
+            e.process_stereo(&mut l, &mut r);
+            // The second half, so the blocker's own settle is not measured.
+            let tail = &l[n / 2..];
+            let mean = tail.iter().map(|v| *v as f64).sum::<f64>() / tail.len() as f64;
+            let rel = 20.0 * (mean.abs() / rms(tail).max(1e-30)).log10();
+            assert!(rel < -60.0, "{mode:?} leaves {rel:.1} dB of DC");
         }
     }
 

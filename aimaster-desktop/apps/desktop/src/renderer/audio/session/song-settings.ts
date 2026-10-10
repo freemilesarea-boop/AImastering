@@ -220,10 +220,30 @@ function readEnvelope(): StoredEnvelope {
   }
 }
 
-function writeEnvelope(env: StoredEnvelope): void {
+/**
+ * Persist the envelope, and say whether it actually landed.
+ *
+ * It used to be `try { setItem } catch { /* quota — ignore *\/ }` and
+ * return nothing.  A save that never happened was therefore
+ * indistinguishable from one that did: `saveSongSettings` still handed back
+ * an entry, the Studio set `savedAt`, cleared the dirty flag, turned the
+ * queue badge green and said "N개 모듈 설정을 저장했습니다", and the render
+ * later found nothing to apply.  That is the same symptom as the render bug
+ * — 설정 저장을 눌렀는데 원본으로 돌아간다 — from a different cause, and the
+ * one the user could do nothing about.
+ *
+ * Verified by READING IT BACK rather than by trusting that `setItem` did not
+ * throw.  A quota failure is only the loud way storage can refuse: a private
+ * window, a cleared-site-data policy or a shimmed storage can accept the
+ * call and keep nothing, and only a read-back sees that.
+ */
+function writeEnvelope(env: StoredEnvelope): boolean {
   const s = store();
-  if (!s) return;
-  try { s.setItem(STORAGE_KEY, JSON.stringify(env)); } catch { /* quota — ignore */ }
+  if (!s) return false;
+  let json: string;
+  try { json = JSON.stringify(env); } catch { return false; }
+  try { s.setItem(STORAGE_KEY, json); } catch { return false; }
+  try { return s.getItem(STORAGE_KEY) === json; } catch { return false; }
 }
 
 /** The saved settings for one file, or null. */
@@ -232,13 +252,37 @@ export function loadSongSettings(filePath: string): SongSettings | null {
   return readEnvelope().items.find((i) => i.filePath === filePath) ?? null;
 }
 
+/** What `saveSongSettings` managed to do. */
+export interface SaveSongSettingsResult {
+  /** True only when the write was read back from storage. */
+  stored: boolean;
+  /** The entry as stored, or null when nothing was stored. */
+  entry: SongSettings | null;
+  /**
+   * How many OTHER songs' saved settings had to be dropped to make room.
+   *
+   * Reported because it is data loss.  Freeing space silently would trade
+   * one song's save for another's without anybody being told.
+   */
+  evicted: number;
+}
+
 /**
- * Save (or replace) the settings for one file. Returns what was stored.
+ * Save (or replace) the settings for one file.
  *
  * Deep-cloned on the way in so later React edits cannot mutate what was
  * saved — the whole point is that this is a snapshot.
+ *
+ * When storage is full the oldest OTHER songs are shed and the write is
+ * retried; the song being saved is never the one dropped, because it is the
+ * one the user is looking at. Shedding a quarter at a time rather than one
+ * at a time bounds the retries at about nine instead of four hundred, and
+ * each retry re-serialises the whole envelope.
+ *
+ * Returns whether it worked. The caller must not report a save it did not
+ * get — that was the bug.
  */
-export function saveSongSettings(input: Omit<SongSettings, 'savedAt'>): SongSettings {
+export function saveSongSettings(input: Omit<SongSettings, 'savedAt'>): SaveSongSettingsResult {
   const entry: SongSettings = {
     ...(JSON.parse(JSON.stringify(input)) as Omit<SongSettings, 'savedAt'>),
     savedAt: Date.now(),
@@ -251,18 +295,34 @@ export function saveSongSettings(input: Omit<SongSettings, 'savedAt'>): SongSett
     env.items.sort((a, b) => a.savedAt - b.savedAt);
     env.items = env.items.slice(env.items.length - MAX_ENTRIES);
   }
-  writeEnvelope(env);
-  return entry;
+  if (writeEnvelope(env)) return { stored: true, entry, evicted: 0 };
+
+  // Out of room.  Shed the oldest entries that are not this song.
+  let evicted = 0;
+  const others = () => env.items.filter((i) => i.filePath !== entry.filePath);
+  while (others().length > 0) {
+    const rest = others().sort((a, b) => a.savedAt - b.savedAt);
+    const drop = Math.max(1, Math.floor(rest.length / 4));
+    const doomed = new Set(rest.slice(0, drop).map((i) => i.filePath));
+    env.items = env.items.filter((i) => !doomed.has(i.filePath));
+    evicted += doomed.size;
+    if (writeEnvelope(env)) return { stored: true, entry, evicted };
+  }
+  // Even this song alone will not fit.  Leave storage as it was found
+  // rather than ending with an envelope holding one song and a lie.
+  return { stored: false, entry: null, evicted };
 }
 
-/** Forget one file's settings. True if something was removed. */
+/**
+ * Forget one file's settings. True if something was removed AND the removal
+ * was persisted — a delete that storage refused is not a delete.
+ */
 export function clearSongSettings(filePath: string): boolean {
   const env = readEnvelope();
   const before = env.items.length;
   env.items = env.items.filter((i) => i.filePath !== filePath);
   if (env.items.length === before) return false;
-  writeEnvelope(env);
-  return true;
+  return writeEnvelope(env);
 }
 
 /** Every saved path — used to mark queue rows without loading each entry. */
@@ -270,7 +330,10 @@ export function savedSongPaths(): string[] {
   return readEnvelope().items.map((i) => i.filePath);
 }
 
-/** Drop everything. Exported for tests and for a settings-screen reset. */
-export function clearAllSongSettings(): void {
-  writeEnvelope({ version: SCHEMA_VERSION, items: [] });
+/**
+ * Drop everything. Exported for tests and for a settings-screen reset.
+ * Returns whether storage took it.
+ */
+export function clearAllSongSettings(): boolean {
+  return writeEnvelope({ version: SCHEMA_VERSION, items: [] });
 }

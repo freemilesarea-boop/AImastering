@@ -263,16 +263,10 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
   // arbitrary system files is the only thing this handler can leak, but we
   // refuse to participate in path-traversal probing all the same.
   ipc.handle('file:get-info', (_e, filePath: unknown) => {
-    if (typeof filePath !== 'string' || filePath.length === 0) {
-      throw new Error('file:get-info: filePath must be a non-empty string');
-    }
-    if (filePath.includes('\0')) {
-      throw new Error('file:get-info: null byte in path');
-    }
-    const resolved = path.resolve(filePath);
-    if (!path.isAbsolute(resolved)) {
-      throw new Error('file:get-info: path must resolve to an absolute location');
-    }
+    // Through the shared validator rather than its own copy of the same
+    // three checks — which included the same `isAbsolute(resolve(x))` that
+    // can never fail, so this channel had the hole twice over.
+    const resolved = validateAbsoluteFilePath(filePath, 'file:get-info');
     try {
       const stat = fs.statSync(resolved);
       if (!stat.isFile()) {
@@ -295,16 +289,16 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
   // renderer-supplied paths (that would let the renderer scatter empty
   // directories anywhere on the filesystem).
   ipc.handle('file:open-in-finder', (_e, filePath: unknown) => {
-    if (typeof filePath !== 'string' || filePath.length === 0 || filePath.includes('\0')) {
-      throw new Error('file:open-in-finder: invalid path');
-    }
+    // 'logs' is a SENTINEL, not a path, so it is answered before the path
+    // validator ever sees it — handing a sentinel to a path validator is how
+    // a working channel breaks the day the validator gets stricter.
     if (filePath === 'logs') {
       const logDir = path.join(app.getPath('userData'), 'logs');
       if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
       shell.showItemInFolder(logDir);
       return;
     }
-    const resolved = path.resolve(filePath);
+    const resolved = validateAbsoluteFilePath(filePath, 'file:open-in-finder');
     if (!fs.existsSync(resolved)) {
       throw new Error('file:open-in-finder: path does not exist');
     }

@@ -123,6 +123,8 @@ export const NO_INSTRUMENT_PRESETS: Readonly<Record<string, string>> = {
   trim:     '게인 하나입니다. 프리셋은 이름 붙인 숫자일 뿐입니다',
   dither:   '쓰는 파일에 대한 것이지 트랙에 뭐가 있는지와 무관합니다',
   loudness: 'LUFS 목표는 곡의 사실입니다. 베이스 트랙에는 목표 라우드니스가 없습니다',
+  matcheq:  '매치 EQ 의 설정은 특정 레퍼런스를 잰 결과 그 자체입니다. 프리셋 커브는 아무도 재지 않은 커브입니다',
+  analyzer: '오디오를 건드리지 않습니다. 이 기기의 설정은 소리가 아니라 그림입니다',
 };
 
 /**
@@ -324,7 +326,7 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
     drumloop: { note: '루프 자체를 덕킹할 일은 드뭅니다. 보컬에 살짝 자리를 내주는 정도',
                 params: { thresholdDb: -26, ratio: 3, attackMs: 15, releaseMs: 180, makeupDb: 0 } },
     bass:     { note: '킥에 눌리게 하는 고전적 용법. 릴리스를 템포에 맞추세요',
-                params: { thresholdDb: -30, ratio: 8, attackMs: 5, releaseMs: 140, makeupDb: 2 } },
+                params: { thresholdDb: -30, ratio: 8, attackMs: 9, releaseMs: 140, makeupDb: 2 } },
     egtr:     { note: '보컬 들어올 때만 물러납니다. 기타 레이어가 두꺼울 때',
                 params: { thresholdDb: -28, ratio: 4, attackMs: 20, releaseMs: 260, makeupDb: 0 } },
     agtr:     { note: '아주 약하게 — 티 나면 실패입니다',
@@ -334,7 +336,7 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
     strings:  { note: '느리게 들어가고 느리게 나옵니다. 패드성 소스는 급하게 움직이면 들킵니다',
                 params: { thresholdDb: -30, ratio: 3.5, attackMs: 60, releaseMs: 500, makeupDb: 0 } },
     synth:    { note: 'EDM 펌핑. 킥마다 크게 눌리고 빠르게 돌아옵니다',
-                params: { thresholdDb: -34, ratio: 10, attackMs: 5, releaseMs: 110, makeupDb: 2 } },
+                params: { thresholdDb: -34, ratio: 10, attackMs: 9, releaseMs: 110, makeupDb: 2 } },
   }),
 
   ...inst('limiter', {
@@ -356,19 +358,19 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
 
   ...inst('gate', {
     drumloop: { note: '루프는 붙어 있는 소리라 얕게만. 레인지를 깊게 주면 리듬이 끊깁니다',
-                params: { thresholdDb: -40, rangeDb: 12, attackMs: 1, releaseMs: 120 } },
+                params: { thresholdDb: -40, rangeDb: 12, attackMs: 9, releaseMs: 120 } },
     bass:     { note: '연주 사이 앰프 험만 잡습니다. 릴리스를 길게 해야 음이 안 잘립니다',
-                params: { thresholdDb: -52, rangeDb: 18, attackMs: 3, releaseMs: 400 } },
+                params: { thresholdDb: -52, rangeDb: 18, attackMs: 9, releaseMs: 400 } },
     egtr:     { note: '하이게인 기타의 노이즈 게이트. 이 악기에서 가장 자주 쓰입니다',
-                params: { thresholdDb: -46, rangeDb: 35, attackMs: 1, releaseMs: 180 } },
+                params: { thresholdDb: -46, rangeDb: 35, attackMs: 9, releaseMs: 180 } },
     agtr:     { note: '거의 쓰지 않습니다 — 통기타의 여운을 자르면 바로 티가 납니다',
-                params: { thresholdDb: -60, rangeDb: 8, attackMs: 5, releaseMs: 700 } },
+                params: { thresholdDb: -60, rangeDb: 8, attackMs: 9, releaseMs: 700 } },
     piano:    { note: '페달 여운이 있으니 아주 낮게, 아주 얕게',
                 params: { thresholdDb: -64, rangeDb: 6, attackMs: 10, releaseMs: 900 } },
     strings:  { note: '스트링에 게이트는 대체로 오답입니다. 무대 노이즈만 겨우 잡는 값',
                 params: { thresholdDb: -68, rangeDb: 5, attackMs: 20, releaseMs: 1200 } },
     synth:    { note: '리듬 게이트로 씁니다. 깊고 빠르게 — 신스는 잘라도 자연스러움을 잃지 않습니다',
-                params: { thresholdDb: -34, rangeDb: 45, attackMs: 1, releaseMs: 60 } },
+                params: { thresholdDb: -34, rangeDb: 45, attackMs: 9, releaseMs: 60 } },
   }),
 
   ...inst('mbcomp', {
@@ -410,6 +412,47 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
                 params: { driveDb: 0.5, ceilingDb: -2, hardness: 0.12 } },
     synth:    { note: '가장 세게. 신스 리드는 클리핑이 곧 성격이 됩니다',
                 params: { driveDb: 7.5, ceilingDb: -1, hardness: 0.7 } },
+  }),
+
+  ...inst('mbwidth', {
+    drumloop: { note: '킥은 가운데, 오버헤드는 넓게 — 한 스테레오 루프에서 둘을 나눕니다',
+                params: { lowXHz: 200, highXHz: 3000, lowWidth: 0, midWidth: 1, hiWidth: 1.5 } },
+    bass:     { note: '베이스는 전부 가운데입니다. 이 장치로 할 일은 그것을 확인하는 것뿐',
+                params: { lowXHz: 300, highXHz: 2000, lowWidth: 0, midWidth: 0.5, hiWidth: 0.8 } },
+    egtr:     { note: '더블 트랙을 더 벌립니다. 몸통은 가운데 남겨두고',
+                params: { lowXHz: 160, highXHz: 2500, lowWidth: 0.4, midWidth: 1.15, hiWidth: 1.5 } },
+    agtr:     { note: '통울림은 가운데, 줄 소리만 넓게',
+                params: { lowXHz: 140, highXHz: 3500, lowWidth: 0.3, midWidth: 1.1, hiWidth: 1.4 } },
+    piano:    { note: '피아노는 넓게 녹음됩니다 — 낮은 현만 모아줍니다',
+                params: { lowXHz: 180, highXHz: 4000, lowWidth: 0.2, midWidth: 1, hiWidth: 1.15 } },
+    strings:  { note: '섹션은 넓을수록 섹션처럼 들립니다. 콘트라베이스 자리만 붙잡고',
+                params: { lowXHz: 120, highXHz: 2200, lowWidth: 0.25, midWidth: 1.25, hiWidth: 1.6 } },
+    synth:    { note: '유니즌 신스는 이미 넓습니다 — 저역을 모아 자리를 되찾습니다',
+                params: { lowXHz: 220, highXHz: 3000, lowWidth: 0, midWidth: 1, hiWidth: 1.2 } },
+  }),
+
+  ...inst('upward', {
+    drumloop: { note: '고스트 노트를 들어올립니다. 어택을 늦춰 메인 히트는 건드리지 않게',
+                params: { thresholdDb: -30, ratio: 2.4, depthDb: 6, floorDb: -58,
+                          attackMs: 60, releaseMs: 200 } },
+    bass:     { note: '느리게 5 dB — 음과 음 사이가 꺼지지 않으면 베이스는 그것만으로 커집니다',
+                params: { thresholdDb: -24, ratio: 2, depthDb: 5, floorDb: -54,
+                          attackMs: 120, releaseMs: 600 } },
+    egtr:     { note: '코드 꼬리를 받칩니다. 플로어는 픽업 험 위에',
+                params: { thresholdDb: -26, ratio: 2.2, depthDb: 5, floorDb: -50,
+                          attackMs: 70, releaseMs: 450 } },
+    agtr:     { note: '핑거피킹의 약한 음만. 플로어를 −48 dB 로 올려 프렛 잡음을 두고 갑니다',
+                params: { thresholdDb: -28, ratio: 2, depthDb: 4, floorDb: -48,
+                          attackMs: 50, releaseMs: 400 } },
+    piano:    { note: '이 장치가 가장 잘 하는 일 — 해머가 지나간 뒤의 감쇠를 붙잡습니다',
+                params: { thresholdDb: -30, ratio: 2.8, depthDb: 8, floorDb: -60,
+                          attackMs: 140, releaseMs: 900 } },
+    strings:  { note: '아주 느리게. 활이 바뀌는 지점이 메워집니다',
+                params: { thresholdDb: -32, ratio: 2.2, depthDb: 6, floorDb: -58,
+                          attackMs: 200, releaseMs: 1100 } },
+    synth:    { note: '가장 적게. 신스는 이미 엔벨로프가 시킨 대로 울립니다',
+                params: { thresholdDb: -24, ratio: 1.6, depthDb: 2.5, floorDb: -52,
+                          attackMs: 80, releaseMs: 500 } },
   }),
 
   ...inst('transient', {
@@ -516,6 +559,109 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
                 params: { rateHz: 0.2, depthMs: 6, delayMs: 26, mix: 28 } },
     synth:    { note: '넓고 진하게. 신스 패드의 기본값이라고 봐도 됩니다',
                 params: { rateHz: 0.45, depthMs: 7, delayMs: 22, mix: 55 } },
+  }),
+
+  ...inst('harmonizer', {
+    drumloop: { note: '드럼에는 옥타브 아래를 아주 조금 — 하모나이저는 트랜지언트에서 '
+                      + '스플라이스가 가장 잘 들리므로, 킥의 몸통만 두껍게 하고 빠집니다',
+                params: { v1St: -12, v1Db: -16, v2Db: -60, spread: 0.2, windowMs: 130, mix: 0.12 } },
+    bass:     { note: '베이스에 옥타브 위 — 아래로 내리면 이미 있는 곳에 겹쳐 뭉갭니다. '
+                      + '창은 길게: 낮은 음일수록 한 주기가 길어서 짧은 창은 매번 주기 중간을 자릅니다',
+                params: { v1St: 12, v1Db: -14, v2Db: -60, spread: 0.25, windowMs: 200, mix: 0.2 } },
+    egtr:     { note: '일렉 기타에 5도 위 — 이 기기가 만들어진 이유 그 자체입니다',
+                params: { v1St: 7, v1Db: -4, v2Db: -60, spread: 0.6, windowMs: 90, mix: 0.4 } },
+    agtr:     { note: '통기타에 옥타브 위를 얇게 — 12현 흉내이지 화음이 아닙니다',
+                params: { v1St: 12, v1Db: -12, v2Db: -60, spread: 0.7, windowMs: 90, mix: 0.25 } },
+    piano:    { note: '피아노는 이미 화음이라 평행 3도가 거의 항상 틀립니다 — 옥타브만, 아주 얕게',
+                params: { v1St: 12, v1Db: -18, v2Db: -60, spread: 0.4, windowMs: 45, mix: 0.12 } },
+    strings:  { note: '현 섹션에 옥타브 위아래 — 인원을 늘리는 쪽이지 화성을 바꾸는 쪽이 아닙니다',
+                params: { v1St: 12, v1Db: -14, v2St: -12, v2Db: -14, spread: 0.9, windowMs: 130, mix: 0.25 } },
+    synth:    { note: '신스 리드에 5도와 옥타브를 세게 — 워블이 신스에서는 결점이 아니라 성격입니다',
+                params: { v1St: 7, v1Db: -3, v2St: 12, v2Db: -5, spread: 0.8, windowMs: 85, mix: 0.5 } },
+  }),
+  ...inst('linphase', {
+    drumloop: { note: '드럼에는 빠름 길이로. 프리링잉은 트랜지언트 앞에 붙는 것이라 '
+                      + '드럼에서 가장 잘 들리고, 짧을수록 그 물결이 짧습니다',
+                params: { length: 0, lowDb: 2, lowHz: 70, b1Db: -3, b1Hz: 400, b1Q: 1.6,
+                          b2Db: 2.5, b2Hz: 6000, b2Q: 0.9, highDb: 1.5 } },
+    bass:     { note: '베이스는 정밀 길이 — 저역을 분해하려면 응답이 길어야 하고, '
+                      + '베이스에는 앞에서 울릴 트랜지언트가 거의 없습니다',
+                params: { length: 2, lowDb: 2.5, lowHz: 70, b1Db: -3, b1Hz: 300, b1Q: 1.5,
+                          b2Db: 1, b2Hz: 1500, b2Q: 1, highDb: -2 } },
+    egtr:     { note: '일렉 기타에 표준 길이 · 로우미드를 덜고 프레즌스를 세웁니다',
+                params: { length: 1, hpfHz: 80, lowDb: -1, lowHz: 150, b1Db: -3.5, b1Hz: 450, b1Q: 1.4,
+                          b2Db: 3, b2Hz: 2500, b2Q: 1.1, highDb: -1.5 } },
+    agtr:     { note: '통기타에 정밀 길이 — 통울림을 좁게 덜어내려면 그만큼의 분해능이 필요합니다',
+                params: { length: 2, hpfHz: 70, lowDb: -1.5, lowHz: 110, b1Db: -4, b1Hz: 200, b1Q: 2.5,
+                          b2Db: 2, b2Hz: 5000, b2Q: 0.8, highDb: 2.5, highHz: 10000 } },
+    piano:    { note: '피아노에 정밀 길이, 아주 얕게. 위상이 돌면 페달을 밟은 화음의 '
+                      + '배음들이 서로 어긋납니다',
+                params: { length: 2, lowDb: 1, lowHz: 100, b1Db: -1.5, b1Hz: 350, b1Q: 1.3,
+                          b2Db: 1.5, b2Hz: 4000, b2Q: 0.8, highDb: 1.5 } },
+    strings:  { note: '현 섹션에 정밀 길이 — 여러 연주자가 겹친 소리라 위상 회전이 넓이로 드러납니다',
+                params: { length: 2, hpfHz: 60, lowDb: -1, lowHz: 120, b1Db: -2, b1Hz: 400, b1Q: 1.2,
+                          b2Db: 1.5, b2Hz: 3000, b2Q: 0.9, highDb: 2, highHz: 9000 } },
+    synth:    { note: '신스에 표준 길이 — 만들어진 소리라 무엇을 해도 되고, 길이는 지연이 '
+                      + '덜한 쪽으로',
+                params: { length: 1, lowDb: 1.5, lowHz: 90, b1Db: -2, b1Hz: 500, b1Q: 1,
+                          b2Db: 2, b2Hz: 5000, b2Q: 0.8, highDb: 2.5, highHz: 11000 } },
+  }),
+  ...inst('tape', {
+    drumloop: { note: '드럼에 15 ips — 테이프가 드럼을 눌러주는 건 상단부터라, '
+                      + '심벌이 먼저 잡히고 킥은 범프로 부풀어 오릅니다',
+                params: { speed: 1, drive: 7, bias: 0.45, bump: 5, wow: 0.12, flutter: 0.18, crosstalk: 0.3 } },
+    bass:     { note: '베이스는 범프가 근음과 겹치면 뭉갭니다 — 30 ips 로 범프를 100 Hz 로 '
+                      + '올려 비켜 세우고 레벨만',
+                params: { speed: 2, drive: 6, bias: 0.5, bump: 1.5, wow: 0.05, flutter: 0.08, crosstalk: 0.1 } },
+    egtr:     { note: '일렉 기타에 7.5 ips — 느린 테이프의 좁은 상단이 앰프 뒤에서 '
+                      + '제일 자연스럽게 들립니다',
+                params: { speed: 0, drive: 8, bias: 0.35, bump: 4, wow: 0.3, flutter: 0.3, hiss: 0.25, crosstalk: 0.45 } },
+    agtr:     { note: '통기타는 상단이 소리의 전부라 30 ips — 바이어스를 올려 '
+                      + '깨끗하게, 범프는 낮게',
+                params: { speed: 2, drive: 2, bias: 0.62, bump: 1.5, wow: 0.1, flutter: 0.1, mix: 0.7 } },
+    piano:    { note: '피아노는 워우를 절대 못 숨깁니다 — 길게 뻗는 음이 흔들리면 '
+                      + '바로 고장난 소리가 됩니다. 15 ips 에 워우를 끕니다',
+                params: { speed: 1, drive: 3, bias: 0.55, bump: 2.5, wow: 0.03, flutter: 0.06, crosstalk: 0.15 } },
+    strings:  { note: '현에는 15 ips 에 워우를 아주 얕게 — 섹션이 한 덩어리로 들리게',
+                params: { speed: 1, drive: 2, bias: 0.55, bump: 3, wow: 0.18, flutter: 0.1, crosstalk: 0.3 } },
+    synth:    { note: '신스에 7.5 ips 를 세게 — 디지털로 만든 것을 아날로그 매체에 '
+                      + '한 번 통과시키는 것이 목적입니다',
+                params: { speed: 0, drive: 11, bias: 0.25, bump: 6, wow: 0.5, flutter: 0.45, hiss: 0.35, crosstalk: 0.55 } },
+  }),
+  ...inst('amp', {
+    drumloop: { note: '드럼을 앰프에 넣는 건 왜곡이지 앰프 소리가 아닙니다 — 캐비닛을 끄고 한 단만',
+                params: { gain: 40, stages: 1, master: 30, sag: 20, cab: 3, mic: 50, level: -4 } },
+    bass:     { note: '베이스 앰프는 기타 앰프가 아닙니다 — 캐비닛을 끄고 저역을 살립니다. '
+                      + '기타 캐비닛의 80 Hz 하이패스가 베이스의 근음을 잘라냅니다',
+                params: { gain: 30, stages: 1, master: 45, sag: 55, cab: 3, bass: 4, treble: -3 } },
+    egtr:     { note: '이 악기를 위해 만든 장치입니다. 두 단 크런치에 2×12',
+                params: { gain: 55, stages: 2, master: 45, sag: 35, cab: 1, mic: 45 } },
+    agtr:     { note: '통기타에는 거의 클린으로, 마이크는 오프 액시스. 픽업 소리를 부드럽게만',
+                params: { gain: 15, stages: 1, master: 25, sag: 15, cab: 0, mic: 80, treble: -3 } },
+    piano:    { note: '전자 피아노를 앰프에 — 로즈가 원래 그렇게 들어갔습니다',
+                params: { gain: 28, stages: 1, master: 38, sag: 50, cab: 0, mic: 55, mid: 2 } },
+    strings:  { note: '현에는 캐비닛의 고역 차단만 빌려 씁니다. 왜곡은 거의 없이',
+                params: { gain: 10, stages: 1, master: 18, sag: 10, cab: 1, mic: 70, presence: -2 } },
+    synth:    { note: '신스를 앰프로 — 세 단에 4×12, 기계 소리를 악기 소리로 바꾸는 쪽',
+                params: { gain: 78, stages: 3, master: 55, sag: 30, cab: 2, mic: 40, stack: 1 } },
+  }),
+
+  ...inst('rotary', {
+    drumloop: { note: '드럼을 회전시키면 그루브가 흔들립니다 — 절반만 섞고 도플러는 최소로',
+                params: { rateHz: 3.2, doppler: 30, throb: 45, xoverHz: 1200, drive: 10, mix: 35 } },
+    bass:     { note: '베이스는 드럼 로터만 쓰게 크로스오버를 올리고, 도플러는 거의 끕니다 — '
+                      + '저역이 흔들리면 모노에서 사라집니다',
+                params: { rateHz: 0.9, doppler: 20, throb: 30, xoverHz: 1600, balance: -70, mix: 40 } },
+    egtr:     { note: '기타를 레슬리에 넣던 그 소리. 드라이브를 올려 캐비닛을 밀어붙입니다',
+                params: { rateHz: 6.2, doppler: 120, throb: 70, xoverHz: 700, drive: 55, mix: 100 } },
+    agtr:     { note: '통기타에는 느리게 · 얕게. 마이크를 넓혀 공간만 얻습니다',
+                params: { rateHz: 0.8, doppler: 70, throb: 35, micAngle: 140, drive: 0, mix: 55 } },
+    piano:    { note: '전자 피아노 — 오르간 다음으로 이 스피커에 자주 들어간 악기입니다',
+                params: { rateHz: 5.8, doppler: 100, throb: 60, xoverHz: 850, drive: 22, mix: 90 } },
+    strings:  { note: '아주 느린 코랄. 섹션이 숨 쉬는 것처럼만',
+                params: { rateHz: 0.35, doppler: 60, throb: 25, micAngle: 160, accelSec: 3.5, mix: 60 } },
+    synth:    { note: '빠른 트레몰로에 혼 쪽으로 기울여서. 신스 리드를 오르간처럼 만듭니다',
+                params: { rateHz: 7, doppler: 150, throb: 80, balance: 60, accelSec: 0.5, mix: 100 } },
   }),
 
   ...inst('flanger', {

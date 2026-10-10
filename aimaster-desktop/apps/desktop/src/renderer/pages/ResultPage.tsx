@@ -1050,6 +1050,9 @@ function optionsToChainConfig(opts: MasteringOptions): RealtimeChainConfig {
     dynBypass:      rt.dynBypass      ?? false,
     imgWidthPct:    rt.imgWidthPct    ?? (opts.stereoWidth != null ? opts.stereoWidth * 100 : 100),
     imgLowMonoHz:   rt.imgLowMonoHz   ?? 120,
+    // No control on this page yet — the switch lives in the product module
+    // panel, which reaches the preview through the parameter state.
+    imgStereoize:   rt.imgStereoize   ?? false,
     imgBypass:      rt.imgBypass      ?? false,
     limCeilingDbtp: rt.limCeilingDbtp ?? opts.targetTp ?? -1,
     limLookaheadMs: 2.5,

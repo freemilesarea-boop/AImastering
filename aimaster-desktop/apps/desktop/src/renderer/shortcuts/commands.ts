@@ -10,8 +10,6 @@ import type { MasteringResult } from '@aimaster/shared-types';
 import type { RevisionInput } from '../audio/revisions/revision-types.js';
 import type { WorkspaceState, ToolId, PanelId } from '../stores/workspaceStore.js';
 import { serializeSession, deserializeSession, SESSION_VERSION, type LouiSession } from '../audio/session/session-schema.js';
-import { defaultAllModulesState } from '../audio/parameters/parameter-state.js';
-import { ALL_MODULE_PARAMETER_DEFS } from '../audio/parameters/module-parameter-definitions.js';
 import { SHORTCUTS, type CommandId } from './definitions.js';
 
 export type NotifyType = 'info' | 'success' | 'error' | 'warning';
@@ -93,10 +91,10 @@ export function buildSession(snap: AudioSnapshot, createdAt: string): LouiSessio
     createdAt,
     sourceFilePath:    snap.selectedFile,
     referenceFilePath: snap.referenceFilePath,
-    // The desktop result flow drives DSP from `options.rt`, not the module
-    // parameter store, so the module state is written at its defaults and the
-    // real tuning round-trips inside `baseOptions`.
-    allModulesState:   defaultAllModulesState(ALL_MODULE_PARAMETER_DEFS),
+    // The tuning is all in `baseOptions` — the desktop result flow drives DSP
+    // from `options.rt`, not from the module parameter store.  A session used
+    // to carry that store's state as well; it went out at its defaults every
+    // time and nothing read it back, so it is gone.
     presetId:          snap.options.quickPreset,
     baseOptions:       snap.options,
   };
@@ -235,9 +233,13 @@ export function buildCommands(deps: CommandDeps, daw?: DawBridge): CommandMap {
     'transport.gotoLoopStart': () => { transport.seek(workspace().loop.startSec); },
     'transport.gotoLoopEnd':   () => { transport.seek(workspace().loop.endSec); },
 
-    'view.zoomOutH': () => { workspace().zoomOutH(); notify(`가로 확대 ×${workspace().zoomH}`); },
+    // Both directions used to announce themselves as 확대.  Press the zoom-OUT
+    // key, watch the view shrink, and read "가로 확대" — which is how a pair of
+    // keys that do exactly what they are bound to comes to feel swapped.  The
+    // arithmetic was never wrong; only the sentence was.
+    'view.zoomOutH': () => { workspace().zoomOutH(); notify(`가로 축소 ×${workspace().zoomH}`); },
     'view.zoomInH':  () => { workspace().zoomInH();  notify(`가로 확대 ×${workspace().zoomH}`); },
-    'view.zoomOutV': () => { workspace().zoomOutV(); notify(`세로 확대 ×${workspace().zoomV.toFixed(1)}`); },
+    'view.zoomOutV': () => { workspace().zoomOutV(); notify(`세로 축소 ×${workspace().zoomV.toFixed(1)}`); },
     'view.zoomInV':  () => { workspace().zoomInV();  notify(`세로 확대 ×${workspace().zoomV.toFixed(1)}`); },
 
     // ── 3. 메인 툴바 ────────────────────────────────────────────────────

@@ -6,7 +6,6 @@ import type {
   MasteringRevision,
   RevisionGroup,
   RevisionInput,
-  RevisionMetrics,
 } from './revision-types.js';
 
 function genId(): string {
@@ -117,23 +116,16 @@ export function getBaselineRevision(group: RevisionGroup | null): MasteringRevis
   return group?.revisions[0];
 }
 
-// ── Display helpers ───────────────────────────────────────────────────
-
-export function formatMetrics(m: RevisionMetrics): string {
-  const lra = typeof m.lra === 'number' ? ` · LRA ${m.lra.toFixed(1)}` : '';
-  return `${m.integratedLufs.toFixed(1)} LUFS · TP ${m.truePeakDbtp.toFixed(1)} dBTP${lra}`;
-}
-
-/** Short options summary for a revision card. */
-export function formatOptionsSummary(o: MasteringOptions): string {
-  const parts = [
-    `${o.targetLufs.toFixed(1)} LUFS`,
-    `${o.targetTp.toFixed(1)} dBTP`,
-  ];
-  if (typeof o.stereoWidth === 'number' && o.stereoWidth !== 1) parts.push(`W ${Math.round(o.stereoWidth * 100)}%`);
-  if (typeof o.outputGainDb === 'number' && o.outputGainDb !== 0) parts.push(`G ${o.outputGainDb > 0 ? '+' : ''}${o.outputGainDb.toFixed(1)}`);
-  return parts.join(' · ');
-}
+// The display helpers that were here — `formatMetrics` and
+// `formatOptionsSummary` — built the two strings a revision card showed:
+// "-14.0 LUFS · TP -1.0 dBTP" and "-14.0 LUFS · -1.0 dBTP · W 120%".  Their
+// only caller was `LouiRevisionStack`, the card that drew them, and that
+// went with ProductPage.  Nothing else formats a revision for display, so
+// they are gone rather than kept against a card that may never be redrawn:
+// `dead-exports-selftest` found them the moment the component left, and its
+// allowlist is a list that may shrink and may not grow.  The revision LOGIC
+// below and above is untouched and still live — `audioStore`,
+// `shortcuts/commands.ts` and `revision-selftest` all reach it.
 
 /** Whether `options`+`presetId` match an existing revision (duplicate badge). */
 export function findDuplicate(

@@ -13,6 +13,7 @@
 // Pure, so the mapping is tested without a canvas or an AudioContext.
 
 import type { BiquadSpec } from './plugin-curves.js';
+import { BUTTERWORTH_Q } from '../engine/plugin-kit.js';
 
 export interface EqNode {
   /** Stable across renders, so a drag survives a re-render. */
@@ -44,6 +45,44 @@ function num(params: Record<string, number>, id: string, fallback: number): numb
  * the window that this device draws a picture rather than an editor.
  */
 export function eqNodes(pluginId: string, params: Record<string, number>): EqNode[] {
+  if (pluginId === 'linphase') {
+    // The SAME description the FIR is designed from — see `linphaseSpecs`.
+    // A linear-phase EQ that drew one curve and convolved another would be
+    // the worst kind of wrong: it would look right.
+    const bell = (n: 1 | 2, freq: number): EqNode => ({
+      id: `b${n}`, label: String(n), type: 'peaking',
+      freq: num(params, `b${n}Hz`, freq),
+      gainDb: num(params, `b${n}Db`, 0),
+      q: num(params, `b${n}Q`, 1),
+      freqParam: `b${n}Hz`, gainParam: `b${n}Db`, qParam: `b${n}Q`,
+    });
+    // The high-pass is OFF at the bottom of its range rather than parked at
+    // 20 Hz, and that is not cosmetic.  A steep corner is the one shape an
+    // FIR of this length cannot resolve — a 20 Hz Butterworth costs 2.4 dB of
+    // error at 40 Hz even with every band flat, so a device that always
+    // carried one would never be unity with its controls at zero, and the
+    // pre-ringing it causes is the worst artefact this topology has.
+    const hpfHz = num(params, 'hpfHz', 20);
+    return [
+      ...(hpfHz > 20 ? [{
+        id: 'hpf', label: 'HP', type: 'highpass' as const,
+        freq: hpfHz, gainDb: 0, q: BUTTERWORTH_Q,
+        freqParam: 'hpfHz', gainParam: null, qParam: null,
+      }] : []),
+      {
+        id: 'low', label: 'LS', type: 'lowshelf',
+        freq: num(params, 'lowHz', 120), gainDb: num(params, 'lowDb', 0), q: 0.707,
+        freqParam: 'lowHz', gainParam: 'lowDb', qParam: null,
+      },
+      bell(1, 400), bell(2, 3000),
+      {
+        id: 'high', label: 'HS', type: 'highshelf',
+        freq: num(params, 'highHz', 8000), gainDb: num(params, 'highDb', 0), q: 0.707,
+        freqParam: 'highHz', gainParam: 'highDb', qParam: null,
+      },
+    ];
+  }
+
   if (pluginId === 'eq8') {
     const bell = (n: 1 | 2 | 3, freq: number): EqNode => ({
       id: `b${n}`, label: String(n), type: 'peaking',
@@ -55,7 +94,7 @@ export function eqNodes(pluginId: string, params: Record<string, number>): EqNod
     return [
       {
         id: 'hpf', label: 'HP', type: 'highpass',
-        freq: num(params, 'hpfHz', 20), gainDb: 0, q: 1,
+        freq: num(params, 'hpfHz', 20), gainDb: 0, q: BUTTERWORTH_Q,
         freqParam: 'hpfHz', gainParam: null, qParam: null,
       },
       {
@@ -71,7 +110,7 @@ export function eqNodes(pluginId: string, params: Record<string, number>): EqNod
       },
       {
         id: 'lpf', label: 'LP', type: 'lowpass',
-        freq: num(params, 'lpfHz', 20_000), gainDb: 0, q: 1,
+        freq: num(params, 'lpfHz', 20_000), gainDb: 0, q: BUTTERWORTH_Q,
         freqParam: 'lpfHz', gainParam: null, qParam: null,
       },
     ];
@@ -84,7 +123,7 @@ export function eqNodes(pluginId: string, params: Record<string, number>): EqNod
     return [
       {
         id: 'hpf', label: 'HP', type: 'highpass',
-        freq: num(params, 'hpfHz', 20), gainDb: 0, q: 1,
+        freq: num(params, 'hpfHz', 20), gainDb: 0, q: BUTTERWORTH_Q,
         freqParam: 'hpfHz', gainParam: null, qParam: null,
       },
       {

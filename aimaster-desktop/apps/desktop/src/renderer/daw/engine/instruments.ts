@@ -17,6 +17,30 @@ import {
 } from '../model/midi.js';
 import { pluckedString } from './string-model.js';
 import {
+  inharmonicity, renderModes, ringSeconds, stringsForPitch, struckString,
+} from './struck-string.js';
+import { BAR_KINDS, barModes, barProfile } from './bar-model.js';
+import { WAVETABLES } from './wavetable.js';
+import { LFO_SHAPES, MATRIX_ROWS, MOD_DESTS, MOD_SOURCES, noteRandom, rowParams } from './mod-matrix.js';
+import { SUB_SHAPES, renderVoice, tailSeconds } from './wave-synth.js';
+import { ANALOG_SHAPES } from './analog-model.js';
+import { BUTTERWORTH_Q, dcBlock } from './plugin-kit.js';
+import { analogTail, renderAnalogVoice, voiceSlot } from './analog-synth.js';
+import { FM_ALGORITHMS, FM_OPERATORS, FM_WAVES } from './fm-core.js';
+import { fmTail, renderFmVoice } from './fm-synth.js';
+import {
+  BOWED_PARAMS, BOWED_PARAM_IDS, bowedTail, renderBowedVoice,
+} from './bowed-string.js';
+import {
+  REED_PARAMS, REED_PARAM_IDS, reedTail, renderReedVoice,
+} from './reed-pipe.js';
+import {
+  CLAV_PARAMS, CLAV_PARAM_IDS, clavTail, renderClavVoice,
+} from './fd-string.js';
+import {
+  DRUM_MAX_DECAY, drumTail, drumVoiceFor, renderDrumVoice,
+} from './drum-machine.js';
+import {
   CLAP_OFFSETS, noiseSamples, type DrumSpec,
 } from './drum-model.js';
 import { drumSpecIn, kitGenreOf } from './drum-presets.js';
@@ -30,6 +54,19 @@ export interface InstrumentParamDef {
   max: number;
   default: number;
   unit: string;
+  /**
+   * The names of the things this parameter selects, when it selects a thing
+   * rather than setting an amount.
+   *
+   * Three instruments now have one — the bowed family's four boxes, the reed
+   * family's pipes, and the plucked family's five bodies — and without this the
+   * rack drew them as a slider with a number beside it, so choosing a bass
+   * clarinet read as "1.000".  The bowed one was invisible only because it has
+   * a panel of its own that knows the list; the other two did not.
+   */
+  choices?: readonly string[];
+  /** One line about each choice, shown under the picker. */
+  choiceNotes?: readonly string[];
 }
 
 export interface VoiceContext {
@@ -50,12 +87,28 @@ export interface VoiceContext {
   params: Record<string, number>;
 }
 
+/**
+ * One sounding voice: how to cut it short, and when it ends on its own.
+ *
+ * The end time is the voice's OWN, in context seconds, because only the voice
+ * knows it.  The player used to guess — four seconds past the written end of
+ * the note — and a guess is wrong in both directions: a sampler zone with an
+ * eight-second release got cut off halfway down its own fade, while a drum
+ * that had finished in a fifth of a second stayed connected, and a connected
+ * voice is a processed voice for the rest of the render.
+ */
+export interface InstrumentVoice {
+  stop: (at: number) => void;
+  /** Context time after which this voice makes no sound. */
+  endsAt: number;
+}
+
 export interface InstrumentDescriptor {
   id: string;
   name: string;
   params: InstrumentParamDef[];
   /** Build and schedule one voice.  Returns its nodes for cleanup. */
-  playNote: (voice: VoiceContext) => { stop: (at: number) => void };
+  playNote: (voice: VoiceContext) => InstrumentVoice;
 }
 
 /**
@@ -261,7 +314,17 @@ function drumTone(
   return end;
 }
 
-/** Filtered noise, which is the other half of every kit. */
+/**
+ * Filtered noise, which is the other half of every kit.
+ *
+ * `q` means two different things depending on `filterType`, because Web Audio
+ * does: on the bandpasses here (the rim at 6, the clap at 1.4) it is a
+ * cookbook Q, and on the highpasses (0.5 to 0.8) it is a resonance in
+ * DECIBELS.  Each caller's number was chosen against the sound the node
+ * actually made, so they are left as they are rather than converted — see
+ * `BUTTERWORTH_Q` for the unit, and the ceiling below for a number that WAS
+ * meant to be Butterworth and now is.
+ */
 function drumNoise(
   ctx: BaseAudioContext, out: AudioNode, seed: number,
   when: number, peak: number, decay: number,
@@ -281,7 +344,7 @@ function drumNoise(
   const air = ctx.createBiquadFilter();
   air.type = 'lowpass';
   air.frequency.value = Math.max(200, Math.min(nyquist, airHz));
-  air.Q.value = 0.7;
+  air.Q.value = BUTTERWORTH_Q;
   const gain = ctx.createGain();
   const end = hit(gain, when, peak, decay);
   src.connect(filter).connect(air).connect(gain).connect(out);
@@ -304,7 +367,7 @@ function drumNoise(
  * The families differ in WHICH of the two generators above they use and how
  * many, not in kind — which is why a kit this small can cover a GM map.
  */
-function drumVoice(v: VoiceContext): { stop: (at: number) => void } {
+function drumVoice(v: VoiceContext): InstrumentVoice {
   const { ctx, destination, note, when, params } = v;
   // Which KIT, then which piece.  The kit is a number in `instrumentParams`
   // so it survives save, undo, freeze and the offline bounce without any of
@@ -468,6 +531,7 @@ function drumVoice(v: VoiceContext): { stop: (at: number) => void } {
   }
 
   return {
+    endsAt: end,
     stop: (at: number) => {
       // A drum has already decided how long it rings — a stop can only cut it
       // short, and it has to do that with a ramp.  Every source here already
@@ -481,6 +545,111 @@ function drumVoice(v: VoiceContext): { stop: (at: number) => void } {
   };
 }
 
+/**
+ * The plucked instruments that are not guitars.
+ *
+ * ── Why this is a table and not five engines ───────────────────────────────
+ *
+ * A harp, a mandolin and a banjo are one instrument three times over: a string
+ * is displaced, released, and listened to while it dies.  `string-model.ts`
+ * already is that, and the two guitars already share `pluckVoice`.  What makes
+ * them different instruments is what the string is made of, how hard and where
+ * it is caught, how long it is allowed to ring, and what box it rings into —
+ * which is a row of numbers, the same way `BOW_BODIES` is a row of numbers for
+ * four members of the violin family.
+ *
+ * Writing five engines would have been five copies of Karplus-Strong with
+ * different constants, and the constants are the interesting part.
+ *
+ * ── Why bodyHz, bodyQ, body, plate and tone are NOT parameters here ────────
+ *
+ * `pluckVoice` resolves every one of them as `params[id] ?? tuning.id`, so a
+ * parameter with a DEFAULT wins over the table — and a default always has a
+ * value.  Exposing them would have left the instrument switch changing nothing
+ * but its name.  The guitars expose them because each guitar is one body; this
+ * is six bodies, so they belong to the table and the patches reach them through
+ * `kind`.
+ *
+ * For the same reason the selector is `kind` and not `body`: `pluckVoice` reads
+ * `params['body']` as the body resonance's GAIN IN DECIBELS.  A selector called
+ * `body` would have been read as 0 to 5 dB of body gain, which makes a sound,
+ * changes no instrument, and would have been very hard to see.
+ */
+export interface PluckKind {
+  id: string;
+  name: string;
+  /** Loop gain per round trip: how long the string rings. */
+  damping: number;
+  /** The excitation's corner — what the string is made of. */
+  brightness: number;
+  /** Where along the string it is caught, as a fraction. */
+  pick: number;
+  /** The box, or the head: centre, Q, and how much of it. */
+  bodyHz: number;
+  bodyQ: number;
+  bodyDb: number;
+  /** The second resonance, an octave or so up.  0 leaves it out. */
+  plateDb: number;
+  /** Where the instrument stops radiating. */
+  toneHz: number;
+  /** Paired courses, as `pluckVoice`'s doubling. */
+  double: number;
+  /** How long a note is allowed to ring, in seconds. */
+  ring: number;
+  /** The lowest note it has, for the patch bank and the reference phrase. */
+  lowest: number;
+}
+
+export const PLUCK_KINDS: readonly PluckKind[] = [
+  {
+    // A concert harp's string is long, light and under less tension than a
+    // guitar's, so it loses very little per round trip and rings for seconds.
+    // There are no frets and nothing to damp it but the player's hand.
+    id: 'harp', name: 'Harp',
+    damping: 0.9994, brightness: 0.62, pick: 0.28,
+    bodyHz: 130, bodyQ: 0.9, bodyDb: 5, plateDb: 3, toneHz: 8200,
+    double: 0, ring: 6, lowest: 24,
+  },
+  {
+    // Paired courses, tuned a few cents apart, are most of what a mandolin
+    // sounds like — and they are a thing no EQ imitates, because two strings
+    // beat against each other and one does not.  Short, hard, and plucked
+    // near the bridge with a stiff plectrum.
+    id: 'mandolin', name: 'Mandolin',
+    damping: 0.9948, brightness: 0.93, pick: 0.11,
+    bodyHz: 390, bodyQ: 2.2, bodyDb: 6, plateDb: 4, toneHz: 9500,
+    double: 0.55, ring: 1.8, lowest: 55,
+  },
+  {
+    // Nylon on a small box: fewer highs to start with and it loses them fast,
+    // which is why a ukulele cannot be made out of a bright guitar with an EQ.
+    id: 'ukulele', name: 'Ukulele',
+    damping: 0.9925, brightness: 0.55, pick: 0.2,
+    bodyHz: 380, bodyQ: 1.5, bodyDb: 5, plateDb: 0, toneHz: 6200,
+    double: 0, ring: 1.4, lowest: 60,
+  },
+  {
+    // A banjo's soundboard is a drum head, not a plate — one strong, fairly
+    // sharp resonance instead of a box's pair, and it throws the energy out
+    // so quickly that the note is over before a guitar's has begun.
+    id: 'banjo', name: 'Banjo',
+    damping: 0.9905, brightness: 0.97, pick: 0.07,
+    bodyHz: 330, bodyQ: 3.4, bodyDb: 9, plateDb: 0, toneHz: 11000,
+    double: 0, ring: 1.1, lowest: 50,
+  },
+  {
+    // Silk over a long paulownia box.  Plucked with a plectrum well away from
+    // the bridge, which is a comb that takes out the odd partials the pick
+    // sits on and leaves the hollow tone the instrument is known for.
+    id: 'koto', name: 'Koto',
+    damping: 0.9979, brightness: 0.68, pick: 0.35,
+    bodyHz: 180, bodyQ: 1.2, bodyDb: 7, plateDb: 2, toneHz: 7400,
+    double: 0, ring: 3.4, lowest: 43,
+  },
+];
+
+export const PLUCK_KIND_NAMES: readonly string[] = PLUCK_KINDS.map((k) => k.name);
+
 /** One plucked-string voice, shared by the two guitars. */
 function pluckVoice(
   v: VoiceContext,
@@ -490,7 +659,7 @@ function pluckVoice(
     /** This guitar's output trim — the two share a voice, not a level. */
     trim: number;
   },
-): { stop: (at: number) => void } {
+): InstrumentVoice {
   const { ctx, destination, note, config, when, durationSec, params } = v;
   const freq = pitchToFrequency(soundingPitch(note));
   const level = (params['level'] ?? CALIBRATED_LEVEL) * tuning.trim * (0.25 + 0.75 * note.velocity);
@@ -586,7 +755,7 @@ function pluckVoice(
   const tone = ctx.createBiquadFilter();
   tone.type = 'lowpass';
   tone.frequency.value = Math.max(400, params['tone'] ?? tuning.toneHz);
-  tone.Q.value = 0.7;
+  tone.Q.value = BUTTERWORTH_Q;
 
   const amp = ctx.createGain();
 
@@ -626,6 +795,7 @@ function pluckVoice(
   src.stop(releaseEnd + 0.02);
   if (twin) { twin.start(start); twin.stop(releaseEnd + 0.02); }
   return {
+    endsAt: releaseEnd + 0.02,
     stop: (at: number) => {
       try { src.stop(at); } catch { /* already stopped */ }
       if (twin) { try { twin.stop(at); } catch { /* already stopped */ } }
@@ -635,6 +805,1450 @@ function pluckVoice(
         pairGain.disconnect(); body.disconnect(); plate?.disconnect();
         tone.disconnect(); amp.disconnect();
       } catch { /* ignore */ }
+    },
+  };
+}
+
+
+// ── The pianos ──────────────────────────────────────────────────────────────
+
+/**
+ * Where the dampers stop.
+ *
+ * The top notes of a piano have no dampers at all — the strings are so short
+ * that they stop on their own faster than a damper could reach them, and
+ * leaving them free lets them ring in sympathy with everything below.  Which
+ * note it starts at is a builder's choice; the top year and a half of the
+ * keyboard is usual, and MIDI 88 (E6) is inside that range on most grands.
+ *
+ * It is audible and it is not a detail: above this line, letting go of the
+ * key does nothing at all.
+ */
+const UNDAMPED_FROM = 88;
+
+/**
+ * How fast a damper actually stops a string, in seconds.
+ *
+ * Faster at the top, where the felt has less string to stop and the string
+ * has less energy in it.  A single release time across the keyboard makes the
+ * bass sound clipped off and the treble sound smeared, which is the wrong
+ * error in both directions at once.
+ */
+function damperSeconds(pitch: number, scale: number): number {
+  const wide = 0.34 - 0.0028 * Math.max(0, pitch - 21);
+  return Math.min(1.2, Math.max(0.03, wide * scale));
+}
+
+/**
+ * The Rhodes pickup's transfer curve: asymmetric, and zero at zero.
+ *
+ * Asymmetric on purpose — the pickup faces the tine off-centre, which is what
+ * puts EVEN harmonics in a Rhodes, and a symmetric curve would remove the
+ * thing being modelled.
+ *
+ * The point count is ODD so that one sample sits exactly at an input of zero.
+ * A WaveShaper maps x in [-1, 1] onto index (x + 1) / 2 * (n - 1) and
+ * interpolates between neighbours, so with an even count there is no sample
+ * at zero and SILENCE comes out as the midpoint of the two nearest — which,
+ * for a curve this asymmetric, was 4.5e-4: a constant on the bus for as long
+ * as the voice stayed connected.  The envelope detector in `plugin-kit`
+ * forces an odd count for the same reason.
+ *
+ * Exported so a test can ask what it does with silence, which is the one
+ * thing about it that is not a matter of taste.
+ */
+export function pickupCurve(amount: number): Float32Array<ArrayBuffer> {
+  const n = 1025;
+  const curve = new Float32Array(n);
+  const k = 1 + 4 * amount;
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * 2 - 1;
+    // The positive half is compressed harder than the negative one.
+    const bias = x >= 0 ? k : k * 0.55;
+    curve[i] = Math.tanh(x * bias) / Math.tanh(bias);
+  }
+  return curve;
+}
+
+/**
+ * The piano for one note, cached.
+ *
+ * Same argument as the plucked string's cache and the same shape: a part
+ * plays the same few pitches over and over, the Float32Array outlives any one
+ * context, and computing it is the expensive part.  Bigger than the string
+ * cache because a piano part is chords — ten notes at once, each with its own
+ * velocity bucket, is a lot of distinct keys in flight.
+ */
+const PIANO_CACHE = new Map<string, Float32Array>();
+const PIANO_CACHE_MAX = 320;
+
+/**
+ * Velocity is rounded before it reaches the cache key.
+ *
+ * Velocity changes the SAMPLES here — that is the whole hammer model — so an
+ * unrounded velocity makes every note a cache miss, and a performance played
+ * from a keyboard never repeats a velocity exactly.  Sixteen buckets is finer
+ * than the ear resolves on a single note and coarse enough to hit.
+ */
+const VELOCITY_BUCKETS = 16;
+
+interface PianoTuning {
+  /** Multiplies the fitted inharmonicity — an upright's strings are shorter. */
+  stretch: number;
+  hammerHz: number;
+  strike: number;
+  /** Multiplies the fitted ring time. */
+  decay: number;
+  bodyHz: number;
+  bodyQ: number;
+  toneHz: number;
+  trim: number;
+}
+
+function pianoBuffer(
+  ctx: BaseAudioContext, spec: Parameters<typeof struckString>[0],
+): AudioBuffer {
+  const key = [
+    spec.freqHz.toFixed(3), spec.sampleRate, spec.seconds.toFixed(2),
+    spec.B.toExponential(3), spec.velocity.toFixed(3), spec.strikePosition.toFixed(3),
+    spec.hammerHz.toFixed(0), spec.t60.toFixed(3), spec.aftersound.toFixed(2),
+    spec.aftersoundLevel.toFixed(3), spec.hfDamping.toFixed(4),
+    spec.unisonCents.toFixed(2), spec.strings,
+  ].join('|');
+  let samples = PIANO_CACHE.get(key);
+  if (!samples) {
+    samples = struckString(spec);
+    if (PIANO_CACHE.size >= PIANO_CACHE_MAX) {
+      const oldest = PIANO_CACHE.keys().next().value;
+      if (oldest !== undefined) PIANO_CACHE.delete(oldest);
+    }
+    PIANO_CACHE.set(key, samples);
+  }
+  const buf = ctx.createBuffer(1, samples.length, ctx.sampleRate);
+  buf.getChannelData(0).set(samples);
+  return buf;
+}
+
+/**
+ * One struck note: the string, the soundboard, where it sits, and the damper.
+ *
+ * The string itself is `struck-string.ts` and its whole argument lives there.
+ * What is here is everything between the string and the room.
+ */
+function pianoVoice(
+  v: VoiceContext, tuning: PianoTuning,
+): InstrumentVoice {
+  const { ctx, destination, note, config, when, durationSec, params } = v;
+  const pitch = soundingPitch(note);
+  const freq = pitchToFrequency(pitch);
+
+  // Velocity does NOT scale the output here the way it does on the synth.
+  // It reaches the hammer, which changes what the string does, and the gain
+  // it still carries is the small remainder: a piano played softly is much
+  // more than a quiet piano, and if the whole dynamic were in this number the
+  // hammer model would be decoration.
+  const velocity = Math.min(1, Math.max(0, note.velocity));
+  const bucket = Math.round(velocity * VELOCITY_BUCKETS) / VELOCITY_BUCKETS;
+  const level = (params['level'] ?? CALIBRATED_LEVEL) * tuning.trim * (0.5 + 0.5 * velocity);
+
+  const stretch = Math.max(0.05, params['stretch'] ?? 1) * tuning.stretch;
+  const B = inharmonicity(pitch, stretch);
+  const bloom = Math.min(20, Math.max(1, params['bloom'] ?? 8));
+  // `ringSeconds` is the whole note's audible ring, which is the aftersound.
+  // The fast plane is what is left when that is divided out — see the two
+  // stages in `struck-string.ts`.
+  const ring = ringSeconds(freq) * Math.max(0.2, params['decay'] ?? 1);
+  const fast = Math.max(0.05, ring / bloom);
+
+  const damped = pitch < UNDAMPED_FROM;
+  const releaseSec = damperSeconds(pitch, Math.max(0.1, params['release'] ?? 1));
+  // How much audio to compute.  A damped note stops when the key does, so it
+  // is not worth computing its twelve-second aftersound; an undamped one has
+  // no key to stop it and gets the whole ring.
+  const seconds = Math.min(ring + 0.1,
+    damped ? Math.max(0.12, durationSec) + releaseSec + 0.05 : Math.max(0.12, durationSec) + ring);
+
+  const src = ctx.createBufferSource();
+  src.buffer = pianoBuffer(ctx, {
+    freqHz: freq, sampleRate: ctx.sampleRate, seconds, B, velocity: bucket,
+    strikePosition: params['strike'] ?? tuning.strike,
+    hammerHz: Math.max(400, params['hammer'] ?? tuning.hammerHz),
+    t60: fast, aftersound: bloom,
+    aftersoundLevel: Math.max(0, Math.min(1, params['after'] ?? 0.28)),
+    hfDamping: Math.max(0.0005, params['toneDecay'] ?? 0.015),
+    unisonCents: Math.max(0, params['unison'] ?? 1.2),
+    strings: stringsForPitch(pitch),
+  });
+
+  // The soundboard.  One broad resonance and a roll-off, the same shape the
+  // guitar's body uses — a piano's board has dozens, but they are a room's
+  // worth of detail and this is the one that changes whether the instrument
+  // sounds like a piano or like a struck wire.
+  const body = ctx.createBiquadFilter();
+  body.type = 'peaking';
+  body.frequency.value = Math.max(50, params['bodyHz'] ?? tuning.bodyHz);
+  body.Q.value = Math.max(0.2, params['bodyQ'] ?? tuning.bodyQ);
+  body.gain.value = params['body'] ?? 3.5;
+
+  const tone = ctx.createBiquadFilter();
+  tone.type = 'lowpass';
+  tone.frequency.value = Math.min(
+    ctx.sampleRate * 0.45, Math.max(600, params['tone'] ?? tuning.toneHz));
+  tone.Q.value = BUTTERWORTH_Q;
+
+  // Where the note sits across the stereo picture.
+  //
+  // From the PLAYER's seat, which is the convention every piano library
+  // follows: the bass is on the left because the player's left hand is.  The
+  // span is the keyboard, not a pan law — a piano is one instrument in one
+  // place, and this is the width of that one instrument.
+  const spread = Math.max(0, Math.min(1, params['spread'] ?? 0.45));
+  const pan = ctx.createStereoPanner();
+  pan.pan.value = Math.max(-1, Math.min(1, ((pitch - 60) / 36) * spread));
+
+  const amp = ctx.createGain();
+  scheduleCurve(
+    src.detune, note, { kind: 'pitchBend' }, when, durationSec,
+    (val) => val * config.bendRangeSemitones * 100, 0,
+  );
+
+  src.connect(body).connect(tone).connect(pan).connect(amp).connect(destination);
+
+  const start = Math.max(0, when);
+  const noteEnd = start + Math.max(0.02, durationSec);
+  amp.gain.setValueAtTime(0.0001, start);
+  amp.gain.exponentialRampToValueAtTime(Math.max(0.0002, level), start + 0.002);
+  // The damper.  Above `UNDAMPED_FROM` there isn't one, so the envelope holds
+  // and the string's own decay is what ends the note.
+  const stopAt = damped ? noteEnd + releaseSec : start + seconds;
+  amp.gain.setValueAtTime(Math.max(0.0002, level), Math.max(start + 0.003, damped ? noteEnd : stopAt - 0.02));
+  amp.gain.exponentialRampToValueAtTime(0.0001, stopAt);
+
+  src.start(start);
+  src.stop(stopAt + 0.02);
+  return {
+    endsAt: stopAt + 0.02,
+    stop: (at: number) => {
+      try { src.stop(at); } catch { /* already stopped */ }
+      try {
+        src.disconnect(); body.disconnect(); tone.disconnect();
+        pan.disconnect(); amp.disconnect();
+      } catch { /* ignore */ }
+    },
+  };
+}
+
+/** The parameters both pianos take.  Same knobs, different rest positions. */
+function pianoParams(d: {
+  hammer: number; strike: number; stretch: number; unison: number;
+  bloom: number; decay: number; bodyHz: number; bodyQ: number; tone: number;
+}): InstrumentParamDef[] {
+  return [
+    { id: 'hammer',    name: 'Hammer',   min: 900,   max: 9000,  default: d.hammer,  unit: 'Hz' },
+    { id: 'strike',    name: 'Strike',   min: 0.04,  max: 0.28,  default: d.strike,  unit: '' },
+    { id: 'stretch',   name: 'Stretch',  min: 0.1,   max: 4,     default: d.stretch, unit: '×' },
+    { id: 'unison',    name: 'Unison',   min: 0,     max: 12,    default: d.unison,  unit: 'ct' },
+    { id: 'bloom',     name: 'Bloom',    min: 1,     max: 20,    default: d.bloom,   unit: '×' },
+    { id: 'after',     name: 'After',    min: 0,     max: 1,     default: 0.28,      unit: '' },
+    { id: 'decay',     name: 'Decay',    min: 0.2,   max: 2.5,   default: d.decay,   unit: '×' },
+    { id: 'toneDecay', name: 'Tone Dec', min: 0.002, max: 0.06,  default: 0.015,     unit: '' },
+    { id: 'bodyHz',    name: 'Board Hz', min: 50,    max: 500,   default: d.bodyHz,  unit: 'Hz' },
+    { id: 'bodyQ',     name: 'Board Q',  min: 0.3,   max: 6,     default: d.bodyQ,   unit: '' },
+    { id: 'body',      name: 'Board',    min: -6,    max: 12,    default: 3.5,       unit: 'dB' },
+    { id: 'tone',      name: 'Tone',     min: 900,   max: 18000, default: d.tone,    unit: 'Hz' },
+    { id: 'spread',    name: 'Spread',   min: 0,     max: 1,     default: 0.45,      unit: '' },
+    { id: 'release',   name: 'Damper',   min: 0.1,   max: 3,     default: 1,         unit: '×' },
+    { id: 'level',     name: 'Level',    min: 0,     max: 1,     default: CALIBRATED_LEVEL, unit: '' },
+  ];
+}
+
+
+// ── The mallet instruments ──────────────────────────────────────────────────
+
+const BAR_CACHE = new Map<string, Float32Array>();
+const BAR_CACHE_MAX = 240;
+
+/**
+ * One struck bar.
+ *
+ * The bar itself is `bar-model.ts`; what is here is the resonator under it
+ * and the motor in the resonator, which are the two things a bar on its own
+ * does not have.
+ */
+function malletVoice(v: VoiceContext): InstrumentVoice {
+  const { ctx, destination, note, config, when, durationSec, params } = v;
+  const pitch = soundingPitch(note);
+  const freq = pitchToFrequency(pitch);
+  const velocity = Math.min(1, Math.max(0, note.velocity));
+  const bucket = Math.round(velocity * 12) / 12;
+  const profile = barProfile(params['bar'] ?? 0);
+  const level = (params['level'] ?? CALIBRATED_LEVEL) * INSTRUMENT_TRIM.mallet
+    * (0.35 + 0.65 * velocity);
+
+  // A small bar rings for less time than a big one, on every instrument in
+  // the family.  Scaled off the profile's middle rather than fitted
+  // separately: four instruments and one exponent is as much as the shape of
+  // the data supports.
+  const ring = profile.ringSeconds * Math.pow(261.63 / Math.max(40, freq), 0.6)
+    * Math.max(0.2, params['decay'] ?? 1);
+  const damped = (params['damp'] ?? 0) > 0.5;
+  const seconds = Math.min(ring + 0.1,
+    damped ? Math.max(0.1, durationSec) + 0.25 : Math.max(0.12, durationSec) + ring);
+
+  const spec = {
+    freqHz: freq, sampleRate: ctx.sampleRate, profile, velocity: bucket,
+    ringSeconds: ring, hardness: Math.max(0.2, params['hardness'] ?? 1),
+  };
+  const key = [
+    freq.toFixed(3), ctx.sampleRate, seconds.toFixed(2), bucket.toFixed(3),
+    ring.toFixed(3), spec.hardness.toFixed(2), profile.ratios.join(','),
+  ].join('|');
+  let samples = BAR_CACHE.get(key);
+  if (!samples) {
+    const modes = barModes(spec);
+    samples = renderModes(modes, ctx.sampleRate, seconds);
+    let sum = 0;
+    for (const m of barModes({ ...spec, velocity: 1 })) sum += m.amp;
+    const norm = 1 / Math.max(1e-6, sum);
+    for (let i = 0; i < samples.length; i++) samples[i] = (samples[i] ?? 0) * norm;
+    if (BAR_CACHE.size >= BAR_CACHE_MAX) {
+      const oldest = BAR_CACHE.keys().next().value;
+      if (oldest !== undefined) BAR_CACHE.delete(oldest);
+    }
+    BAR_CACHE.set(key, samples);
+  }
+  const buf = ctx.createBuffer(1, samples.length, ctx.sampleRate);
+  buf.getChannelData(0).set(samples);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+
+  // The tube under the bar.  One resonance at the bar's own pitch, which is
+  // what a tube cut to a quarter of that wavelength is for: it makes the
+  // fundamental loud and does nothing for the partials above it, and that
+  // selectivity is why a marimba without its tubes sounds like a xylophone.
+  const tube = ctx.createBiquadFilter();
+  tube.type = 'peaking';
+  tube.frequency.value = Math.min(ctx.sampleRate * 0.45, freq);
+  tube.Q.value = Math.max(0.3, params['tubeQ'] ?? 2.2);
+  tube.gain.value = params['tube'] ?? 5;
+
+  const amp = ctx.createGain();
+  const pan = ctx.createStereoPanner();
+  const spread = Math.max(0, Math.min(1, params['spread'] ?? 0.35));
+  pan.pan.value = Math.max(-1, Math.min(1, ((pitch - 65) / 30) * spread));
+
+  scheduleCurve(
+    src.detune, note, { kind: 'pitchBend' }, when, durationSec,
+    (val) => val * config.bendRangeSemitones * 100, 0,
+  );
+
+  const start = Math.max(0, when);
+  const stopAt = start + seconds;
+  amp.gain.setValueAtTime(0.0001, start);
+  amp.gain.exponentialRampToValueAtTime(Math.max(0.0002, level), start + 0.002);
+  if (damped) {
+    const end = start + Math.max(0.02, durationSec);
+    amp.gain.setValueAtTime(Math.max(0.0002, level), Math.max(start + 0.003, end));
+    amp.gain.exponentialRampToValueAtTime(0.0001, end + 0.22);
+  }
+
+  // The vibraphone's motor: discs spinning in the mouths of the tubes, which
+  // open and close them.  It is an AMPLITUDE wobble and not a pitch one —
+  // "vibrato" is the wrong word for what the instrument is named after, and
+  // modelling it as pitch is the commonest way to get a vibraphone wrong.
+  const motorHz = Math.max(0, params['motor'] ?? 0);
+  let lfo: OscillatorNode | null = null;
+  let lfoGain: GainNode | null = null;
+  const depth = Math.max(0, Math.min(1, params['motorDepth'] ?? 0.5));
+  if (profile.motor && motorHz > 0.05 && depth > 0.01) {
+    lfo = ctx.createOscillator();
+    lfo.type = 'sine';
+    lfo.frequency.value = motorHz;
+    lfoGain = ctx.createGain();
+    lfoGain.gain.value = depth * level * 0.5;
+    lfo.connect(lfoGain).connect(amp.gain);
+    lfo.start(start);
+    lfo.stop(stopAt + 0.02);
+  }
+
+  src.connect(tube).connect(pan).connect(amp).connect(destination);
+  src.start(start);
+  src.stop(stopAt + 0.02);
+  return {
+    endsAt: stopAt + 0.02,
+    stop: (at: number) => {
+      try { src.stop(at); } catch { /* already stopped */ }
+      try { lfo?.stop(at); } catch { /* already stopped */ }
+      try {
+        src.disconnect(); tube.disconnect(); pan.disconnect(); amp.disconnect();
+        lfo?.disconnect(); lfoGain?.disconnect();
+      } catch { /* ignore */ }
+    },
+  };
+}
+
+// ── The drawbar organ ───────────────────────────────────────────────────────
+
+/**
+ * What each drawbar is, as a multiple of the key's own pitch.
+ *
+ * In footages, which is what the instrument is labelled in, and they are not
+ * in order: the second drawbar is a TWELFTH above the first and sits between
+ * the 16' and the 8', because the panel is laid out by pitch and 5⅓' is
+ * lower than 8'.  Everybody who has played one knows the brown-white-brown
+ * layout and almost nobody knows why the first two are brown; it is because
+ * those two are the ones below unison.
+ *
+ *     16'   5⅓'   8'    4'    2⅔'   2'    1⅗'   1⅓'   1'
+ *     0.5   1.5   1     2     3     4     5     6     8
+ */
+const DRAWBAR_RATIOS: readonly number[] = [0.5, 1.5, 1, 2, 3, 4, 5, 6, 8];
+const DRAWBAR_IDS: readonly string[] = [
+  'db16', 'db513', 'db8', 'db4', 'db223', 'db2', 'db135', 'db113', 'db1',
+];
+
+/**
+ * The drawbars as ONE periodic wave rather than nine oscillators.
+ *
+ * Every ratio above is a whole multiple of HALF the key's pitch — 0.5 is the
+ * first, 1.5 is the third, 1 is the second — so all nine are harmonics of
+ * f0/2 and a single oscillator running an octave down can carry the lot.
+ * Nine oscillators per key would be nine times the nodes for the same
+ * samples, and a ten-finger chord on an organ is not unusual.
+ *
+ * ── Why the coefficients are normalised here and not by WebAudio ────────────
+ *
+ * `createPeriodicWave` takes a `disableNormalization` flag, and the two
+ * renderers this engine has to agree in do not agree about it.  Measured, at
+ * 220 Hz, coefficients [0, ⅓, ⅓, ⅓]:
+ *
+ *                            disableNormalization: true      : false
+ *     Chromium               peak 0.8332  rms 0.4082     peak 1.0000  rms 0.4900
+ *     node-web-audio-api     peak 1.0000  rms 0.4900     peak 1.0000  rms 0.4900
+ *
+ * node ignores the flag and normalises whatever it is given to a peak of one.
+ * Which meant the organ measured 1.59 LU louder under node than in the app —
+ * exactly 20·log10(0.49/0.4082) — and, worse than the offset, it meant the
+ * DRAWBARS DID NOT CHANGE THE LEVEL AT ALL under node, because every
+ * registration was renormalised back to the same peak.  A suite measuring an
+ * organ there would have been measuring a constant.
+ *
+ * So the normalisation is done here, in arithmetic both renderers run the
+ * same way: the coefficients are divided by the wave's own peak, which makes
+ * the wave peak at one under either interpretation of the flag, and the level
+ * the registration implies is handed back as a gain.  Pulling out more
+ * drawbars is louder again, in both, by the same amount.
+ */
+function drawbarWave(
+  ctx: BaseAudioContext, params: Record<string, number>,
+): { wave: PeriodicWave; gain: number } {
+  // Harmonics of f0/2, so ratio r lands at index 2r.
+  const size = 17;
+  const real = new Float32Array(size);
+  const imag = new Float32Array(size);
+  let any = false;
+  DRAWBAR_RATIOS.forEach((ratio, i) => {
+    // 0..8, the way the stops are drawn out, and roughly 3 dB a step — which
+    // is what the tapped transformer in the original actually does.
+    const setting = Math.max(0, Math.min(8, params[DRAWBAR_IDS[i] ?? ''] ?? 0));
+    if (setting <= 0) return;
+    imag[Math.round(ratio * 2)] = Math.pow(10, (setting - 8) * 3 / 20);
+    any = true;
+  });
+  // All the stops pushed in is silence on the real instrument too, but a
+  // silent oscillator is indistinguishable from a broken one, so the unison
+  // stands in — a registration nobody meant is better than a note nobody can
+  // hear while they work out why.
+  if (!any) imag[2] = 1;
+
+  const peak = wavePeak(imag);
+  for (let i = 0; i < size; i++) imag[i] = (imag[i] ?? 0) / peak;
+  return {
+    wave: ctx.createPeriodicWave(real, imag, { disableNormalization: true }),
+    // Relative to the registration the trim was measured on, so that the
+    // default sits at unity and the calibration is about the instrument
+    // rather than about one setting of it.
+    gain: peak / DRAWBAR_REFERENCE_PEAK,
+  };
+}
+
+/**
+ * The peak of one period of a sine series, found by looking.
+ *
+ * There is no closed form for the peak of a sum of sines — it is a
+ * trigonometric polynomial, and where its maximum falls depends on every
+ * coefficient.  2048 points across a period is far more than the sixteen
+ * harmonics here need: the sampled maximum is under a hundredth of a percent
+ * below the true one, which is a thousand times smaller than the 3 dB a
+ * drawbar step is worth.
+ */
+function wavePeak(imag: Float32Array): number {
+  const steps = 2048;
+  let peak = 0;
+  for (let s = 0; s < steps; s++) {
+    const theta = (2 * Math.PI * s) / steps;
+    let v = 0;
+    for (let k = 1; k < imag.length; k++) {
+      const c = imag[k] ?? 0;
+      if (c !== 0) v += c * Math.sin(k * theta);
+    }
+    peak = Math.max(peak, Math.abs(v));
+  }
+  return Math.max(1e-6, peak);
+}
+
+/**
+ * The peak of the 888000000 registration — the one the trim was measured on.
+ *
+ * Computed once at module load rather than written down, so that it cannot
+ * drift away from what `wavePeak` actually returns for those drawbars.
+ */
+const DRAWBAR_REFERENCE_PEAK = (() => {
+  const imag = new Float32Array(17);
+  imag[1] = 1; imag[2] = 1; imag[3] = 1;    // 16', 8', 5⅓' all the way out
+  return wavePeak(imag);
+})();
+
+/**
+ * One key of a drawbar organ.
+ *
+ * No decay at all while the key is held — that is the whole character of the
+ * instrument, and it is why an organ part is written with its hands rather
+ * than with its dynamics: the keyboard has no velocity.  Velocity here moves
+ * the KEY CLICK and nothing else, which is the honest translation, since the
+ * only thing a player's speed changes on a tonewheel organ is how fast the
+ * contacts close.
+ */
+function organVoice(v: VoiceContext): InstrumentVoice {
+  const { ctx, destination, note, config, when, durationSec, params } = v;
+  const pitch = soundingPitch(note);
+  const freq = pitchToFrequency(pitch);
+  const level = (params['level'] ?? CALIBRATED_LEVEL) * INSTRUMENT_TRIM.organ;
+
+  const registration = drawbarWave(ctx, params);
+  const osc = ctx.createOscillator();
+  osc.setPeriodicWave(registration.wave);
+  // Half pitch, because the wave's harmonics are counted from there.
+  osc.frequency.value = freq / 2;
+
+  const amp = ctx.createGain();
+  const out = ctx.createGain();
+  out.gain.value = level * registration.gain;
+
+  scheduleCurve(
+    osc.detune, note, { kind: 'pitchBend' }, when, durationSec,
+    (val) => val * config.bendRangeSemitones * 100, 0,
+  );
+
+  // Key click: the contacts on a tonewheel organ are nine metal wires closing
+  // on nine busbars, never quite together, and the click is the transient
+  // that makes.  It is not a flaw somebody failed to filter out — it is the
+  // instrument's attack, and an organ without it sounds like a sine bank.
+  const click = ctx.createGain();
+  const clickAmount = Math.max(0, Math.min(1, params['click'] ?? 0.35));
+  let clickSrc: AudioBufferSourceNode | null = null;
+  let clickFilter: BiquadFilterNode | null = null;
+  const start = Math.max(0, when);
+  if (clickAmount > 0.01) {
+    const n = Math.max(8, Math.round(ctx.sampleRate * 0.012));
+    const buf = ctx.createBuffer(1, n, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    // Deterministic, like every other source here: the same key twice is the
+    // same click twice, or a bounce stops matching the preview.
+    let seed = (pitch * 2654435761) >>> 0;
+    for (let i = 0; i < n; i++) {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      data[i] = ((seed / 4294967296) * 2 - 1) * Math.pow(1 - i / n, 3);
+    }
+    clickSrc = ctx.createBufferSource();
+    clickSrc.buffer = buf;
+    clickFilter = ctx.createBiquadFilter();
+    clickFilter.type = 'bandpass';
+    clickFilter.frequency.value = Math.min(ctx.sampleRate * 0.4, 2600);
+    clickFilter.Q.value = 0.8;
+    click.gain.value = clickAmount * level * (0.4 + 0.6 * note.velocity);
+    clickSrc.connect(clickFilter).connect(click).connect(destination);
+    clickSrc.start(start);
+  }
+
+  // Percussion: a single decaying harmonic on the attack, and only on the
+  // attack of the first key in a legato phrase on the real instrument.  That
+  // last part is not modelled — it is a property of the whole performance and
+  // not of one note, and a per-note engine has nowhere to keep it.
+  const percLevel = Math.max(0, Math.min(1, params['perc'] ?? 0));
+  let perc: OscillatorNode | null = null;
+  let percGain: GainNode | null = null;
+  // The percussion can be set to ring on after the key is lifted.
+  let percEnd = 0;
+  if (percLevel > 0.01) {
+    perc = ctx.createOscillator();
+    perc.type = 'sine';
+    perc.frequency.value = Math.min(ctx.sampleRate * 0.45,
+      freq * ((params['percHarmonic'] ?? 0) > 0.5 ? 3 : 2));
+    percGain = ctx.createGain();
+    const decay = Math.max(0.05, params['percDecay'] ?? 0.25);
+    percGain.gain.setValueAtTime(percLevel * level, start);
+    percGain.gain.exponentialRampToValueAtTime(0.0001, start + decay);
+    perc.connect(percGain).connect(destination);
+    perc.start(start);
+    perc.stop(start + decay + 0.02);
+    percEnd = start + decay + 0.02;
+  }
+
+  const noteEnd = start + Math.max(0.02, durationSec);
+  // Milliseconds, not a synth's envelope: a tonewheel is already turning
+  // before the key is touched, so the note is there the moment the contact
+  // closes and gone the moment it opens.
+  const edge = Math.min(0.03, Math.max(0.002, params['edge'] ?? 0.006));
+  amp.gain.setValueAtTime(0.0001, start);
+  amp.gain.exponentialRampToValueAtTime(1, start + edge);
+  amp.gain.setValueAtTime(1, Math.max(start + edge + 0.001, noteEnd));
+  amp.gain.exponentialRampToValueAtTime(0.0001, noteEnd + edge);
+
+  osc.connect(amp).connect(out).connect(destination);
+  osc.start(start);
+  osc.stop(noteEnd + edge + 0.02);
+  return {
+    endsAt: Math.max(noteEnd + edge + 0.02, percEnd),
+    stop: (at: number) => {
+      try { osc.stop(at); } catch { /* already stopped */ }
+      try { perc?.stop(at); } catch { /* already stopped */ }
+      try { clickSrc?.stop(at); } catch { /* already stopped */ }
+      try {
+        osc.disconnect(); amp.disconnect(); out.disconnect();
+        perc?.disconnect(); percGain?.disconnect();
+        clickSrc?.disconnect(); clickFilter?.disconnect(); click.disconnect();
+      } catch { /* ignore */ }
+    },
+  };
+}
+
+
+// ── The wavetable synth ─────────────────────────────────────────────────────
+
+/**
+ * The parameter list, built rather than written out.
+ *
+ * Ninety-odd parameters typed by hand is ninety-odd chances to give one the
+ * wrong range, and the two oscillators are the same fourteen controls twice
+ * — so they are generated from one description and cannot drift apart.  The
+ * matrix is the same argument again: eight identical rows.
+ */
+function waveSynthParams(): InstrumentParamDef[] {
+  const out: InstrumentParamDef[] = [];
+  const lastTable = WAVETABLES.length - 1;
+
+  for (const o of ['a', 'b'] as const) {
+    const up = o.toUpperCase();
+    out.push(
+      { id: `${o}Table`,  name: `${up} Table`,  min: 0, max: lastTable, default: o === 'a' ? 0 : 1, unit: '' },
+      { id: `${o}Pos`,    name: `${up} WT Pos`, min: 0, max: 7,   default: 0,  unit: 'fr' },
+      { id: `${o}Oct`,    name: `${up} Oct`,    min: -3, max: 3,  default: 0,  unit: '' },
+      { id: `${o}Semi`,   name: `${up} Semi`,   min: -12, max: 12, default: 0, unit: 'st' },
+      { id: `${o}Fine`,   name: `${up} Fine`,   min: -100, max: 100, default: 0, unit: 'ct' },
+      { id: `${o}Unison`, name: `${up} Unison`, min: 1, max: 7,   default: o === 'a' ? 3 : 1, unit: '' },
+      { id: `${o}Detune`, name: `${up} Detune`, min: 0, max: 50,  default: 14, unit: 'ct' },
+      { id: `${o}Blend`,  name: `${up} Blend`,  min: 0, max: 1,   default: 0.7, unit: '' },
+      { id: `${o}Phase`,  name: `${up} Phase`,  min: 0, max: 1,   default: 0,  unit: '' },
+      { id: `${o}Rand`,   name: `${up} Rand`,   min: 0, max: 1,   default: o === 'a' ? 0.35 : 0.35, unit: '' },
+      { id: `${o}Width`,  name: `${up} Width`,  min: 0, max: 1,   default: 0.6, unit: '' },
+      { id: `${o}Pan`,    name: `${up} Pan`,    min: -1, max: 1,  default: 0,  unit: '' },
+      { id: `${o}Level`,  name: `${up} Level`,  min: 0, max: 1,   default: o === 'a' ? 0.8 : 0, unit: '' },
+    );
+  }
+
+  out.push(
+    { id: 'subWave',    name: 'Sub Wave',  min: 0, max: SUB_SHAPES.length - 1, default: 0, unit: '' },
+    { id: 'subOct',     name: 'Sub Oct',   min: -2, max: 0, default: -1, unit: '' },
+    { id: 'subLevel',   name: 'Sub',       min: 0, max: 1, default: 0, unit: '' },
+    { id: 'noiseColour', name: 'Noise Col', min: 0, max: 1, default: 0.5, unit: '' },
+    { id: 'noiseLevel', name: 'Noise',     min: 0, max: 1, default: 0, unit: '' },
+
+    { id: 'fltType', name: 'Filter', min: 0, max: FILTER_MODES.length - 1, default: 0, unit: '' },
+    // Cutoff in SEMITONES from 8.1758 Hz (MIDI 0), not hertz.  A filter
+    // tracked to the keyboard, swept by an envelope or wobbled by an LFO is
+    // moving in musical intervals every time, and a knob in hertz makes the
+    // same modulation depth mean something different in every octave.
+    { id: 'cutoff',  name: 'Cutoff', min: 12,  max: 135, default: 110, unit: 'st' },
+    { id: 'res',     name: 'Res',    min: 0,   max: 0.98, default: 0.15, unit: '' },
+    { id: 'flt24',   name: '24 dB',  min: 0,   max: 1,  default: 1,  unit: '' },
+    { id: 'fltKey',  name: 'Key Trk', min: 0,  max: 1,  default: 0,  unit: '' },
+    { id: 'fltMix',  name: 'Flt Mix', min: 0,  max: 1,  default: 1,  unit: '' },
+    { id: 'drive',   name: 'Drive',  min: 0,   max: 1,  default: 0,  unit: '' },
+  );
+
+  for (let i = 1; i <= 3; i++) {
+    const amp = i === 1;
+    out.push(
+      { id: `e${i}a`, name: `E${i} Atk`, min: 0.0005, max: 4, default: amp ? 0.004 : 0.01, unit: 's' },
+      { id: `e${i}d`, name: `E${i} Dec`, min: 0.002,  max: 8, default: amp ? 0.5 : 0.3, unit: 's' },
+      { id: `e${i}s`, name: `E${i} Sus`, min: 0, max: 1, default: amp ? 0.75 : 0, unit: '' },
+      { id: `e${i}r`, name: `E${i} Rel`, min: 0.002, max: 8, default: amp ? 0.25 : 0.2, unit: 's' },
+    );
+  }
+
+  for (let i = 1; i <= 4; i++) {
+    out.push(
+      { id: `l${i}shape`, name: `L${i} Shape`, min: 0, max: LFO_SHAPES.length - 1, default: 0, unit: '' },
+      { id: `l${i}sync`,  name: `L${i} Sync`,  min: 0, max: 1, default: 1, unit: '' },
+      { id: `l${i}beats`, name: `L${i} Beats`, min: 0.0625, max: 16, default: 1, unit: 'b' },
+      { id: `l${i}rate`,  name: `L${i} Rate`,  min: 0.01, max: 40, default: 4, unit: 'Hz' },
+      { id: `l${i}skew`,  name: `L${i} Skew`,  min: 0.02, max: 0.98, default: 0.5, unit: '' },
+      { id: `l${i}phase`, name: `L${i} Phase`, min: 0, max: 1, default: 0, unit: '' },
+      { id: `l${i}delay`, name: `L${i} Delay`, min: 0, max: 4, default: 0, unit: 's' },
+      { id: `l${i}rise`,  name: `L${i} Rise`,  min: 0, max: 8, default: 0, unit: 's' },
+    );
+  }
+
+  for (let i = 1; i <= 4; i++) {
+    out.push({ id: `macro${i}`, name: `Macro ${i}`, min: 0, max: 1, default: 0, unit: '' });
+  }
+
+  for (let r = 0; r < MATRIX_ROWS; r++) {
+    const ids = rowParams(r);
+    out.push(
+      { id: ids.src, name: `M${r + 1} Src`, min: 0, max: MOD_SOURCES.length - 1, default: 0, unit: '' },
+      { id: ids.dst, name: `M${r + 1} Dst`, min: 0, max: MOD_DESTS.length - 1, default: 0, unit: '' },
+      { id: ids.amt, name: `M${r + 1} Amt`, min: -1, max: 1, default: 0, unit: '' },
+    );
+  }
+
+  out.push(
+    { id: 'wheel',    name: 'Mod Whl', min: 0, max: 1, default: 0, unit: '' },
+    { id: 'pressure', name: 'Pressure', min: 0, max: 1, default: 0, unit: '' },
+    { id: 'level',    name: 'Level', min: 0, max: 1, default: CALIBRATED_LEVEL, unit: '' },
+  );
+  return out;
+}
+
+const FILTER_MODES = ['LP', 'BP', 'HP', 'Notch'] as const;
+
+const WAVE_SYNTH_PARAMS: InstrumentParamDef[] = waveSynthParams();
+const WAVE_SYNTH_PARAM_IDS: readonly string[] = WAVE_SYNTH_PARAMS.map((d) => d.id);
+
+/**
+ * The rendered voice, cached.
+ *
+ * Keyed on everything that changes the samples, which for this instrument is
+ * nearly the whole parameter set — so the key is a hash rather than a joined
+ * string of ninety numbers.  A collision would play the wrong sound, so it is
+ * a 53-bit hash and the parameters are folded in with their names: two
+ * patches differing in one knob have to disagree here, and they do.
+ */
+const SYNTH_CACHE = new Map<string, { left: Float32Array; right: Float32Array }>();
+const SYNTH_CACHE_MAX = 96;
+
+function synthKey(
+  spec: Parameters<typeof renderVoice>[0], ids: readonly string[],
+): string {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  const fold = (x: number): void => {
+    const v = Math.round(x * 1e6) | 0;
+    h1 = Math.imul(h1 ^ v, 16777619) >>> 0;
+    h2 = Math.imul(h2 + v, 2246822519) >>> 0;
+  };
+  for (const id of ids) fold(spec.params[id] ?? 0);
+  fold(spec.freqHz); fold(spec.velocity); fold(spec.seconds);
+  fold(spec.gateSec); fold(spec.random); fold(spec.beatsPerSec); fold(spec.sampleRate);
+  return `${h1.toString(36)}.${h2.toString(36)}`;
+}
+
+function waveSynthVoice(v: VoiceContext): InstrumentVoice {
+  const { ctx, destination, note, config, when, durationSec, params } = v;
+  const pitch = soundingPitch(note);
+  const freq = pitchToFrequency(pitch);
+  // Velocity is quantised before it reaches the cache for the same reason the
+  // piano's is: it changes the SAMPLES here — through the matrix — and a
+  // performance from a keyboard never repeats a velocity exactly.
+  const velocity = Math.round(Math.min(1, Math.max(0, note.velocity)) * 24) / 24;
+
+  const gate = Math.max(0.01, durationSec);
+  const seconds = Math.min(30, gate + tailSeconds(params));
+  const spec = {
+    sampleRate: ctx.sampleRate, seconds, gateSec: gate,
+    freqHz: freq, pitch, velocity,
+    random: noteRandom(pitch, note.startBeat, 5),
+    params,
+    // The tempo where this note is, derived rather than passed.
+    //
+    // A note carries its length in BEATS and the caller converts it to
+    // SECONDS through the session's tempo map before handing it over — so the
+    // ratio of the two is the tempo at this note, including inside a ramp,
+    // and it is already correct without `MidiPartConfig` learning about
+    // tempo at all.  A zero-length note has no ratio, so it falls back to
+    // 120 bpm, which only decides where a synced LFO starts on a note too
+    // short to complete a cycle of one.
+    beatsPerSec: durationSec > 1e-6 && note.durationBeat > 1e-6
+      ? note.durationBeat / durationSec
+      : 2,
+  };
+
+  const key = synthKey(spec, WAVE_SYNTH_PARAM_IDS);
+  let rendered = SYNTH_CACHE.get(key);
+  if (!rendered) {
+    rendered = renderVoice(spec);
+    if (SYNTH_CACHE.size >= SYNTH_CACHE_MAX) {
+      const oldest = SYNTH_CACHE.keys().next().value;
+      if (oldest !== undefined) SYNTH_CACHE.delete(oldest);
+    }
+    SYNTH_CACHE.set(key, rendered);
+  }
+
+  const buf = ctx.createBuffer(2, rendered.left.length, ctx.sampleRate);
+  buf.getChannelData(0).set(rendered.left);
+  buf.getChannelData(1).set(rendered.right);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+
+  const amp = ctx.createGain();
+  amp.gain.value = (params['level'] ?? CALIBRATED_LEVEL) * INSTRUMENT_TRIM.wavesynth;
+
+  scheduleCurve(
+    src.detune, note, { kind: 'pitchBend' }, when, durationSec,
+    (val) => val * config.bendRangeSemitones * 100, 0,
+  );
+
+  src.connect(amp).connect(destination);
+  const start = Math.max(0, when);
+  src.start(start);
+  src.stop(start + seconds + 0.02);
+  return {
+    endsAt: start + seconds + 0.02,
+    stop: (at: number) => {
+      try { src.stop(at); } catch { /* already stopped */ }
+      try { src.disconnect(); amp.disconnect(); } catch { /* ignore */ }
+    },
+  };
+}
+
+
+// ── The analogue synth ──────────────────────────────────────────────────────
+
+/**
+ * A short, opinionated panel, and that is the design rather than a shortcut.
+ *
+ * The wavetable synth has a hundred and thirteen parameters and a matrix
+ * because anything driving anything IS what a wavetable synth is for.  An
+ * analogue synth is the opposite argument: a Minimoog has no matrix, every
+ * useful routing is already wired, and it is still the one everybody can
+ * play.  So the modulation here is a list of named depths — LFO to pitch, LFO
+ * to pulse width, envelope to filter, velocity to filter — and the knobs that
+ * are left are the ones that decide the sound.
+ */
+function analogParams(): InstrumentParamDef[] {
+  const out: InstrumentParamDef[] = [];
+  for (const o of ['o1', 'o2'] as const) {
+    const up = o === 'o1' ? 'VCO 1' : 'VCO 2';
+    out.push(
+      { id: `${o}shape`, name: `${up} Wave`, min: 0, max: ANALOG_SHAPES.length - 1, default: 0, unit: '' },
+      { id: `${o}width`, name: `${up} PW`,   min: 0.05, max: 0.95, default: 0.5, unit: '' },
+      { id: `${o}oct`,   name: `${up} Oct`,  min: -3, max: 3, default: 0, unit: '' },
+      { id: `${o}semi`,  name: `${up} Semi`, min: -12, max: 12, default: 0, unit: 'st' },
+      { id: `${o}fine`,  name: `${up} Fine`, min: -50, max: 50, default: o === 'o1' ? 0 : 6, unit: 'ct' },
+      { id: `${o}level`, name: `${up} Level`, min: 0, max: 1, default: o === 'o1' ? 0.8 : 0.5, unit: '' },
+    );
+  }
+  out.push(
+    { id: 'sync',     name: 'Sync',    min: 0, max: 1, default: 0, unit: '' },
+    { id: 'ring',     name: 'Ring',    min: 0, max: 1, default: 0, unit: '' },
+    { id: 'subOct',   name: 'Sub Oct', min: -2, max: -1, default: -1, unit: '' },
+    { id: 'subLevel', name: 'Sub',     min: 0, max: 1, default: 0, unit: '' },
+    { id: 'noise',    name: 'Noise',   min: 0, max: 1, default: 0, unit: '' },
+    { id: 'unison',   name: 'Unison',  min: 1, max: 5, default: 1, unit: '' },
+    { id: 'detune',   name: 'Detune',  min: 0, max: 40, default: 8, unit: 'ct' },
+    { id: 'spread',   name: 'Spread',  min: 0, max: 1, default: 0.5, unit: '' },
+
+    // Cutoff in semitones from MIDI 0, like the wavetable synth's, so that
+    // every depth below is in the same unit and a filter envelope means the
+    // same thing in every octave.
+    { id: 'cutoff',  name: 'Cutoff',  min: 12, max: 135, default: 92, unit: 'st' },
+    { id: 'res',     name: 'Res',     min: 0,  max: 1,   default: 0.2, unit: '' },
+    { id: 'poles',   name: 'Slope',   min: 2,  max: 4,   default: 4, unit: 'p' },
+    { id: 'drive',   name: 'Drive',   min: 0.2, max: 12, default: 1, unit: '×' },
+    { id: 'fltKey',  name: 'Key Trk', min: 0,  max: 1,   default: 0.3, unit: '' },
+    { id: 'fltComp', name: 'Bass Comp', min: 0, max: 1,  default: 0, unit: '' },
+    { id: 'envAmt',  name: 'Env Amt', min: -60, max: 60, default: 24, unit: 'st' },
+    { id: 'velFlt',  name: 'Vel → Flt', min: -40, max: 40, default: 12, unit: 'st' },
+    { id: 'velAmp',  name: 'Vel → Amp', min: 0, max: 1,  default: 0.7, unit: '' },
+
+    { id: 'envCurve', name: 'Env Curve', min: 0, max: 1, default: 0.85, unit: '' },
+  );
+  for (const i of [1, 2]) {
+    const amp = i === 1;
+    out.push(
+      { id: `e${i}a`, name: `E${i} Atk`, min: 0.0005, max: 4, default: amp ? 0.004 : 0.01, unit: 's' },
+      { id: `e${i}d`, name: `E${i} Dec`, min: 0.002, max: 8, default: amp ? 0.4 : 0.5, unit: 's' },
+      { id: `e${i}s`, name: `E${i} Sus`, min: 0, max: 1, default: amp ? 0.7 : 0.2, unit: '' },
+      { id: `e${i}r`, name: `E${i} Rel`, min: 0.002, max: 8, default: amp ? 0.25 : 0.3, unit: 's' },
+    );
+  }
+  for (const i of [1, 2]) {
+    out.push(
+      { id: `l${i}shape`, name: `L${i} Wave`, min: 0, max: LFO_SHAPES.length - 1, default: 0, unit: '' },
+      { id: `l${i}sync`,  name: `L${i} Sync`, min: 0, max: 1, default: 0, unit: '' },
+      { id: `l${i}beats`, name: `L${i} Beats`, min: 0.0625, max: 16, default: 1, unit: 'b' },
+      { id: `l${i}rate`,  name: `L${i} Rate`, min: 0.01, max: 30, default: i === 1 ? 5 : 0.6, unit: 'Hz' },
+    );
+  }
+  out.push(
+    { id: 'l1delay', name: 'L1 Delay', min: 0, max: 4, default: 0, unit: 's' },
+    { id: 'l2delay', name: 'L2 Delay', min: 0, max: 4, default: 0, unit: 's' },
+    { id: 'l1pitch', name: 'L1 → Pitch', min: 0, max: 100, default: 0, unit: 'ct' },
+    { id: 'l1pw',    name: 'L1 → PW',    min: 0, max: 1,   default: 0, unit: '' },
+    { id: 'l1flt',   name: 'L1 → Flt',   min: -48, max: 48, default: 0, unit: 'st' },
+    { id: 'l1amp',   name: 'L1 → Amp',   min: 0, max: 1,   default: 0, unit: '' },
+    { id: 'l2pitch', name: 'L2 → Pitch', min: 0, max: 100, default: 0, unit: 'ct' },
+    { id: 'l2flt',   name: 'L2 → Flt',   min: -48, max: 48, default: 0, unit: 'st' },
+
+    // The three that make it analogue rather than a synth with a ladder.
+    { id: 'drift',     name: 'Drift',     min: 0, max: 25, default: 3.5, unit: 'ct' },
+    { id: 'tolerance', name: 'Tolerance', min: 0, max: 0.2, default: 0.03, unit: '' },
+    { id: 'voices',    name: 'Voices',    min: 1, max: 8, default: 6, unit: '' },
+
+    { id: 'level', name: 'Level', min: 0, max: 1, default: CALIBRATED_LEVEL, unit: '' },
+  );
+  return out;
+}
+
+/**
+ * The FM synth's parameters.
+ *
+ * Twelve per operator times six, plus the algorithm, the feedback, a pitch
+ * envelope, an LFO and the stack.  That is a lot of numbers and it is the
+ * right number: an operator IS twelve decisions, and an FM synth with fewer
+ * per operator is one that has picked some of them for you.
+ *
+ * The defaults are a two-operator electric piano on algorithm 15 — a tine,
+ * not a sine — because an instrument whose default patch is a bare sine wave
+ * teaches the user nothing about what it is for.
+ */
+function fmParams(): InstrumentParamDef[] {
+  const out: InstrumentParamDef[] = [];
+  // Carriers 1, 3 and 5 on algorithm 15; 2, 4 and 6 are their modulators.
+  const level = [1, 0.62, 0.55, 0.3, 0.3, 0.18];
+  const ratios = [1, 14, 1, 1, 2, 7];
+  const decay = [1.6, 0.9, 2.2, 1.1, 1.8, 0.7];
+  for (let i = 1; i <= FM_OPERATORS; i++) {
+    const up = `OP ${i}`;
+    const k = i - 1;
+    out.push(
+      { id: `o${i}ratio`, name: `${up} Ratio`, min: 0.0625, max: 32, default: ratios[k] ?? 1, unit: '×' },
+      { id: `o${i}fine`,  name: `${up} Fine`,  min: -100, max: 100, default: 0, unit: 'ct' },
+      { id: `o${i}fixed`, name: `${up} Fixed`, min: 0, max: 1, default: 0, unit: '' },
+      { id: `o${i}hz`,    name: `${up} Hz`,    min: 1, max: 8000, default: 440, unit: 'Hz' },
+      { id: `o${i}wave`,  name: `${up} Wave`,  min: 0, max: FM_WAVES.length - 1, default: 0, unit: '' },
+      { id: `o${i}level`, name: `${up} Level`, min: 0, max: 1, default: level[k] ?? 0.5, unit: '' },
+      { id: `o${i}a`,     name: `${up} Atk`,   min: 0.0005, max: 4, default: 0.002, unit: 's' },
+      { id: `o${i}d`,     name: `${up} Dec`,   min: 0.002, max: 12, default: decay[k] ?? 1, unit: 's' },
+      { id: `o${i}s`,     name: `${up} Sus`,   min: 0, max: 1, default: 0, unit: '' },
+      { id: `o${i}r`,     name: `${up} Rel`,   min: 0.002, max: 12, default: 0.4, unit: 's' },
+      { id: `o${i}vel`,   name: `${up} Vel`,   min: 0, max: 1, default: k % 2 === 0 ? 0.3 : 0.8, unit: '' },
+      { id: `o${i}key`,   name: `${up} Key`,   min: -1, max: 1, default: k % 2 === 0 ? 0 : -0.35, unit: '' },
+    );
+  }
+  out.push(
+    { id: 'algo',     name: 'Algorithm', min: 0, max: FM_ALGORITHMS.length - 1, default: 14, unit: '' },
+    { id: 'fbOp',     name: 'FB Op',     min: 1, max: FM_OPERATORS, default: 6, unit: '' },
+    { id: 'feedback', name: 'Feedback',  min: 0, max: 1, default: 0, unit: '' },
+
+    { id: 'pAmt',     name: 'Pitch Env', min: -24, max: 24, default: 0, unit: 'st' },
+    { id: 'pAtk',     name: 'P Atk',     min: 0.0005, max: 1, default: 0.002, unit: 's' },
+    { id: 'pDec',     name: 'P Dec',     min: 0.001, max: 2, default: 0.06, unit: 's' },
+
+    { id: 'lfoShape', name: 'LFO Wave',  min: 0, max: LFO_SHAPES.length - 1, default: 0, unit: '' },
+    { id: 'lfoSync',  name: 'LFO Sync',  min: 0, max: 1, default: 0, unit: '' },
+    { id: 'lfoBeats', name: 'LFO Beats', min: 0.0625, max: 16, default: 1, unit: 'b' },
+    { id: 'lfoRate',  name: 'LFO Rate',  min: 0.01, max: 30, default: 5, unit: 'Hz' },
+    { id: 'lfoDelay', name: 'LFO Delay', min: 0, max: 4, default: 0.4, unit: 's' },
+    { id: 'lfoPitch', name: 'LFO → Pitch', min: 0, max: 100, default: 0, unit: 'ct' },
+    { id: 'lfoAmp',   name: 'LFO → Amp',   min: 0, max: 1, default: 0, unit: '' },
+
+    { id: 'unison',    name: 'Unison',  min: 1, max: 3, default: 1, unit: '' },
+    { id: 'detune',    name: 'Detune',  min: 0, max: 40, default: 6, unit: 'ct' },
+    { id: 'width',     name: 'Width',   min: 0, max: 1, default: 0.3, unit: '' },
+    { id: 'spread',    name: 'Spread',  min: 0, max: 1, default: 0.35, unit: '' },
+    { id: 'transpose', name: 'Transpose', min: -24, max: 24, default: 0, unit: 'st' },
+
+    { id: 'level', name: 'Level', min: 0, max: 1, default: CALIBRATED_LEVEL, unit: '' },
+  );
+  return out;
+}
+
+/**
+ * The analogue drum machine's parameters.
+ *
+ * Eleven voices, each with the controls that voice actually has rather than a
+ * shared set applied to all of them.  That is the whole difference from the
+ * kit next door: a kick's BEND and a hat's TUNE are not the same control with
+ * two names, and giving every voice "tone" would be a kit with eleven tone
+ * knobs rather than a drum machine.
+ */
+function drumMachineParams(): InstrumentParamDef[] {
+  const out: InstrumentParamDef[] = [
+    { id: 'tune',   name: 'Master Tune', min: -12, max: 12, default: 0, unit: 'st' },
+    { id: 'accent', name: 'Accent',      min: 0, max: 1, default: 0.7, unit: '' },
+    { id: 'width',  name: 'Width',       min: 0, max: 1, default: 0.6, unit: '' },
+
+    { id: 'bdtune',  name: 'Kick Tune',  min: 28, max: 120, default: 52, unit: 'Hz' },
+    { id: 'bddec',   name: 'Kick Decay', min: 0.05, max: DRUM_MAX_DECAY.bd, default: 0.55, unit: 's' },
+    { id: 'bdbend',  name: 'Kick Bend',  min: 0, max: 48, default: 26, unit: 'st' },
+    { id: 'bdsnap',  name: 'Kick Snap',  min: 0, max: 1, default: 0.4, unit: '' },
+    { id: 'bddrive', name: 'Kick Drive', min: 1, max: 8, default: 1.4, unit: '×' },
+    { id: 'bdlvl',   name: 'Kick Level', min: 0, max: 1, default: 0.95, unit: '' },
+
+    { id: 'sdtune',    name: 'Snare Tune',   min: 100, max: 420, default: 185, unit: 'Hz' },
+    { id: 'sddec',     name: 'Snare Decay',  min: 0.05, max: DRUM_MAX_DECAY.sd, default: 0.28, unit: 's' },
+    { id: 'sdtone',    name: 'Snare Tone',   min: 0, max: 1, default: 0.5, unit: '' },
+    { id: 'sdsnappy',  name: 'Snappy',       min: 0, max: 1, default: 0.6, unit: '' },
+    { id: 'sdsnapdec', name: 'Snappy Decay', min: 0.02, max: 0.8, default: 0.16, unit: 's' },
+    { id: 'sdlvl',     name: 'Snare Level',  min: 0, max: 1, default: 0.8, unit: '' },
+
+    { id: 'cptune',   name: 'Clap Tone',   min: 500, max: 2200, default: 1050, unit: 'Hz' },
+    { id: 'cpdec',    name: 'Clap Decay',  min: 0.05, max: DRUM_MAX_DECAY.cp, default: 0.3, unit: 's' },
+    { id: 'cpspread', name: 'Clap Spread', min: 0.2, max: 3, default: 1, unit: '×' },
+    { id: 'cplvl',    name: 'Clap Level',  min: 0, max: 1, default: 0.7, unit: '' },
+  ];
+  const toms: Array<[string, string, number, number]> = [
+    ['lt', 'Low Tom', 95, 0.55],
+    ['mt', 'Mid Tom', 140, 0.45],
+    ['ht', 'Hi Tom', 205, 0.38],
+  ];
+  for (const [id, name, hz, dec] of toms) {
+    out.push(
+      { id: `${id}tune`, name: `${name} Tune`, min: 50, max: 400, default: hz, unit: 'Hz' },
+      { id: `${id}dec`,  name: `${name} Decay`, min: 0.05, max: DRUM_MAX_DECAY[id as 'lt'], default: dec, unit: 's' },
+      { id: `${id}bend`, name: `${name} Bend`, min: 0, max: 24, default: 8, unit: 'st' },
+      { id: `${id}lvl`,  name: `${name} Level`, min: 0, max: 1, default: 0.75, unit: '' },
+    );
+  }
+  out.push(
+    { id: 'chtune', name: 'Hat Tune',   min: 200, max: 1200, default: 540, unit: 'Hz' },
+    { id: 'chdec',  name: 'Hat Decay',  min: 0.01, max: DRUM_MAX_DECAY.ch, default: 0.06, unit: 's' },
+    { id: 'chlvl',  name: 'Hat Level',  min: 0, max: 1, default: 0.6, unit: '' },
+    { id: 'ohdec',  name: 'Open Decay', min: 0.05, max: DRUM_MAX_DECAY.oh, default: 0.55, unit: 's' },
+    { id: 'ohlvl',  name: 'Open Level', min: 0, max: 1, default: 0.6, unit: '' },
+
+    { id: 'cytune', name: 'Cymbal Tune',  min: 120, max: 800, default: 320, unit: 'Hz' },
+    { id: 'cydec',  name: 'Cymbal Decay', min: 0.1, max: DRUM_MAX_DECAY.cy, default: 1.8, unit: 's' },
+    { id: 'cylvl',  name: 'Cymbal Level', min: 0, max: 1, default: 0.55, unit: '' },
+
+    { id: 'rstune', name: 'Rim Tune',  min: 600, max: 3000, default: 1650, unit: 'Hz' },
+    { id: 'rsdec',  name: 'Rim Decay', min: 0.01, max: DRUM_MAX_DECAY.rs, default: 0.07, unit: 's' },
+    { id: 'rslvl',  name: 'Rim Level', min: 0, max: 1, default: 0.6, unit: '' },
+
+    { id: 'cbtune', name: 'Cowbell Tune',  min: 300, max: 1200, default: 545, unit: 'Hz' },
+    { id: 'cbdec',  name: 'Cowbell Decay', min: 0.05, max: DRUM_MAX_DECAY.cb, default: 0.32, unit: 's' },
+    { id: 'cblvl',  name: 'Cowbell Level', min: 0, max: 1, default: 0.55, unit: '' },
+
+    { id: 'level', name: 'Level', min: 0, max: 1, default: CALIBRATED_LEVEL, unit: '' },
+  );
+  return out;
+}
+
+const DRUM_MACHINE_PARAMS: InstrumentParamDef[] = drumMachineParams();
+const DRUM_MACHINE_PARAM_IDS: readonly string[] = DRUM_MACHINE_PARAMS.map((d) => d.id);
+
+const DRUM_MACHINE_CACHE = new Map<string, { left: Float32Array; right: Float32Array }>();
+const DRUM_MACHINE_CACHE_MAX = 160;
+
+function drumMachineVoice(v: VoiceContext): InstrumentVoice {
+  const { ctx, destination, note, when, params } = v;
+  const pitch = soundingPitch(note);
+  const voice = drumVoiceFor(pitch);
+  const velocity = Math.round(Math.min(1, Math.max(0, note.velocity)) * 24) / 24;
+  const seconds = drumTail(voice, params);
+
+  // A drum's length is its own, not the note's: holding a kick does not make
+  // it longer on any machine this models, and a part written on a grid holds
+  // every note for a sixteenth.
+  const seed = Math.round(note.startBeat * 96) ^ (pitch * 2654435761);
+
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  const fold = (x: number): void => {
+    const q = Math.round(x * 1e6) | 0;
+    h1 = Math.imul(h1 ^ q, 16777619) >>> 0;
+    h2 = Math.imul(h2 + q, 2246822519) >>> 0;
+  };
+  for (const id of DRUM_MACHINE_PARAM_IDS) fold(params[id] ?? 0);
+  fold(pitch); fold(velocity); fold(seed); fold(ctx.sampleRate);
+  const key = `${h1.toString(36)}.${h2.toString(36)}`;
+
+  let rendered = DRUM_MACHINE_CACHE.get(key);
+  if (!rendered) {
+    rendered = renderDrumVoice({
+      sampleRate: ctx.sampleRate, seconds, voice, velocity, seed, params,
+    });
+    if (DRUM_MACHINE_CACHE.size >= DRUM_MACHINE_CACHE_MAX) {
+      const oldest = DRUM_MACHINE_CACHE.keys().next().value;
+      if (oldest !== undefined) DRUM_MACHINE_CACHE.delete(oldest);
+    }
+    DRUM_MACHINE_CACHE.set(key, rendered);
+  }
+
+  const buf = ctx.createBuffer(2, rendered.left.length, ctx.sampleRate);
+  buf.getChannelData(0).set(rendered.left);
+  buf.getChannelData(1).set(rendered.right);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const amp = ctx.createGain();
+  const trim = INSTRUMENT_TRIM['drummachine'] ?? 1;
+  amp.gain.value = trim * Math.max(0, Math.min(1, params['level'] ?? CALIBRATED_LEVEL));
+  src.connect(amp).connect(destination);
+  const start = Math.max(0, when);
+  src.start(start);
+  src.stop(start + seconds + 0.02);
+  return {
+    endsAt: start + seconds + 0.02,
+    stop: (at: number) => {
+      try { src.stop(at); } catch { /* already stopped */ }
+      try { src.disconnect(); amp.disconnect(); } catch { /* ignore */ }
+    },
+  };
+}
+
+const FM_PARAMS: InstrumentParamDef[] = fmParams();
+const FM_PARAM_IDS: readonly string[] = FM_PARAMS.map((d) => d.id);
+
+const FM_CACHE = new Map<string, { left: Float32Array; right: Float32Array }>();
+const FM_CACHE_MAX = 96;
+
+function fmVoice(v: VoiceContext): InstrumentVoice {
+  const { ctx, destination, note, config, when, durationSec, params } = v;
+  const pitch = soundingPitch(note);
+  const freq = pitchToFrequency(pitch);
+  const velocity = Math.round(Math.min(1, Math.max(0, note.velocity)) * 24) / 24;
+  const gate = Math.max(0.01, durationSec);
+  const seconds = Math.min(30, gate + fmTail(params));
+
+  // `fine` is folded into the ratio here rather than inside the render loop:
+  // it never changes during a note, and doing it per sample would be six
+  // `Math.pow` calls per sample for a number that is constant.
+  const tuned: Record<string, number> = { ...params };
+  for (let i = 1; i <= FM_OPERATORS; i++) {
+    const cents = params[`o${i}fine`] ?? 0;
+    if (cents !== 0) {
+      tuned[`o${i}ratio`] = (params[`o${i}ratio`] ?? 1) * Math.pow(2, cents / 1200);
+    }
+  }
+
+  const spec = {
+    sampleRate: ctx.sampleRate, seconds, gateSec: gate, freqHz: freq, pitch, velocity,
+    params: tuned,
+    beatsPerSec: durationSec > 1e-6 && note.durationBeat > 1e-6
+      ? note.durationBeat / durationSec
+      : 2,
+  };
+
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  const fold = (x: number): void => {
+    const q = Math.round(x * 1e6) | 0;
+    h1 = Math.imul(h1 ^ q, 16777619) >>> 0;
+    h2 = Math.imul(h2 + q, 2246822519) >>> 0;
+  };
+  for (const id of FM_PARAM_IDS) fold(tuned[id] ?? 0);
+  fold(freq); fold(velocity); fold(seconds); fold(gate);
+  fold(pitch); fold(spec.beatsPerSec); fold(ctx.sampleRate);
+  const key = `${h1.toString(36)}.${h2.toString(36)}`;
+
+  let rendered = FM_CACHE.get(key);
+  if (!rendered) {
+    rendered = renderFmVoice(spec);
+    if (FM_CACHE.size >= FM_CACHE_MAX) {
+      const oldest = FM_CACHE.keys().next().value;
+      if (oldest !== undefined) FM_CACHE.delete(oldest);
+    }
+    FM_CACHE.set(key, rendered);
+  }
+
+  const buf = ctx.createBuffer(2, rendered.left.length, ctx.sampleRate);
+  buf.getChannelData(0).set(rendered.left);
+  buf.getChannelData(1).set(rendered.right);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const amp = ctx.createGain();
+  amp.gain.value = 1;
+  scheduleCurve(
+    src.detune, note, { kind: 'pitchBend' }, when, durationSec,
+    (val) => val * config.bendRangeSemitones * 100, 0,
+  );
+  src.connect(amp).connect(destination);
+  const start = Math.max(0, when);
+  src.start(start);
+  src.stop(start + seconds + 0.02);
+  return {
+    endsAt: start + seconds + 0.02,
+    stop: (at: number) => {
+      try { src.stop(at); } catch { /* already stopped */ }
+      try { src.disconnect(); amp.disconnect(); } catch { /* ignore */ }
+    },
+  };
+}
+
+const BOWED_CACHE = new Map<string, { left: Float32Array; right: Float32Array }>();
+const BOWED_CACHE_MAX = 64;
+
+/**
+ * One bowed note.
+ *
+ * Rendered rather than wired, for the same reason the plucked string is: the
+ * friction has to be solved sample by sample against a delay line that IS the
+ * pitch, and there is no arrangement of native nodes that does that.  Cached
+ * on every input, because a held string section is the same note again and
+ * again and solving it twice is wasted.
+ */
+function bowedVoice(v: VoiceContext): InstrumentVoice {
+  const { ctx, destination, note, config, when, durationSec, params } = v;
+  const pitch = soundingPitch(note);
+  const freq = pitchToFrequency(pitch);
+  const velocity = Math.round(Math.min(1, Math.max(0, note.velocity)) * 24) / 24;
+  const gate = Math.max(0.02, durationSec);
+  const seconds = Math.min(30, gate + bowedTail(params));
+
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  const fold = (x: number): void => {
+    const q = Math.round(x * 1e6) | 0;
+    h1 = Math.imul(h1 ^ q, 16777619) >>> 0;
+    h2 = Math.imul(h2 + q, 2246822519) >>> 0;
+  };
+  for (const id of BOWED_PARAM_IDS) fold(params[id] ?? 0);
+  fold(freq); fold(pitch); fold(velocity); fold(seconds); fold(gate);
+  fold(note.startBeat); fold(ctx.sampleRate);
+  const key = `${h1.toString(36)}.${h2.toString(36)}`;
+
+  let rendered = BOWED_CACHE.get(key);
+  if (!rendered) {
+    rendered = renderBowedVoice({
+      sampleRate: ctx.sampleRate, seconds, gateSec: gate, freqHz: freq, pitch,
+      velocity, startBeat: note.startBeat, params,
+    });
+    if (BOWED_CACHE.size >= BOWED_CACHE_MAX) {
+      const oldest = BOWED_CACHE.keys().next().value;
+      if (oldest !== undefined) BOWED_CACHE.delete(oldest);
+    }
+    BOWED_CACHE.set(key, rendered);
+  }
+
+  const buf = ctx.createBuffer(2, rendered.left.length, ctx.sampleRate);
+  buf.getChannelData(0).set(rendered.left);
+  buf.getChannelData(1).set(rendered.right);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const amp = ctx.createGain();
+  amp.gain.value = 1;
+  scheduleCurve(
+    src.detune, note, { kind: 'pitchBend' }, when, durationSec,
+    (val) => val * config.bendRangeSemitones * 100, 0,
+  );
+  src.connect(amp).connect(destination);
+  const start = Math.max(0, when);
+  src.start(start);
+  src.stop(start + seconds + 0.02);
+  return {
+    endsAt: start + seconds + 0.02,
+    stop: (at: number) => {
+      try { src.stop(at); } catch { /* already stopped */ }
+      try { src.disconnect(); amp.disconnect(); } catch { /* ignore */ }
+    },
+  };
+}
+
+const REED_CACHE = new Map<string, { left: Float32Array; right: Float32Array }>();
+const REED_CACHE_MAX = 96;
+
+// Same shape as the reed's, and for the same reason: a finite-difference string
+// costs 60 to 220 ms of arithmetic for a two-second note, which is far too much
+// to do again for the same note.  Keyed on everything that can change the
+// samples, so a cache hit is the same audio and not merely a similar one.
+const CLAV_CACHE = new Map<string, { left: Float32Array; right: Float32Array }>();
+const CLAV_CACHE_MAX = 96;
+
+function clavVoice(v: VoiceContext): InstrumentVoice {
+  const { ctx, destination, note, config, when, durationSec, params } = v;
+  const pitch = soundingPitch(note);
+  const freq = pitchToFrequency(pitch);
+  // Quantised so that two keys a hair apart in velocity share a render.  It is
+  // coarser than it looks: the pitch bend goes as the SQUARE of this, so a
+  // twenty-fourth of the range is under a cent of bend at the bottom.
+  const velocity = Math.round(Math.min(1, Math.max(0, note.velocity)) * 24) / 24;
+  const gate = Math.max(0.02, durationSec);
+  const seconds = Math.min(20, gate + clavTail(params));
+
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  const fold = (x: number): void => {
+    const q = Math.round(x * 1e6) | 0;
+    h1 = Math.imul(h1 ^ q, 16777619) >>> 0;
+    h2 = Math.imul(h2 + q, 2246822519) >>> 0;
+  };
+  for (const id of CLAV_PARAM_IDS) fold(params[id] ?? 0);
+  fold(params['level'] ?? 0);
+  fold(freq); fold(velocity); fold(seconds); fold(gate); fold(ctx.sampleRate);
+  const key = `${h1.toString(36)}.${h2.toString(36)}`;
+
+  let rendered = CLAV_CACHE.get(key);
+  if (!rendered) {
+    rendered = renderClavVoice({
+      sampleRate: ctx.sampleRate, seconds, gateSec: gate, freqHz: freq,
+      velocity, params,
+    });
+    if (CLAV_CACHE.size >= CLAV_CACHE_MAX) {
+      const oldest = CLAV_CACHE.keys().next().value;
+      if (oldest !== undefined) CLAV_CACHE.delete(oldest);
+    }
+    CLAV_CACHE.set(key, rendered);
+  }
+
+  const buf = ctx.createBuffer(2, rendered.left.length, ctx.sampleRate);
+  buf.getChannelData(0).set(rendered.left);
+  buf.getChannelData(1).set(rendered.right);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const amp = ctx.createGain();
+  amp.gain.value = INSTRUMENT_TRIM.clavinet;
+  scheduleCurve(
+    src.detune, note, { kind: 'pitchBend' }, when, durationSec,
+    (val) => val * config.bendRangeSemitones * 100, 0,
+  );
+  src.connect(amp).connect(destination);
+  const start = Math.max(0, when);
+  src.start(start);
+  src.stop(start + seconds + 0.02);
+  return {
+    endsAt: start + seconds + 0.02,
+    stop: (at: number) => {
+      try { src.stop(at); } catch { /* already stopped */ }
+      try { src.disconnect(); amp.disconnect(); } catch { /* ignore */ }
+    },
+  };
+}
+
+function reedVoice(v: VoiceContext): InstrumentVoice {
+  const { ctx, destination, note, config, when, durationSec, params } = v;
+  const pitch = soundingPitch(note);
+  const freq = pitchToFrequency(pitch);
+  const velocity = Math.round(Math.min(1, Math.max(0, note.velocity)) * 24) / 24;
+  const gate = Math.max(0.02, durationSec);
+  const seconds = Math.min(30, gate + reedTail(params));
+
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  const fold = (x: number): void => {
+    const q = Math.round(x * 1e6) | 0;
+    h1 = Math.imul(h1 ^ q, 16777619) >>> 0;
+    h2 = Math.imul(h2 + q, 2246822519) >>> 0;
+  };
+  for (const id of REED_PARAM_IDS) fold(params[id] ?? 0);
+  fold(freq); fold(pitch); fold(velocity); fold(seconds); fold(gate);
+  fold(note.startBeat); fold(ctx.sampleRate);
+  const key = `${h1.toString(36)}.${h2.toString(36)}`;
+
+  let rendered = REED_CACHE.get(key);
+  if (!rendered) {
+    rendered = renderReedVoice({
+      sampleRate: ctx.sampleRate, seconds, gateSec: gate, freqHz: freq, pitch,
+      velocity, startBeat: note.startBeat, params,
+    });
+    if (REED_CACHE.size >= REED_CACHE_MAX) {
+      const oldest = REED_CACHE.keys().next().value;
+      if (oldest !== undefined) REED_CACHE.delete(oldest);
+    }
+    REED_CACHE.set(key, rendered);
+  }
+
+  const buf = ctx.createBuffer(2, rendered.left.length, ctx.sampleRate);
+  buf.getChannelData(0).set(rendered.left);
+  buf.getChannelData(1).set(rendered.right);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const amp = ctx.createGain();
+  amp.gain.value = 1;
+  scheduleCurve(
+    src.detune, note, { kind: 'pitchBend' }, when, durationSec,
+    (val) => val * config.bendRangeSemitones * 100, 0,
+  );
+  src.connect(amp).connect(destination);
+  const start = Math.max(0, when);
+  src.start(start);
+  src.stop(start + seconds + 0.02);
+  return {
+    endsAt: start + seconds + 0.02,
+    stop: (at: number) => {
+      try { src.stop(at); } catch { /* already stopped */ }
+      try { src.disconnect(); amp.disconnect(); } catch { /* ignore */ }
+    },
+  };
+}
+
+const ANALOG_PARAMS: InstrumentParamDef[] = analogParams();
+const ANALOG_PARAM_IDS: readonly string[] = ANALOG_PARAMS.map((d) => d.id);
+
+const ANALOG_CACHE = new Map<string, { left: Float32Array; right: Float32Array }>();
+const ANALOG_CACHE_MAX = 96;
+
+function analogVoice(v: VoiceContext): InstrumentVoice {
+  const { ctx, destination, note, config, when, durationSec, params } = v;
+  const pitch = soundingPitch(note);
+  const freq = pitchToFrequency(pitch);
+  const velocity = Math.round(Math.min(1, Math.max(0, note.velocity)) * 24) / 24;
+  const gate = Math.max(0.01, durationSec);
+  const seconds = Math.min(30, gate + analogTail(params));
+
+  const spec = {
+    sampleRate: ctx.sampleRate, seconds, gateSec: gate, freqHz: freq, pitch, velocity,
+    slot: voiceSlot(pitch, note.startBeat, params['voices'] ?? 6),
+    startBeat: note.startBeat,
+    params,
+    beatsPerSec: durationSec > 1e-6 && note.durationBeat > 1e-6
+      ? note.durationBeat / durationSec
+      : 2,
+  };
+
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  const fold = (x: number): void => {
+    const q = Math.round(x * 1e6) | 0;
+    h1 = Math.imul(h1 ^ q, 16777619) >>> 0;
+    h2 = Math.imul(h2 + q, 2246822519) >>> 0;
+  };
+  for (const id of ANALOG_PARAM_IDS) fold(params[id] ?? 0);
+  fold(freq); fold(velocity); fold(seconds); fold(gate);
+  fold(spec.slot); fold(note.startBeat); fold(spec.beatsPerSec); fold(ctx.sampleRate);
+  const key = `${h1.toString(36)}.${h2.toString(36)}`;
+
+  let rendered = ANALOG_CACHE.get(key);
+  if (!rendered) {
+    rendered = renderAnalogVoice(spec);
+    if (ANALOG_CACHE.size >= ANALOG_CACHE_MAX) {
+      const oldest = ANALOG_CACHE.keys().next().value;
+      if (oldest !== undefined) ANALOG_CACHE.delete(oldest);
+    }
+    ANALOG_CACHE.set(key, rendered);
+  }
+
+  const buf = ctx.createBuffer(2, rendered.left.length, ctx.sampleRate);
+  buf.getChannelData(0).set(rendered.left);
+  buf.getChannelData(1).set(rendered.right);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const amp = ctx.createGain();
+  amp.gain.value = 1;
+  scheduleCurve(
+    src.detune, note, { kind: 'pitchBend' }, when, durationSec,
+    (val) => val * config.bendRangeSemitones * 100, 0,
+  );
+  src.connect(amp).connect(destination);
+  const start = Math.max(0, when);
+  src.start(start);
+  src.stop(start + seconds + 0.02);
+  return {
+    endsAt: start + seconds + 0.02,
+    stop: (at: number) => {
+      try { src.stop(at); } catch { /* already stopped */ }
+      try { src.disconnect(); amp.disconnect(); } catch { /* ignore */ }
     },
   };
 }
@@ -840,7 +2454,7 @@ function driveCurve(amount: number): Float32Array<ArrayBuffer> {
   return out;
 }
 
-export const INSTRUMENTS: InstrumentDescriptor[] = [
+const BARE_INSTRUMENTS: InstrumentDescriptor[] = [
   {
     id: 'polysynth',
     name: 'Poly Synth',
@@ -889,6 +2503,12 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       const amp = ctx.createGain();
       const filter = ctx.createBiquadFilter();
       filter.type = 'lowpass';
+      // NOT converted, deliberately.  Web Audio reads this in decibels (see
+      // `BUTTERWORTH_Q`), so the knob's 0.1-to-12 is really a Q of 1.01 to
+      // 4.0 — tamer at the top than the number suggests.  Every patch in the
+      // library was voiced by ear against that, so changing the units here
+      // would re-voice all of them to fix a label nobody reads.  The number
+      // is documented rather than corrected.
       filter.Q.value = params['resonance'] ?? 1.2;
 
       // ── The stack ───────────────────────────────────────────────────────
@@ -1073,6 +2693,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       if (lfo) { lfo.start(start); lfo.stop(stopAt); }
 
       return {
+        endsAt: stopAt,
         stop: (at: number) => {
           for (const o of [...oscs, subOsc, lfo]) {
             if (o) { try { o.stop(at); } catch { /* already stopped */ } }
@@ -1172,17 +2793,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       let shaper: WaveShaperNode | null = null;
       if (pickupAmount > 0.001) {
         shaper = ctx.createWaveShaper();
-        const N = 1024;
-        const curve = new Float32Array(N);
-        const k = 1 + 4 * pickupAmount;
-        for (let i = 0; i < N; i++) {
-          const x = (i / (N - 1)) * 2 - 1;
-          // Asymmetric: the positive half is compressed harder than the
-          // negative one.
-          const bias = x >= 0 ? k : k * 0.55;
-          curve[i] = Math.tanh(x * bias) / Math.tanh(bias);
-        }
-        shaper.curve = curve;
+        shaper.curve = pickupCurve(pickupAmount);
         shaper.oversample = '2x';
       }
 
@@ -1270,6 +2881,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       if (lfo) lfo.stop(releaseEnd + 0.02);
 
       return {
+        endsAt: releaseEnd + 0.02,
         stop: (at: number) => {
           try {
             carrier.stop(at); modulator.stop(at);
@@ -1319,6 +2931,69 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
   },
 
   {
+    id: 'plucked',
+    name: 'Plucked Strings',
+    // Harp, mandolin, ukulele, banjo and koto — one instrument, because a
+    // plucked string is one instrument and the differences are the table's.
+    // See `PLUCK_KINDS`, which also says why the body's own controls are not
+    // parameters here and why the selector is called `kind`.
+    params: [
+      {
+        id: 'kind', name: 'Instrument', min: 0, max: PLUCK_KINDS.length - 1,
+        default: 0, unit: '',
+        choices: PLUCK_KIND_NAMES,
+        choiceNotes: [
+          '긴 현·낮은 장력 — 몇 초를 웁니다',
+          '복현 — 두 현이 서로 비껴 울립니다',
+          '나일론·작은 박스 — 고음이 적게 나고 빨리 사라집니다',
+          '드럼 헤드 — 하나의 날카로운 공명, 매우 빠른 감쇠',
+          '실크·긴 오동나무 상자 — 브리지에서 먼 곳을 뜯습니다',
+        ],
+      },
+      // The player's hand.  Every one of these rests at 0, meaning "whatever
+      // the instrument does", so a patch that names none of them is the
+      // instrument itself rather than an edit of it.
+      { id: 'dampTrim',  name: 'Ring',   min: -1, max: 1, default: 0, unit: '' },
+      { id: 'brightTrim', name: 'Attack Tone', min: -1, max: 1, default: 0, unit: '' },
+      { id: 'pickTrim',  name: 'Pick Pos', min: -1, max: 1, default: 0, unit: '' },
+      { id: 'doubleTrim', name: 'Course', min: -1, max: 1, default: 0, unit: '' },
+      { id: 'ringTrim',  name: 'Sustain', min: -1, max: 1, default: 0, unit: '' },
+      { id: 'width',     name: 'Width',  min: 0,  max: 1, default: 0.5, unit: '' },
+      { id: 'release',   name: 'Release', min: 0.03, max: 1.2, default: 0.2, unit: 's' },
+      { id: 'level',     name: 'Level',  min: 0,  max: 1, default: CALIBRATED_LEVEL, unit: '' },
+    ],
+    playNote: (v) => {
+      const kind = PLUCK_KINDS[Math.round(v.params['kind'] ?? 0)] ?? PLUCK_KINDS[0]!;
+      // The trims are relative, and they are relative on purpose.  An absolute
+      // Damping knob would mean one number across five instruments whose loop
+      // gains run from 0.9905 to 0.9994 — and 0.99 is a banjo's whole note and
+      // a harp's first tenth of one.  A trim moves each instrument within its
+      // OWN range, so the same patch reads the same way on all of them.
+      const trim = (id: string): number => Math.max(-1, Math.min(1, v.params[id] ?? 0));
+      const lerp = (base: number, lo: number, hi: number, t: number): number =>
+        (t >= 0 ? base + (hi - base) * t : base + (base - lo) * t);
+      const params: Record<string, number> = {
+        ...v.params,
+        damp: lerp(kind.damping, 0.985, 0.99975, trim('dampTrim')),
+        bright: Math.max(0, Math.min(1, lerp(kind.brightness, 0.2, 1, trim('brightTrim')))),
+        pick: Math.max(0.02, Math.min(0.5, lerp(kind.pick, 0.03, 0.48, trim('pickTrim')))),
+        double: Math.max(0, Math.min(1, lerp(kind.double, 0, 1, trim('doubleTrim')))),
+        sustain: Math.max(0.4, Math.min(8, lerp(kind.ring, 0.5, 8, trim('ringTrim')))),
+        bodyHz: kind.bodyHz,
+        bodyQ: kind.bodyQ,
+        body: kind.bodyDb,
+        plate: kind.plateDb,
+        tone: kind.toneHz,
+      };
+      return pluckVoice({ ...v, params }, {
+        damping: kind.damping, brightness: kind.brightness, pick: kind.pick,
+        bodyHz: kind.bodyHz, bodyQ: kind.bodyQ, toneHz: kind.toneHz,
+        trim: INSTRUMENT_TRIM['plucked'] ?? 1,
+      });
+    },
+  },
+
+  {
     id: 'egtr',
     name: 'Electric Guitar',
     params: [
@@ -1349,6 +3024,241 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       pick: v.params['pick'] ?? 0.09,
       bodyHz: 2500, bodyQ: 1.6, toneHz: 3400, trim: INSTRUMENT_TRIM.egtr,
     }),
+  },
+
+  {
+    id: 'piano',
+    name: 'Grand Piano',
+    params: pianoParams({
+      hammer: 4600, strike: 0.125, stretch: 1, unison: 1.2,
+      bloom: 8, decay: 1, bodyHz: 140, bodyQ: 1.1, tone: 11000,
+    }),
+    // A concert instrument: long strings, so the fitted inharmonicity stands
+    // unscaled, a hammer bright enough to carry a hall, and the strike point
+    // at 1/8 where the eighth partial dies.
+    playNote: (v) => pianoVoice(v, {
+      stretch: 1, hammerHz: 4600, strike: 0.125, decay: 1,
+      bodyHz: 140, bodyQ: 1.1, toneHz: 11000, trim: INSTRUMENT_TRIM.piano,
+    }),
+  },
+
+  {
+    id: 'upright',
+    name: 'Upright Piano',
+    params: pianoParams({
+      hammer: 3300, strike: 0.105, stretch: 2.4, unison: 2.6,
+      bloom: 5.5, decay: 0.62, bodyHz: 190, bodyQ: 1.9, tone: 7600,
+    }),
+    // The same instrument with nowhere to put the strings.
+    //
+    // An upright is a grand stood on its end and cut short, and every
+    // difference here follows from the strings being shorter: inharmonicity
+    // goes as the inverse cube of length, so 2.4× is a modest reading of what
+    // a foreshortened bass does; there is less string to store energy, so it
+    // rings well under half as long; the board is smaller and boxier, so its
+    // resonance sits higher with a tighter Q.
+    //
+    // The unison is left wider on purpose.  An upright is the piano in a
+    // practice room, and the practice-room piano was last tuned some time ago.
+    playNote: (v) => pianoVoice(v, {
+      stretch: 2.4, hammerHz: 3300, strike: 0.105, decay: 0.62,
+      bodyHz: 190, bodyQ: 1.9, toneHz: 7600, trim: INSTRUMENT_TRIM.upright,
+    }),
+  },
+
+  {
+    id: 'bass',
+    name: 'Bass Guitar',
+    params: [
+      { id: 'damp',    name: 'Damping', min: 0.97, max: 0.9999, default: 0.9992, unit: '' },
+      { id: 'bright',  name: 'String',  min: 0,   max: 1,     default: 0.42, unit: '' },
+      { id: 'pick',    name: 'Pick',    min: 0.02, max: 0.5,  default: 0.07, unit: '' },
+      { id: 'double',  name: 'Double',  min: 0,   max: 1,     default: 0,    unit: '' },
+      { id: 'bodyHz',  name: 'Pickup Hz', min: 40, max: 2000, default: 620,  unit: 'Hz' },
+      { id: 'bodyQ',   name: 'Pickup Q', min: 0.3, max: 6,    default: 1.2,  unit: '' },
+      { id: 'body',    name: 'Pickup',  min: -6,  max: 12,    default: 5,    unit: 'dB' },
+      { id: 'plate',   name: 'Plate',   min: 0,   max: 12,    default: 0,    unit: 'dB' },
+      { id: 'tone',    name: 'Tone',    min: 800, max: 12000, default: 2200, unit: 'Hz' },
+      { id: 'width',   name: 'Width',   min: 0,   max: 1,     default: 0,    unit: '' },
+      { id: 'sustain', name: 'Sustain', min: 0.4, max: 8,     default: 4.5,  unit: 's' },
+      { id: 'release', name: 'Release', min: 0.03, max: 1.2,  default: 0.12, unit: 's' },
+      { id: 'level',   name: 'Level',   min: 0,   max: 1,     default: CALIBRATED_LEVEL, unit: '' },
+    ],
+    // The same plucked string as the guitars, which is not a shortcut: a bass
+    // IS a long guitar string, and what makes it a bass is the register plus
+    // three settings.
+    //
+    //   · plucked close to the bridge (0.07), because that is where a bass is
+    //     played and it is what gives the note its edge instead of a boom
+    //   · a much duller string (0.42 against the electric's 0.7) — a wound
+    //     bass string is heavy, and heavy strings start with fewer highs
+    //   · damping close to 1, so it sustains: a bass note that stopped like
+    //     an acoustic guitar's would leave a hole under every bar
+    //
+    // The pickup resonance sits at 620 Hz rather than the electric's 2.5 k
+    // because the pickup is four times as far from a much slower string, and
+    // that placement is the growl.
+    playNote: (v) => pluckVoice(v, {
+      damping: 0.9992, brightness: 0.42,
+      pick: v.params['pick'] ?? 0.07,
+      bodyHz: 620, bodyQ: 1.2, toneHz: 2200, trim: INSTRUMENT_TRIM.bass,
+    }),
+  },
+
+  {
+    id: 'mallet',
+    name: 'Mallets',
+    params: [
+      { id: 'bar',        name: 'Bar',      min: 0,    max: BAR_KINDS.length - 1, default: 0, unit: '' },
+      { id: 'hardness',   name: 'Mallet',   min: 0.2,  max: 3,   default: 1,    unit: '×' },
+      { id: 'decay',      name: 'Decay',    min: 0.2,  max: 3,   default: 1,    unit: '×' },
+      { id: 'damp',       name: 'Damper',   min: 0,    max: 1,   default: 0,    unit: '' },
+      { id: 'tube',       name: 'Tube',     min: -6,   max: 14,  default: 5,    unit: 'dB' },
+      { id: 'tubeQ',      name: 'Tube Q',   min: 0.3,  max: 8,   default: 2.2,  unit: '' },
+      { id: 'motor',      name: 'Motor',    min: 0,    max: 12,  default: 0,    unit: 'Hz' },
+      { id: 'motorDepth', name: 'Depth',    min: 0,    max: 1,   default: 0.5,  unit: '' },
+      { id: 'spread',     name: 'Spread',   min: 0,    max: 1,   default: 0.35, unit: '' },
+      { id: 'level',      name: 'Level',    min: 0,    max: 1,   default: CALIBRATED_LEVEL, unit: '' },
+    ],
+    // Four instruments behind one `bar` index, for the reason the kit is one
+    // instrument behind a `kit` index: everything that carries a track —
+    // save, undo, template, freeze, bounce, automation — carries a number
+    // without needing to be taught what it means.
+    //
+    // The Motor only does anything on the vibraphone, which is the only one
+    // of the four that has one.  It is left in the list rather than hidden so
+    // that the parameter set does not change shape when the Bar does, and the
+    // voice ignores it elsewhere.
+    playNote: (v) => malletVoice(v),
+  },
+
+  {
+    id: 'organ',
+    name: 'Drawbar Organ',
+    params: [
+      // Drawn out the way the panel is: 16' and 5⅓' first, then unison up.
+      // 8 is all the way out, 0 is pushed in.  888000000 is the one everybody
+      // starts from, and it is what these defaults are.
+      { id: 'db16',  name: "16'",  min: 0, max: 8, default: 8, unit: '' },
+      { id: 'db513', name: "5⅓'", min: 0, max: 8, default: 8, unit: '' },
+      { id: 'db8',   name: "8'",   min: 0, max: 8, default: 8, unit: '' },
+      { id: 'db4',   name: "4'",   min: 0, max: 8, default: 0, unit: '' },
+      { id: 'db223', name: "2⅔'", min: 0, max: 8, default: 0, unit: '' },
+      { id: 'db2',   name: "2'",   min: 0, max: 8, default: 0, unit: '' },
+      { id: 'db135', name: "1⅗'", min: 0, max: 8, default: 0, unit: '' },
+      { id: 'db113', name: "1⅓'", min: 0, max: 8, default: 0, unit: '' },
+      { id: 'db1',   name: "1'",   min: 0, max: 8, default: 0, unit: '' },
+      { id: 'click', name: 'Click', min: 0, max: 1, default: 0.35, unit: '' },
+      { id: 'perc',  name: 'Perc',  min: 0, max: 1, default: 0,    unit: '' },
+      { id: 'percHarmonic', name: 'Perc 3rd', min: 0, max: 1, default: 0, unit: '' },
+      { id: 'percDecay',    name: 'Perc Dec', min: 0.05, max: 1.5, default: 0.25, unit: 's' },
+      { id: 'edge',  name: 'Edge',  min: 0.002, max: 0.03, default: 0.006, unit: 's' },
+      { id: 'level', name: 'Level', min: 0, max: 1, default: CALIBRATED_LEVEL, unit: '' },
+    ],
+    // No rotary speaker here on purpose, and it is the same argument the
+    // electric guitar makes about not baking in an amp: the insert chain
+    // already has one, and a cabinet welded to the instrument is a cabinet
+    // nobody can take off.
+    playNote: (v) => organVoice(v),
+  },
+
+  {
+    id: 'wavesynth',
+    name: 'Wavetable Synth',
+    params: WAVE_SYNTH_PARAMS,
+    // Two tables, a sub, noise, a state-variable filter and eight matrix rows
+    // — the whole argument for why it is computed rather than wired lives in
+    // `wave-synth.ts`, and the short version is that a `PeriodicWave` cannot
+    // be moved while it sounds and a wavetable synth is nothing else.
+    playNote: (v) => waveSynthVoice(v),
+  },
+
+  {
+    id: 'analog',
+    name: 'Analog Synth',
+    params: ANALOG_PARAMS,
+    // Two free-running VCOs that drift, a transistor ladder that saturates
+    // and loses its bass as the resonance comes up, capacitor envelopes, and
+    // a per-voice component tolerance so a chord is six slightly different
+    // instruments.  Every one of those is measured in `analog-model.ts`.
+    playNote: (v) => analogVoice(v),
+  },
+
+  {
+    id: 'fm',
+    name: 'FM Synth',
+    params: FM_PARAMS,
+    // Six operators and thirty-two algorithms.  There is no filter: an FM
+    // patch's brightness is its modulator envelopes, which is why every
+    // operator has its own and why they are exponential.  The maths, and
+    // what the name gets wrong, are in `fm-core.ts`.
+    playNote: (v) => fmVoice(v),
+  },
+
+  {
+    id: 'bowed',
+    name: 'Bowed Strings',
+    params: BOWED_PARAMS as InstrumentParamDef[],
+    // Violin, viola, cello and double bass, as one instrument because they
+    // are one instrument: the same friction, the same string, four boxes.
+    //
+    // The bow is a nonlinearity rather than an envelope, which is what makes
+    // a crescendo on one note possible here and impossible on a sampled
+    // library.  Bow Speed is loudness, Bow Force is which of the three
+    // regimes it plays in, and Bow Position is a comb.  All three are
+    // measured in `bowed-string.ts`.
+    playNote: (v) => bowedVoice(v),
+  },
+
+  {
+    id: 'reed',
+    name: 'Reed Winds',
+    params: REED_PARAMS as InstrumentParamDef[],
+    // Clarinet, bass clarinet, alto and tenor sax, oboe — one instrument,
+    // because a reed driving a pipe is one instrument and the differences are
+    // the pipe's: whether its round trip inverts, how long it is, what it
+    // loses at the top.  The first of those is the whole distance between a
+    // clarinet and a saxophone; see `reed-pipe.ts`.
+    //
+    // Breath is pressure, not gain: below a threshold nothing sounds at all,
+    // and above it the spectrum opens out rather than merely getting louder.
+    // Register jumps a twelfth on the cylinders and an octave on the cones,
+    // because that is what the pipes do.  All of it is measured in
+    // `reed-selftest.ts`.
+    playNote: (v) => reedVoice(v),
+  },
+
+  {
+    id: 'clavinet',
+    name: 'Clavinet',
+    params: [
+      ...CLAV_PARAMS as InstrumentParamDef[],
+      { id: 'level', name: 'Level', min: 0, max: 1, default: CALIBRATED_LEVEL, unit: '' },
+    ],
+    // A steel wire plucked by a rubber pad, on the one engine here that has a
+    // LENGTH.  What that buys is a pitch that moves during the note: pulling the
+    // wire aside stretches it, a stretched wire is a tighter one, so a hard key
+    // starts sharp and settles as it decays — and the bend goes as the square of
+    // how far it was pulled, so velocity gives loudness, brightness and bend from
+    // one gesture.  Neither a delay line nor a sum of partials can do it, because
+    // both decide their frequencies before the note starts.
+    //
+    // Clavinet, Pianet and a long wire bass are three wires and one voice.  All
+    // of it is measured in `fd-string-selftest.ts`; the engine's own numbers, and
+    // the barrier that was tried here first and did not work, are in
+    // `fd-string.ts`.
+    playNote: (v) => clavVoice(v),
+  },
+
+  {
+    id: 'drummachine',
+    name: 'Analog Drums',
+    params: DRUM_MACHINE_PARAMS,
+    // Eleven voices built the way the circuits were rather than the way the
+    // drums are — a kick that is a falling sine, hats that are six squares
+    // and no noise at all.  Every voice has its own controls, which is the
+    // whole difference from the kit below it.  See `drum-machine.ts`.
+    playNote: (v) => drumMachineVoice(v),
   },
 
   {
@@ -1397,7 +3307,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       // robin exists to prevent.
       const zone = pickZone(candidates, (params['rrOff'] ?? 0) >= 0.5 ? 0 : nextRoundRobin());
       const buffer = zone ? bufferFor(zone.resolvedPath) : undefined;
-      if (!zone || !buffer) return { stop: () => { /* nothing sounding */ } };
+      if (!zone || !buffer) return { stop: () => { /* nothing sounding */ }, endsAt: when };
 
       const src = ctx.createBufferSource();
       src.buffer = buffer;
@@ -1444,7 +3354,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
         const ceiling = Math.min(FILTER_CEILING_HZ, ctx.sampleRate * 0.45);
         tone = ctx.createBiquadFilter();
         tone.type = 'lowpass';
-        tone.Q.value = 0.7;
+        tone.Q.value = BUTTERWORTH_Q;
         tone.frequency.value = ceiling * Math.pow(0.25 + 0.75 * note.velocity, 2.2 * velTone);
       }
 
@@ -1475,6 +3385,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       src.start(start);
       src.stop(releaseEnd + 0.02);
       return {
+        endsAt: releaseEnd + 0.02,
         stop: (at: number) => {
           try { src.stop(at); } catch { /* already stopped */ }
           try {
@@ -1485,6 +3396,92 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
     },
   },
 ];
+
+/**
+ * Where an instrument's output is coupled.
+ *
+ * Real instrument electronics are capacitor-coupled, and here it is not
+ * cosmetic: a waveshaper that is asymmetric ON PURPOSE puts out DC, and so
+ * does a pulse wave whose duty is not a half.  Measured on the bus, four
+ * notes of each instrument through the bounce path, DC against the same
+ * passage's RMS:
+ *
+ *     epiano      0.00403    -14.0 dB    <- the Rhodes pickup
+ *     analog      0.000387   -38.3 dB    <- pulse width
+ *     everything else         below -53 dB
+ *
+ * A fifth of the electric piano's level was a constant.  It eats headroom
+ * where no meter shows it, it biases the peak the limiter sees — an
+ * asymmetric waveform reaches its ceiling on one side first — and it SUMS:
+ * eight such voices make it -5 dB of pure offset.
+ *
+ * 5 Hz, and not the 20 Hz a real coupling capacitor sits at, because 20 Hz
+ * turned out NOT to be free.  At 20 Hz the poly synth's Organ patch — a
+ * sustained stack with its sub oscillator up — kept exactly its loudness and
+ * gained 1.33 dB of TRUE PEAK, from -3.92 to -2.59 dBTP, over the -3 dBTP
+ * ceiling the whole bank is calibrated to: rotating the phase of the lowest
+ * partials reshapes the waveform, and a crest is not a level.  At 5 Hz the
+ * same patch reads -3.62 dBTP.
+ *
+ * Both corners remove the offset — a highpass has no gain at 0 Hz — so what
+ * the extra 15 Hz buys is only a faster settle on the step a note makes
+ * (32 ms against 8), and it costs the peak above.  The bottom of the keyboard
+ * pays for it either way, measured against the same notes rendered with no
+ * coupling at all:
+ *
+ *                     5 Hz      20 Hz    20 Hz by the formula
+ *     41 Hz (E1)     0.010 dB   0.26 dB        0.23 dB
+ *     32.7 Hz (C1)   0.014 dB   0.60 dB        0.57 dB
+ *     27.5 Hz (A0)   0.012 dB   1.06 dB        1.07 dB
+ *
+ * At 20 Hz the measurement and the Butterworth formula agree to 0.03 dB; at
+ * 5 Hz the formula says a thousandth of a decibel, which is below what the
+ * renderer resolves.
+ *
+ * The filter itself is `dcBlock` from `plugin-kit`, a one pole rather than a
+ * biquad, and that is not a detail: a 5 Hz BIQUAD rejects a constant by only
+ * 56 dB in Chromium — measured — while removing it completely in Node.  The
+ * corner lives there too, with the devices that share it.
+ *
+ * What is left afterwards, and why it is not zero.  An asymmetric curve's
+ * offset is proportional to the signal through it, so under notes it is not a
+ * constant but a slow bulge that follows the envelope, and a 5 Hz coupling
+ * passes what moves at envelope rate.  Measured: the worst in the bank is the
+ * Rhodes at -58.6 dB of its own RMS over a four-note passage in the app, and
+ * -181 dB in Node; through a device at a STEADY tone, where the offset really
+ * is a constant, the same filter reads -213 dB.  Before the coupling the same
+ * passage read -14.0 dB.
+ */
+
+/**
+ * One instrument, with its output coupled.
+ *
+ * Wrapped around the DESCRIPTOR rather than written into each of the nineteen
+ * voices, because it is the same sentence nineteen times and because a voice
+ * that forgot it would be silently wrong — the DC does not announce itself.
+ * The filter belongs to the voice: it is built per note and let go when the
+ * voice is, so a finished note still disconnects everything it made (see
+ * `reapFinished` in the clip player).
+ */
+function dcCoupled(instrument: InstrumentDescriptor): InstrumentDescriptor {
+  return {
+    ...instrument,
+    playNote: (v): InstrumentVoice => {
+      const block = dcBlock(v.ctx);
+      block.connect(v.destination);
+      const voice = instrument.playNote({ ...v, destination: block });
+      return {
+        endsAt: voice.endsAt,
+        stop: (at: number): void => {
+          voice.stop(at);
+          try { block.disconnect(); } catch { /* context gone */ }
+        },
+      };
+    },
+  };
+}
+
+export const INSTRUMENTS: InstrumentDescriptor[] = BARE_INSTRUMENTS.map(dcCoupled);
 
 export function findInstrument(id: string | null): InstrumentDescriptor | undefined {
   return id ? INSTRUMENTS.find((i) => i.id === id) : undefined;

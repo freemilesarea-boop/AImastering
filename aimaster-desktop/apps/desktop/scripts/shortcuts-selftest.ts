@@ -541,6 +541,57 @@ check('duplicate needs a rendered master', () => {
 // Transport registry must not leak between runs.
 registerTransportElement(null);
 
+// ── Zoom says which way it went ────────────────────────────────────────────
+//
+// Reported as "zoom in is G and zoom out is F, and they feel swapped".  They
+// were not swapped.  F is bound to zoomInH and G to zoomOutH, the store
+// multiplies on one and divides on the other, and the DAW override does the
+// same to pxPerSec — the keys did exactly what they say.
+//
+// What was wrong was the sentence.  BOTH directions announced themselves as
+// 확대: press the zoom-out key, watch the view shrink, and read "가로 확대".
+// A pair of keys that behave correctly and describe themselves wrongly is
+// indistinguishable, from the far side of the screen, from a pair that is
+// bound backwards.
+check('zooming out does not announce itself as zooming in', () => {
+  const src = readFileSync('src/renderer/shortcuts/commands.ts', 'utf8');
+  const line = (id: string): string =>
+    src.split('\n').find((l) => l.includes(`'${id}':`)) ?? '';
+  const outH = line('view.zoomOutH');
+  const outV = line('view.zoomOutV');
+  assert(outH.length > 0 && outV.length > 0, 'the zoom-out commands are gone');
+  assert(!outH.includes('가로 확대'), `zoomOutH still says 확대: ${outH.trim()}`);
+  assert(outH.includes('축소'), `zoomOutH does not say 축소: ${outH.trim()}`);
+  assert(!outV.includes('세로 확대'), `zoomOutV still says 확대: ${outV.trim()}`);
+  assert(outV.includes('축소'), `zoomOutV does not say 축소: ${outV.trim()}`);
+});
+
+check('and zooming in still says so', () => {
+  const src = readFileSync('src/renderer/shortcuts/commands.ts', 'utf8');
+  const line = (id: string): string =>
+    src.split('\n').find((l) => l.includes(`'${id}':`)) ?? '';
+  assert(line('view.zoomInH').includes('가로 확대'), 'zoomInH lost its label');
+  assert(line('view.zoomInV').includes('세로 확대'), 'zoomInV lost its label');
+});
+
+// The half that was never broken, pinned so a "fix" cannot swap the bindings
+// to chase a symptom that lived in the text.
+check('F still zooms in and G still zooms out', () => {
+  const defs = readFileSync('src/renderer/shortcuts/definitions.ts', 'utf8');
+  const inH = defs.split('\n').find((l) => l.includes("id: 'view.zoomInH'")) ?? '';
+  const outH = defs.split('\n').find((l) => l.includes("id: 'view.zoomOutH'")) ?? '';
+  assert(inH.includes("'KeyF'"), `zoomInH is not on F: ${inH.trim()}`);
+  assert(outH.includes("'KeyG'"), `zoomOutH is not on G: ${outH.trim()}`);
+});
+
+check('and the DAW override still zooms the way it is named', () => {
+  const dc = readFileSync('src/renderer/shortcuts/daw-commands.ts', 'utf8');
+  assert(/'view\.zoomInH':\s*\(\)\s*=>\s*\{[^}]*pxPerSec\s*\*/.test(dc),
+    'zoomInH no longer multiplies pxPerSec');
+  assert(/'view\.zoomOutH':\s*\(\)\s*=>\s*\{[^}]*pxPerSec\s*\//.test(dc),
+    'zoomOutH no longer divides pxPerSec');
+});
+
 const passed = results.filter((r) => r.pass).length;
 const failed = results.length - passed;
 console.log('\n=== DAW keyboard layer ===');

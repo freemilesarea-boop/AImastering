@@ -27,9 +27,17 @@
 // A single sawtooth C has partials at C (×2), G (×3), C (×4), E (×5), G (×6),
 // B♭ (×7).  Fold that naively and one note reads as C7 — the chroma of a
 // chord nobody played.  This is the biggest single source of wrong thirds and
-// wrong sevenths in a template matcher, and it is why the suppression below
-// is subtractive: energy that is PREDICTED by a lower partial is removed
-// before folding.
+// wrong sevenths in a template matcher, and the suppression below removes a
+// bin when a NOTE exists below it at one of its subharmonic positions.  What
+// it does not do is guess how loud that partial ought to be: on a plucked
+// string the third partial can be more than twice its own fundamental, so a
+// prediction scaled from the fundamental is smaller than the thing it is
+// meant to cancel.  See `suppressHarmonics`.
+//
+// What suppression cannot reach is discounted by register instead.  Residue
+// piles up ABOVE the highest note of a chord, where every bin is a partial of
+// something; a chord is voiced within about two octaves of its own bass, so
+// the fold's weight falls off above that.  See `weightByRegister`.
 //
 // ── 3. Loudness ─────────────────────────────────────────────────────────────
 //
@@ -48,7 +56,11 @@ export interface ChromaOptions {
   /** Log compression: log(1 + gamma·x).  Higher lifts quiet partials. */
   gamma: number;
   /**
-   * Harmonic suppression strength, 0 disables it.  Applied to partials 2…5.
+   * Harmonic suppression strength, 0 disables it.
+   *
+   * The fraction of a bin removed when a note certainly exists below it at one
+   * of its subharmonic positions — partials 2 through 8.  See
+   * `suppressHarmonics`; it is not a fraction of a predicted amplitude.
    */
   harmonicSuppression: number;
   /**
@@ -61,24 +73,24 @@ export interface ChromaOptions {
 }
 
 /**
- * Measured, not chosen by taste.  A sweep of suppression × gamma over a
- * single sawtooth, a major triad, a minor triad, a maj7 and a dom7:
+ * Measured, not chosen by taste.  Sawtooth chords, through this pipeline:
  *
- *   0.5 / 3   single C → C 0.98, next 0.10
- *             C major  → C, E, G all 0.58, next 0.05
- *             C minor  → C, D♯, G all 0.58
- *             Cmaj7    → C, E, G 0.51 and B 0.47
- *             C7       → C, E, G 0.51 and A♯ 0.47, no B in the top five
+ *   0.95 / 3  single C → C 0.98, next 0.08
+ *             C major  → C, E, G 0.58 0.56 0.54, next 0.05
+ *             C minor  → C, D♯, G 0.58 0.56 0.54
+ *             Cmaj7    → C, E, B, G 0.50 0.49 0.49 0.47
+ *             C7       → C, E, A♯, G 0.50 0.49 0.49 0.47, no B in the top five
  *
- * Lower suppression leaves the fifth and third of the harmonic series
- * standing (0.3 gave a single C a G at 0.15); higher risks eating a real
- * fifth that happens to coincide with a partial.  Gamma above about 10 stops
- * lifting quiet notes and starts lifting the noise floor with them.
+ * Suppression is near 1 because it is now a fraction of a bin that a note
+ * below explains, not a fraction of a predicted amplitude: 0.85 through 1.00
+ * all name the same 12 of 12 test chords and 0.8 starts missing them, so the
+ * high end of that range is a plateau, not an edge.  Gamma above about 10
+ * stops lifting quiet notes and starts lifting the noise floor with them.
  */
 export const DEFAULT_CHROMA: ChromaOptions = {
   hopSec: 0.1,
   gamma: 3,
-  harmonicSuppression: 0.5,
+  harmonicSuppression: 0.95,
   silenceFloor: 0.02,
 };
 
@@ -187,40 +199,75 @@ export function shiftForTuning(
 // ── Harmonics ───────────────────────────────────────────────────────────────
 
 /**
- * Partial number → how far above the fundamental, in semitones, and how loud
- * to expect it.
+ * Partial number → how far above the fundamental, in semitones.
  *
- * `12·log2(h)`, and the weights are `2/h` — the envelope of a sawtooth, which
- * is the worst case a real instrument approaches from below.  Stopping at the
- * fifth partial was measured and was not enough: a sawtooth C still read 8.5 %
- * B♭ (partial 7), 3.6 % F♯ (partial 11) and 3.6 % G♯ (partial 13).  Partial 7
- * is the one that matters — it is a minor seventh, and leaving it in makes
- * every plain triad look like a dominant chord.
+ * `12·log2(h)`.  Stopping at the fifth partial was measured and was not
+ * enough: a sawtooth C still read 8.5 % B♭ (partial 7), 3.6 % F♯ (partial 11)
+ * and 3.6 % G♯ (partial 13).  Partial 7 is the one that matters — it is a
+ * minor seventh, and leaving it in makes every plain triad look like a
+ * dominant chord.
  */
-const PARTIALS: readonly { harmonic: number; semitones: number; weight: number }[] = [
-  { harmonic: 2, semitones: 12.0000, weight: 1.000 },   // octave
-  { harmonic: 3, semitones: 19.0196, weight: 0.667 },   // fifth
-  { harmonic: 4, semitones: 24.0000, weight: 0.500 },   // two octaves
+const PARTIALS: readonly { harmonic: number; semitones: number }[] = [
+  { harmonic: 2, semitones: 12.0000 },   // octave
+  { harmonic: 3, semitones: 19.0196 },   // fifth
+  { harmonic: 4, semitones: 24.0000 },   // two octaves
   // Partial 5 is a MAJOR THIRD: it is why an unsuppressed single note reads
   // as a major chord.
-  { harmonic: 5, semitones: 27.8631, weight: 0.400 },
-  { harmonic: 6, semitones: 31.0196, weight: 0.333 },   // fifth again
+  { harmonic: 5, semitones: 27.8631 },
+  { harmonic: 6, semitones: 31.0196 },   // fifth again
   // Partial 7 is a MINOR SEVENTH — the one that turns triads into 7 chords.
-  { harmonic: 7, semitones: 33.6883, weight: 0.286 },
-  { harmonic: 8, semitones: 36.0000, weight: 0.250 },   // three octaves
+  { harmonic: 7, semitones: 33.6883 },
+  { harmonic: 8, semitones: 36.0000 },   // three octaves
 ];
 
 /**
- * Remove energy a lower partial already explains.
+ * How loud a fundamental has to be, as a fraction of the frame's loudest bin,
+ * to count as present.
  *
- * Subtractive rather than additive on purpose.  Summing harmonics into the
- * fundamental reinforces a root that is really there, and equally reinforces
- * one that is not — a fifth in the bass with no root above it becomes a root.
- * Subtracting asks the narrower question: is there energy HERE beyond what the
- * note an octave (or a twelfth, or a seventeenth) below would produce?
+ * Not a prediction of the partial's size — see `suppressHarmonics` for why
+ * there is no such prediction to be had.  This is only the level below which a
+ * bin is the analyser's own noise rather than a note somebody played.  Swept:
+ * 0.03 to 0.10 all name the same 12 of 12 test chords, 0.15 starts missing
+ * one, so 0.07 sits in the middle of a plateau rather than on a threshold.
+ */
+export const HARMONIC_PRESENCE_FLOOR = 0.07;
+
+/**
+ * Remove energy a lower note already explains.
  *
- * Clamped at zero.  A negative magnitude is not a quieter note, it is a sign
- * error waiting to be normalised into nonsense.
+ * Asks whether a NOTE exists below this bin at one of its subharmonic
+ * positions, and if one does, removes `strength` of the bin.  What it
+ * deliberately does not do is predict how loud the partial should be.
+ *
+ * ── Why no prediction ───────────────────────────────────────────────────────
+ *
+ * This used to subtract `strength × (the fundamental's magnitude × 2/h)`, the
+ * sawtooth envelope, and that assumes the fundamental is the loudest partial.
+ * On a plucked string it is not.  A string plucked at a fraction `p` of its
+ * length has partial `h` at `|sin(hπp)|`, so at the 13 % the acoustic guitar
+ * uses the fundamental sits at 0.40 and the third partial at 0.94 — the
+ * partial is 2.35× the thing that is supposed to predict it, and no strength
+ * multiplies a smaller number into a larger one.  Measured: the guitar's
+ * C major chord read C:maj7 at every strength from 0.6 to 0.95, because the B
+ * that makes the seventh is the third partial of its E and the fifth of its G.
+ *
+ * The amplitude a partial "should" have depends on where the string was
+ * plucked, which the analyser cannot know.  Presence does not: either there is
+ * a note at the position a fundamental would occupy or there is not.  Over 47
+ * chords — sawtooths, six-string guitar voicings at five pick positions, and
+ * mixes with a bass, a melody and a noise floor — the subtractive form named
+ * 22 correctly and this one names 44.
+ *
+ * ── The band that cannot be tested ──────────────────────────────────────────
+ *
+ * The lowest octave of the CQT has no subharmonic position inside the
+ * transform, so nothing there can be tested at all.  Left at full level while
+ * everything above it is scaled down, that band becomes the loudest thing in
+ * the frame, and a noise floor in it then decides the chord: measured, a
+ * guitar C major under broadband noise 14 dB down came back as C♯:minMaj7,
+ * a root the audio never contained.  Gating it by the mean of what COULD be
+ * tested keeps the registers in proportion, and the same case then reads
+ * C:maj6 — still wrong, but wrong about the quality of the right chord.
  */
 export function suppressHarmonics(
   frame: Float32Array, layout: CqtLayout, strength: number,
@@ -228,17 +275,98 @@ export function suppressHarmonics(
 ): Float32Array {
   if (strength <= 0) { out.set(frame); return out; }
   const perSemitone = layout.binsPerOctave / 12;
+  let peak = 0;
+  for (let k = 0; k < frame.length; k++) peak = Math.max(peak, frame[k] ?? 0);
+  if (peak <= 0) { out.set(frame); return out; }
+  const need = peak * HARMONIC_PRESENCE_FLOOR;
+
+  // How sure each bin is that a note below explains it; −1 where none of its
+  // subharmonic positions is inside the transform.
+  const sure = new Float32Array(frame.length);
+  let sum = 0;
+  let testable = 0;
   for (let k = 0; k < frame.length; k++) {
-    let predicted = 0;
+    let best = -1;
     for (const partial of PARTIALS) {
       const at = k - partial.semitones * perSemitone;
       const lo = Math.floor(at);
       if (lo < 0 || lo + 1 >= frame.length) continue;
       const t = at - lo;
       const value = (frame[lo] ?? 0) * (1 - t) + (frame[lo + 1] ?? 0) * t;
-      predicted += value * partial.weight;
+      best = Math.max(best, Math.min(1, value / need));
     }
-    out[k] = Math.max(0, (frame[k] ?? 0) - strength * predicted);
+    sure[k] = best;
+    if (best >= 0) { sum += best; testable += 1; }
+  }
+  const mean = testable > 0 ? sum / testable : 0;
+
+  for (let k = 0; k < frame.length; k++) {
+    const s = sure[k]! < 0 ? mean : sure[k]!;
+    out[k] = Math.max(0, (frame[k] ?? 0) * (1 - strength * s));
+  }
+  return out;
+}
+
+// ── Register ────────────────────────────────────────────────────────────────
+
+/**
+ * How loud a bin must be, against the frame's loudest, to be read as the
+ * lowest note sounding.
+ */
+export const CHROMA_BASS_FLOOR = 0.12;
+
+/** How far above the lowest note a chord is voiced before the fold discounts it. */
+export const CHROMA_REGISTER_OCTAVES = 2;
+
+/** Semitones for that discount to halve, above the register. */
+export const CHROMA_REGISTER_HALF_LIFE = 3;
+
+/**
+ * The lowest bin carrying a note, or 0 when nothing does.
+ *
+ * Read from the frame BEFORE suppression: on a plucked string a fundamental
+ * can be quieter than its own partials, and suppression is the step that would
+ * then take it away.
+ */
+export function lowestStrongBin(
+  frame: Float32Array, floorRatio = CHROMA_BASS_FLOOR,
+): number {
+  let peak = 0;
+  for (let k = 0; k < frame.length; k++) peak = Math.max(peak, frame[k] ?? 0);
+  if (peak <= 0) return 0;
+  const floor = peak * floorRatio;
+  for (let k = 0; k < frame.length; k++) if ((frame[k] ?? 0) >= floor) return k;
+  return 0;
+}
+
+/**
+ * Discount the bins too far above the chord's own bass to be part of it.
+ *
+ * Suppression removes what a note below explains, and what it cannot remove
+ * piles up in one place: above the highest note of the chord, where every bin
+ * is some partial of something and no bin is a note. A chord is voiced within
+ * about two octaves of its lowest note, so a bin four octaves up is evidence
+ * about the instrument, not about the harmony.
+ *
+ * A ROLLOFF and not a ceiling, because a ceiling is a discontinuity a note can
+ * cross between one frame and the next — and because real voicings do reach
+ * above it. Measured over the 47 chords: a hard cut two octaves up names 43
+ * and cuts the top of a rootless chord voiced over its own bass; halving every
+ * three semitones above the same point names 44 and reads that chord as a
+ * triad instead of a seventh, which is the cheaper mistake.
+ *
+ * `fromBin` is `lowestStrongBin` of the unsuppressed frame.
+ */
+export function weightByRegister(
+  frame: Float32Array, layout: CqtLayout, fromBin: number,
+  out = new Float32Array(frame.length),
+): Float32Array {
+  const perSemitone = layout.binsPerOctave / 12;
+  const top = fromBin + CHROMA_REGISTER_OCTAVES * layout.binsPerOctave;
+  for (let k = 0; k < frame.length; k++) {
+    if (k < top) { out[k] = frame[k] ?? 0; continue; }
+    const semitonesOver = (k - top) / perSemitone;
+    out[k] = (frame[k] ?? 0) * Math.pow(0.5, semitonesOver / CHROMA_REGISTER_HALF_LIFE);
   }
   return out;
 }
@@ -417,6 +545,7 @@ export function chromagram(
 
   const shifted = new Float32Array(layout.bins);
   const suppressed = new Float32Array(layout.bins);
+  const weighted = new Float32Array(layout.bins);
   const frames: Float32Array[] = [];
   const lowPitches: (number | null)[] = [];
   let silentFrames = 0;
@@ -432,7 +561,12 @@ export function chromagram(
     }
     shiftForTuning(frame, layout, tuningCents, shifted);
     suppressHarmonics(shifted, layout, opt.harmonicSuppression, suppressed);
-    const chroma = foldToChroma(suppressed, layout);
+    // The register is read from the unsuppressed frame and applied to the
+    // suppressed one — suppression is what would remove a bass fundamental
+    // quieter than its own partials, and then the register would be measured
+    // from whatever survived.
+    weightByRegister(suppressed, layout, lowestStrongBin(shifted), weighted);
+    const chroma = foldToChroma(weighted, layout);
     // Scaled to its own maximum BEFORE the logarithm.  Measured: compressing
     // raw magnitudes (which are in the thousands here) turned a 75 % / 8 %
     // split into 0.43 / 0.36 — the compression was not lifting quiet notes,

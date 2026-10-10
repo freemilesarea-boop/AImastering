@@ -677,13 +677,23 @@ function QueueRow({
               border: `1px solid ${louiAlpha.lav(0.3)}`,
               background: louiAlpha.lav(0.08),
             }}
-            title={item.studioSavedAt !== undefined
+            title={item.status === 'done' && item.renderedPath !== undefined
+              // After a render the row reports what happened rather than
+              // what was promised.  A finished row that says 'classic' had
+              // no saved settings to use; one that says 'studio' proves
+              // they were used.
+              ? (item.renderedPath === 'studio'
+                  ? '이 마스터는 저장된 스튜디오 설정으로 렌더링되었습니다.'
+                  : '저장된 스튜디오 설정이 없어 기본 체인으로 렌더링되었습니다.')
+              : item.studioSavedAt !== undefined
               // The whole point of saving is that the render will use it,
               // so the row says so rather than only marking the file.
               ? `저장된 스튜디오 설정이 있습니다 (${new Date(item.studioSavedAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}). 마스터링에 이 설정이 사용됩니다.`
               : '전체 모듈 랙에서 체인을 직접 구성합니다 (De-noise · Dynamic EQ · Multiband · Exciter · Tape …)'}
           >
-            {item.studioSavedAt !== undefined ? '스튜디오 ✓' : '스튜디오'}
+            {item.status === 'done' && item.renderedPath === 'studio'
+              ? '스튜디오 적용됨'
+              : item.studioSavedAt !== undefined ? '스튜디오 ✓' : '스튜디오'}
           </button>
         )}
         {(item.status === 'pending' || item.status === 'error') && (
@@ -1070,6 +1080,9 @@ export default function HomePage() {
         cleanupProgress();
         updateQueueItem(item.id, {
           masteringResult: rendered.result, status: 'done', progress: 100,
+          // So the row can say the saved settings actually reached the
+          // render, which is the only way a user can tell.
+          renderedPath: rendered.path,
         });
 
       } catch (err) {

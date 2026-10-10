@@ -11,6 +11,7 @@
 // ffprobe is already bundled for the decode path, so it answers here too.
 
 import type { IpcMain } from 'electron';
+import { validateAbsoluteFilePath } from '../utils/ipcValidation.js';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -81,10 +82,8 @@ function timecodeToSeconds(text: string | undefined, fps: number): number {
 
 export function registerVideoHandlers(ipc: IpcMain, packaged: boolean, resourcesPath: string): void {
   ipc.handle('video:probe', async (_e, raw: unknown): Promise<VideoProbeResult> => {
-    if (typeof raw !== 'string' || raw.length === 0 || raw.includes('\0')) {
-      throw new Error('video:probe: 경로가 잘못됐습니다');
-    }
-    const resolved = path.resolve(raw);
+    // Shared validator, not a third copy of the same three checks.
+    const resolved = validateAbsoluteFilePath(raw, 'video:probe');
     if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
       throw new Error('video:probe: 파일을 찾을 수 없습니다');
     }

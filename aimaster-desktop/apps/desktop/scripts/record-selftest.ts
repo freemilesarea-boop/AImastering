@@ -23,6 +23,7 @@ import {
   addTrack, createClip, createSession, createTrack, findTrack, updateClips,} from '../src/renderer/daw/model/session-ops.js';
 import { activePlaylist} from '../src/renderer/daw/model/session-ops.js';
 import { resetIds} from '../src/renderer/daw/model/ids.js';
+import { addTempoEvent, beatToSec, tempoMapOf} from '../src/renderer/daw/model/tempo-map.js';
 import {
   DEFAULT_INPUT_REF, describeInput, hasInputAssignment, inputRefFor, refreshHint,
   resolveTrackInput, trackInputRef,} from '../src/renderer/daw/model/track-input.js';
@@ -93,6 +94,30 @@ check('pre-roll is clamped by the start of the timeline', () => {
   close(plan.transportStartSec, 0, 'cannot roll before zero', 1e-9);
   close(plan.preRollSec, 1.5, 'so the player gets what is left', 1e-9);
   close(plan.recordStartSec, 1.5, 'the punch does not move', 1e-9);
+});
+
+check('the plan spells the count-in out, at the tempo of the record point', () => {
+  // The count-in used to be handed over as a DURATION alone, and the
+  // transport recovered the rest of it by dividing by the session's opening
+  // tempo.  Measured on this very session: the plan said 2.6667 s, the
+  // transport counted four clicks 0.5 s apart — 120 bpm into a 90 bpm take —
+  // and left two thirds of a beat of silence before the music came in.  So
+  // the plan now carries what is needed to SOUND it, not only how long it is.
+  const { session } = sessionWithTrack();
+  // 120 bpm for the first bar, 90 from bar 2.
+  const slower = { ...session, tempoMap: addTempoEvent(tempoMapOf(session), 4, 90, 'jump') };
+  const recordAt = beatToSec(tempoMapOf(slower), 8);     // inside the 90 bpm part
+  const plan = planRecording(slower, settings({ countInBars: 1, preRollSec: 0 }), recordAt);
+
+  eq(plan.countInBeats, 4, 'one bar of 4/4 is four clicks');
+  eq(plan.countInBeatsPerBar, 4, 'accented every four');
+  close(plan.countInBeatSec, 60 / 90, 'a beat at the record point, not at the top of the song', 1e-9);
+  close(plan.countInSec, 4 * (60 / 90), 'and the length is the two multiplied', 1e-9);
+  // The session's own tempo is still 120: the test would pass by accident if
+  // the map were being ignored and the numbers happened to agree.
+  eq(slower.tempoBpm, 120, 'the session tempo is deliberately different');
+  close(plan.countInBeats * plan.countInBeatSec, plan.countInSec,
+    'the three numbers describe one count-in', 1e-9);
 });
 
 check('count-in is bars of clicks, not transport time', () => {

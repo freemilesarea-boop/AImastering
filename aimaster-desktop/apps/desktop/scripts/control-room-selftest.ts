@@ -436,6 +436,48 @@ check('the click is heard in the room, so it goes through the room', () => {
   assert(!/[Mm]etronome/.test(render), 'and the render still never makes a click');
 });
 
+check('the COUNT-IN takes the same road, which it used not to', () => {
+  // The playback click was moved onto the monitor path; the count-in stayed a
+  // second click generator in `recorder.ts`, wired to `ctx.destination`.
+  // Rendered with MUTE engaged, that count-in came out at 0.248 peak down the
+  // destination against 0.0015 through the room: you pressed MUTE to take a
+  // phone call and the count-in carried on into the speakers at full level.
+  // It is scheduled through the Metronome now, so it cannot have a different
+  // output from the click — there is only one `output`.
+  oscillators.length = 0;
+  const { ctx, dest } = stubCtx();
+  const room = new StubNode('gain');
+  const m = new Metronome();
+  m.attach(ctx as unknown as never, room as unknown as AudioNode);
+  const length = m.countIn(0, 8, 0.5, 4);
+  assert(Math.abs(length - 4) < 1e-9, `two bars at 120 should last 4 s, got ${length}`);
+  assert(oscillators.length === 8, `${oscillators.length} count-in clicks`);
+  const landed = oscillators.flatMap((o) => o.outs.map((e) => e.node))
+    .flatMap((g) => g.outs.map((e) => e.node));
+  assert(landed.length > 0 && landed.every((n) => n === room),
+    'every count-in click lands on the monitor path');
+  assert(!landed.includes(dest), 'and none of them goes straight to the speakers');
+
+  const runtime = readFileSync('src/renderer/daw/engine/daw-runtime.ts', 'utf8');
+  assert(/this\.metronome\.countIn\(/.test(runtime),
+    'the transport counts in through the metronome');
+  assert(!/scheduleCountIn/.test(runtime),
+    'and no longer through a generator of its own');
+  // With the numbers the PLAN worked out, not numbers worked out again here.
+  // Re-deriving them from `session.tempoBpm` is the bug this replaced: four
+  // clicks at 120 bpm into a take that starts at 90.
+  const rolling = runtime.slice(runtime.indexOf('async record('),
+    runtime.indexOf('async record(') + 2400);
+  assert(/plan\.countInBeats/.test(rolling) && /plan\.countInBeatSec/.test(rolling)
+    && /plan\.countInBeatsPerBar/.test(rolling),
+    'the count-in is sounded from the plan\'s own numbers');
+  assert(!/tempoBpm/.test(rolling),
+    'and the take no longer reaches for the session tempo');
+  const recorder = readFileSync('src/renderer/daw/engine/recorder.ts', 'utf8');
+  assert(!/createOscillator/.test(recorder),
+    'the recorder is out of the click business entirely');
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 const passed = results.filter((r) => r.pass).length;

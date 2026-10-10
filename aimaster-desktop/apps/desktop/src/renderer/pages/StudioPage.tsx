@@ -413,7 +413,7 @@ export default function StudioPage() {
   /** Write this song's work down, keyed by its path. */
   const saveSettings = useCallback(() => {
     if (!selectedFile) return;
-    const entry = saveSongSettings({
+    const res = saveSongSettings({
       filePath: selectedFile,
       state,
       freeBands,
@@ -423,10 +423,31 @@ export default function StudioPage() {
       referenceCurveDb: reference.curveDb ? [...reference.curveDb] : null,
       profile,
     });
-    setSavedAt(entry.savedAt);
+    // A save that did not happen must not look like one that did. This used
+    // to set savedAt, clear the dirty flag and say "저장했습니다"
+    // unconditionally, because the storage layer swallowed its own failure
+    // — so a full storage produced exactly the reported symptom: the badge
+    // went green and the master came out as the original.
+    if (!res.entry) {
+      notify(
+        '설정을 저장하지 못했습니다 — 저장 공간이 꽉 찼습니다. '
+        + '다른 곡의 저장된 설정을 지운 뒤 다시 시도하세요.',
+        'error',
+      );
+      return;   // dirty stays true: the work is still unsaved, and says so.
+    }
+    setSavedAt(res.entry.savedAt);
     setDirty(false);
     refreshStudioSaved();
-    notify(`${changedModules(state).length}개 모듈 설정을 저장했습니다`, 'success');
+    const n = changedModules(state).length;
+    notify(
+      res.evicted > 0
+        // Freeing space threw away other songs' work. Saying so is the
+        // difference between a trade-off and a loss nobody was told about.
+        ? `${n}개 모듈 설정을 저장했습니다 — 공간 확보를 위해 오래된 ${res.evicted}곡의 저장 설정을 지웠습니다`
+        : `${n}개 모듈 설정을 저장했습니다`,
+      res.evicted > 0 ? 'warning' : 'success',
+    );
   }, [selectedFile, state, freeBands, masterBypass, appliedPreset, reference, profile, refreshStudioSaved, notify]);
 
   /** Throw this song's saved work away and go back to defaults. */

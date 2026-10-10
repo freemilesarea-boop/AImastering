@@ -23,12 +23,19 @@ import {
   defaultTempoMap, describeTempoMap, formatBarBeat, gridLines, isConstantTempo,
   meterAtBar, meterAtBeat, normaliseTempoMap, removeMeterEvent, removeTempoEvent,
   secToBeat, snapSecToBar, snapSecToBeats, tempoAtBeat, tempoAtSec, tempoMapKey,
-  tempoMapOf, updateTempoEvent, withTempoMap,} from '../src/renderer/daw/model/tempo-map.js';
+  tempoMapOf, updateTempoEvent, } from '../src/renderer/daw/model/tempo-map.js';
+import { withTempoMap } from '../src/renderer/daw/model/tempo-reanchor.js';
 import {
   DEFAULT_WARP, buildWarpMap, constantTempo, sessionWarpTempo, sourceToDest,} from '../src/renderer/daw/model/warp.js';
-import { createSession} from '../src/renderer/daw/model/session-ops.js';
+import {
+  addFile, addTrack, createClip, createSession, createTrack, updateClips, updateTrack,
+} from '../src/renderer/daw/model/session-ops.js';
+import { createLane} from '../src/renderer/daw/model/automation.js';
+import { createNote} from '../src/renderer/daw/model/midi.js';
+import { makeChord} from '../src/renderer/daw/model/chords.js';
+import { tempiDiffer } from '../src/renderer/daw/model/tempo-reanchor.js';
 import { serializeDawSession, deserializeDawSession} from '../src/renderer/daw/model/session-io.js';
-import type { Clip, TempoMap} from '../src/renderer/daw/model/types.js';
+import type { Clip, DawSession, TempoMap} from '../src/renderer/daw/model/types.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
@@ -40,6 +47,143 @@ function assert(c: unknown, m: string): void { if (!c) throw new Error(m); }
 function near(a: number, b: number, tol: number, what: string): void {
   assert(Math.abs(a - b) <= tol, `${what}: expected ${b}, got ${a}`);
 }
+
+/**
+ * A song written on bar lines at 120 bpm.
+ *
+ * One audio clip and one MIDI part on bar 5, an automation point, a marker and
+ * a chord on bar 9, and a section on each.  Everything a tempo edit could leave
+ * behind, in one fixture.
+ */
+function barLineSong(): DawSession {
+  let session = createSession('bar lines', 48_000);
+  const audio = createTrack('Gtr', 'audio');
+  const midi = createTrack('Keys', 'instrument');
+  session = addTrack(session, audio);
+  session = addTrack(session, midi);
+  session = addFile(session, {
+    id: 'f1', path: '/virtual/f1.wav', name: 'f1',
+    durationSec: 60, sampleRate: 48_000, channels: 2,
+  });
+  // Bar 5 of 4/4 at 120 bpm is beat 16, which is 8 s; a bar is 2 s.
+  session = updateClips(session, audio.id, () => [
+    createClip('f1', 'audio@bar5', { startSec: 8, offsetSec: 3, durationSec: 2 }),
+  ]);
+  session = updateClips(session, midi.id, () => [
+    { ...createClip('f1', 'part@bar5', { startSec: 8, offsetSec: 0, durationSec: 2 }),
+      kind: 'midi' as const, notes: [createNote({ startBeat: 0, durationBeat: 1 })] },
+  ]);
+  session = updateTrack(session, audio.id, (t) => ({
+    ...t,
+    automation: [{ ...createLane({ kind: 'volume' }, 0), points: [{ timeSec: 16, value: -6 }] }],
+  }));
+  return {
+    ...session,
+    markers: [{ id: 'mk1', name: 'chorus', timeSec: 16 }],
+    chordTrack: [{ id: 'ch1', timeSec: 8, chord: makeChord(0, 'maj') }],
+    sections: [
+      { id: 'sc1', name: '', kind: 'verse', startSec: 8 },
+      { id: 'sc2', name: '', kind: 'chorus', startSec: 16 },
+    ],
+  };
+}
+
+/** Every musical position in a session, as bar|beat, for one comparison. */
+function positions(session: DawSession): string {
+  const map = tempoMapOf(session);
+  const where = (sec: number): string => formatBarBeat(map, sec, false);
+  const clips = session.tracks.flatMap((t) => t.playlists.flatMap((p) => p.clips))
+    .map((c) => `${c.kind}@${where(c.startSec)}`);
+  const points = session.tracks.flatMap((t) => t.automation.flatMap((l) => l.points))
+    .map((pt) => `auto@${where(pt.timeSec)}`);
+  return [
+    ...clips, ...points,
+    ...session.markers.map((m) => `mark@${where(m.timeSec)}`),
+    ...session.chordTrack.map((c) => `chord@${where(c.timeSec)}`),
+    ...(session.sections ?? []).map((sc) => `section@${where(sc.startSec)}`),
+  ].join(' ');
+}
+
+const BAR_LINES = 'audio@5|1 midi@5|1 auto@9|1 mark@9|1 chord@5|1 section@5|1 section@9|1';
+
+// ── Re-anchoring ────────────────────────────────────────────────────────────
+
+check('a tempo edit leaves the arrangement on the bars it was written on', () => {
+  // The failure this prevents, measured before it was fixed: slowing the song
+  // to 100 bpm put the part, the clip and the chord written on bar 5 at 4|2 and
+  // the marker and the automation point written on bar 9 at 7|3; a jump to
+  // 140 bpm at bar 2 put them at 5|3 and 10|1.  At 100 bpm the part's 8.00 s
+  // was beat 13.33 — not even on a beat.
+  const song = barLineSong();
+  assert(positions(song) === BAR_LINES, `the fixture itself: ${positions(song)}`);
+  const flat = tempoMapOf(song);
+  const edits: [string, TempoMap][] = [
+    ['the whole song at 100 bpm',
+      normaliseTempoMap({ ...flat, tempos: [{ ...flat.tempos[0]!, bpm: 100 }] })],
+    ['a jump to 90 bpm at bar 2',
+      addTempoEvent(flat, 4, 90, 'jump')],
+    ['a jump to 140 bpm at bar 2',
+      addTempoEvent(flat, 4, 140, 'jump')],
+    ['a ramp to 60 bpm at bar 3',
+      addTempoEvent(flat, 8, 60, 'ramp')],
+  ];
+  for (const [what, map] of edits) {
+    const after = withTempoMap(song, map);
+    assert(positions(after) === BAR_LINES, `${what}: ${positions(after)}`);
+  }
+});
+
+check('a meter change rebuilds nothing, because it moves nothing', () => {
+  // Meters number the bars; they never move a beat.  So a meter edit must not
+  // go near the conversion, and the way to say that without measuring float
+  // noise is IDENTITY: the tracks it did not have to touch are the same arrays
+  // it was given.  A meter change that rebuilt every clip in the session would
+  // invalidate every memoised row in the arrangement for nothing.
+  //
+  // Measured, for the record: a round trip through the same map is accurate to
+  // about 1.4e-14 s, so skipping it is not what keeps positions exact — it is
+  // what keeps them the same OBJECTS.
+  const song = barLineSong();
+  const after = withTempoMap(song, addMeterEvent(tempoMapOf(song), 3, 3, 4));
+  assert(after.tracks === song.tracks, 'the tracks were rebuilt by a meter change');
+  assert(after.markers === song.markers, 'the markers were rebuilt by a meter change');
+  assert(after.chordTrack === song.chordTrack, 'the chords were rebuilt by a meter change');
+  assert(!tempiDiffer(tempoMapOf(song), tempoMapOf(after)), 'the tempi were reported as different');
+  assert(meterAtBar(tempoMapOf(after), 3).numerator === 3, 'and the meter did change');
+  assert(positions(after) !== BAR_LINES, 'a 3/4 bar 3 must renumber the bars above it');
+});
+
+check('a length is musical for a part and for a warped clip, and not for audio', () => {
+  // A MIDI part is as long as its music; an unwarped audio clip is as long as
+  // its audio, whatever the tempo says.  So a tempo change opens gaps between
+  // audio clips — that is the honest answer, not a bug to paper over.
+  const song = barLineSong();
+  const half = normaliseTempoMap({
+    ...tempoMapOf(song), tempos: [{ ...tempoMapOf(song).tempos[0]!, bpm: 60 }],
+  });
+  const after = withTempoMap(song, half);
+  const audioClip = after.tracks[0]!.playlists[0]!.clips[0]!;
+  const part = after.tracks[1]!.playlists[0]!.clips[0]!;
+  near(audioClip.durationSec, 2, 1e-9, 'the audio is still two seconds of audio');
+  near(part.durationSec, 4, 1e-9, 'the part is still one bar, which is now four seconds');
+  // And the offset into the source file is in the SOURCE's time, so it stays.
+  near(audioClip.offsetSec, 3, 1e-9, 'the offset into the file did not move');
+
+  const warped = withTempoMap({
+    ...song,
+    tracks: song.tracks.map((t, i) => (i !== 0 ? t : {
+      ...t,
+      playlists: t.playlists.map((p) => ({
+        ...p,
+        clips: p.clips.map((c) => ({
+          ...c, warp: { ...DEFAULT_WARP, enabled: true, followTempo: true },
+        })),
+      })),
+    })),
+  }, half);
+  near(warped.tracks[0]!.playlists[0]!.clips[0]!.durationSec, 4, 1e-9,
+    'a clip warped to follow the tempo keeps its musical length');
+});
 
 /** 120 BPM at the start, ramping to 240 by beat 16, then flat. */
 function rampMap(): TempoMap {

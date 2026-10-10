@@ -28,6 +28,8 @@ import { encodeAudioBuffer, encodeWav, type WavBitDepth, type WavMetadata } from
 import { provenanceOf } from '../model/provenance-session.js';
 import { nextId } from '../model/ids.js';
 import { DEFAULT_MIDI_CONFIG } from '../model/midi.js';
+import { probeRendererLatency } from './plugin-kit.js';
+import { insertLatency } from '../model/routing.js';
 
 export interface RenderRange {
   startSec: number;
@@ -60,9 +62,206 @@ function makeOfflineContext(channels: number, frames: number, sampleRate: number
   return new Ctor(channels, Math.max(1, frames), sampleRate);
 }
 
-/** Decode everything the render needs before the offline pass starts. */
+/**
+ * Decode everything the render needs, and REFUSE if any of it is unreadable.
+ *
+ * Measured before this existed: a session whose source had moved rendered
+ * 96 000 frames at a peak of 0.0 and returned them without an error — a
+ * silent master, written to disk, indistinguishable from a quiet mix until
+ * somebody played it back somewhere else.  Playback can carry on with what it
+ * has, because a missing stem is obvious the moment you press play; a file on
+ * disk is not, and it is the one that gets sent to a client.
+ *
+ * Only the files the render will actually PLAY are decoded and judged.  A
+ * session often carries sources no clip uses any more, and refusing over one
+ * of those would block a bounce that was never going to touch it.
+ */
 async function preloadFiles(session: DawSession, ctx: BaseAudioContext): Promise<void> {
-  await preloadAll(ctx, session.files);
+  const needed = neededFiles(session);
+  const failures = await preloadAll(ctx, needed);
+  if (failures.length === 0) return;
+  const named = failures
+    .map((f) => session.files.find((x) => x.id === f.id)?.name ?? f.path)
+    .slice(0, 4);
+  throw new Error(
+    `오디오 파일 ${failures.length}개를 읽을 수 없어 렌더를 멈췄습니다 — `
+    + `${named.join(', ')}${failures.length > named.length ? ' 외' : ''}. `
+    + '파일을 제자리에 두거나 해당 클립을 지운 뒤 다시 시도하세요.');
+}
+
+/** The sources some non-muted audio clip in this session refers to. */
+function neededFiles(session: DawSession): Array<{ id: string; path: string }> {
+  const wanted = new Set<string>();
+  for (const track of session.tracks) {
+    if (track.mute) continue;
+    for (const clip of trackClips(track)) {
+      if (clip.kind === 'audio' && !clip.muted) wanted.add(clip.fileId);
+    }
+  }
+  return session.files.filter((f) => wanted.has(f.id));
+}
+
+/**
+ * Seconds of material scheduled between pauses in an offline render.
+ *
+ * Small enough that the voices of one chunk are reaped before the next is
+ * placed, large enough that the pause bookkeeping is noise.
+ */
+const RENDER_CHUNK_SEC = 2;
+
+/** What a pausable renderer has to offer, and all this needs of it. */
+export interface RenderPausing {
+  suspend: (atSec: number) => Promise<void>;
+  resume: () => void;
+}
+
+/**
+ * Walk a render in chunks, running `onPause` at every boundary.
+ *
+ * Separated out because the ORDER is the part that can be wrong and the part
+ * no audio host is needed to check: the next pause has to be registered while
+ * the clock is still stopped, or it can be run past before it exists, and
+ * `onPause` has to happen between the two.  A host that cannot do this at all
+ * is a different question — see `canPauseRenders`.
+ */
+export async function pauseEveryChunk(
+  pausing: RenderPausing, lengthSec: number, chunkSec: number,
+  onPause: () => void,
+): Promise<void> {
+  const step = Math.max(0.01, chunkSec);
+  let next = step;
+  let paused = next < lengthSec ? pausing.suspend(next) : null;
+  while (paused) {
+    await paused;
+    onPause();
+    next += step;
+    // Registered BEFORE the resume, on purpose.
+    paused = next < lengthSec ? pausing.suspend(next) : null;
+    pausing.resume();
+  }
+}
+
+/**
+ * Can this renderer be paused mid-render, more than once, and carry on
+ * correctly?
+ *
+ * Asked by doing exactly what the chunked render does — pause, register the
+ * NEXT pause while stopped, resume, schedule into the last chunk, read the
+ * output back — once per process, because asking less is not enough.  Two
+ * weaker versions of this check both said yes and shipped a broken render:
+ * one only waited for a pause to arrive, and the next did a single pause.
+ * `node-web-audio-api` passes both and then panics on the SECOND pause,
+ * which is what turned three stem-export checks red.  A host that cannot do
+ * the whole dance gets the whole-session schedule instead.
+ */
+let suspendable: boolean | null = null;
+async function canPauseRenders(sampleRate: number): Promise<boolean> {
+  if (suspendable !== null) return suspendable;
+  suspendable = false;
+  try {
+    const ctx = makeOfflineContext(1, Math.ceil(sampleRate * 0.3), sampleRate);
+    const pausing = ctx as unknown as {
+      suspend?: (t: number) => Promise<void>;
+      resume?: () => Promise<void>;
+    };
+    if (typeof pausing.suspend !== 'function' || typeof pausing.resume !== 'function') {
+      return false;
+    }
+    const ones = ctx.createBuffer(1, Math.ceil(sampleRate * 0.03), sampleRate);
+    ones.getChannelData(0).fill(1);
+    const tone = (at: number): void => {
+      const src = ctx.createBufferSource();
+      src.buffer = ones;
+      src.connect(ctx.destination);
+      src.start(at);
+    };
+    tone(0);
+
+    const waitFor = async (paused: Promise<void>): Promise<boolean> => Promise.race([
+      paused.then(() => true, () => false),
+      new Promise<boolean>((done) => { globalThis.setTimeout(() => done(false), 1000); }),
+    ]);
+
+    let paused = pausing.suspend(0.1);
+    const rendering = ctx.startRendering();
+    if (!await waitFor(paused)) {
+      await rendering.catch(() => undefined);
+      return false;
+    }
+    // Register the second pause while stopped, exactly as the render does.
+    paused = pausing.suspend(0.2);
+    void pausing.resume();
+    if (!await waitFor(paused)) {
+      await rendering.catch(() => undefined);
+      return false;
+    }
+    // Something scheduled in the LAST chunk has to be heard.
+    tone(0.22);
+    void pausing.resume();
+    const out = await rendering;
+    const ch = out.getChannelData(0);
+    const energy = (fromSec: number, toSec: number): number => {
+      let sum = 0;
+      const a = Math.round(fromSec * sampleRate);
+      const b = Math.min(ch.length, Math.round(toSec * sampleRate));
+      for (let i = a; i < b; i += 1) sum += ch[i]! * ch[i]!;
+      return sum;
+    };
+    suspendable = energy(0, 0.02) > 0 && energy(0.23, 0.25) > 0;
+  } catch {
+    suspendable = false;
+  }
+  return suspendable;
+}
+
+/**
+ * Render a prepared graph, scheduling as it goes.
+ *
+ * Offline used to schedule EVERYTHING up front and render in one go, and that
+ * left no moment for the player to reap a finished voice — so every note's
+ * nodes stayed connected and were processed for the rest of the render.
+ * Measured: 256 notes inside the first eight seconds cost 2459 ms to render
+ * over eight seconds, 3269 over sixteen and 4654 over twenty-four, which is
+ * 137 ms of work per second of silence.  A 24-track, 30-second bounce took
+ * four and a quarter minutes — a tenth of real time.
+ *
+ * Pausing the render on a chunk boundary and ticking the player is the same
+ * look-ahead the live transport walks, which is also why it reaps: the cost
+ * stops growing with the length of the piece.  The same three renders then
+ * cost 1353 / 1219 / 1279 ms and the bounce 18.8 s — 1.6x real time, with
+ * the rendered peak unchanged.  Where a renderer cannot be paused, the old
+ * whole-session schedule still runs.
+ */
+async function renderChunked(
+  ctx: OfflineAudioContext, session: DawSession, player: ClipPlayer,
+  fromSec: number, toSec: number, lengthSec: number, sampleRate: number,
+): Promise<AudioBuffer> {
+  player.useResidentBuffers();
+  if (!await canPauseRenders(sampleRate)) {
+    player.scheduleAll(session, fromSec, toSec);
+    return ctx.startRendering();
+  }
+
+  const native = ctx as unknown as {
+    suspend: (t: number) => Promise<void>; resume: () => Promise<void>;
+  };
+  const pausing: RenderPausing = {
+    suspend: (at) => native.suspend(at),
+    resume: () => { void native.resume(); },
+  };
+  // Lead zero: an offline render starts at its first sample, not 60 ms later.
+  player.start(session, fromSec, 0);
+  player.tick(session, RENDER_CHUNK_SEC * 2);
+
+  const rendering = ctx.startRendering();
+  await pauseEveryChunk(pausing, lengthSec, RENDER_CHUNK_SEC, () => {
+    player.tick(session, RENDER_CHUNK_SEC * 2);
+  });
+  // No `player.stop()` here.  The render is over, its nodes are finished, and
+  // stopping a source on a context that has completed panicked
+  // `node-web-audio-api` — two stem-export checks went red before this line
+  // came out.  The player is discarded with the context.
+  return rendering;
 }
 
 /**
@@ -77,6 +276,11 @@ export async function renderSession(
   const sampleRate = options.sampleRate ?? session.sampleRate;
   const tail = options.tailSec ?? 2;
   const lengthSec = Math.max(0.01, range.endSec - range.startSec + tail);
+  // Before anything is BUILT: a shaper's oversampling and a compressor's
+  // look-ahead are worth different numbers of samples in different renderers,
+  // and the dry paths inside the devices are delayed to match.  Measured once
+  // per rate and cached, so this is free after the first render.
+  await probeRendererLatency(sampleRate);
   const ctx = makeOfflineContext(2, Math.ceil(lengthSec * sampleRate), sampleRate);
 
   await preloadFiles(session, ctx);
@@ -84,9 +288,8 @@ export async function renderSession(
   const engine = new MixerEngine(ctx, ctx.destination, { meters: false });
   engine.sync(session);
   const player = new ClipPlayer(engine);
-  player.scheduleAll(session, range.startSec, range.endSec + tail);
-
-  const rendered = await ctx.startRendering();
+  const rendered = await renderChunked(
+    ctx, session, player, range.startSec, range.endSec + tail, lengthSec, sampleRate);
   engine.dispose();
   return rendered;
 }
@@ -122,7 +325,36 @@ export async function renderTrack(
   };
 
   const end = trackClips(track).reduce((max, c) => Math.max(max, clipEnd(c)), 0);
-  return renderSession(isolated, { startSec: 0, endSec: end }, options);
+  const sampleRate = options.sampleRate ?? session.sampleRate;
+  const rendered = await renderSession(isolated, { startSec: 0, endSec: end }, options);
+  // A latent channel renders its own latency into the FILE, and nothing
+  // downstream knows to take it off again: the clip goes back at the same
+  // start, the inserts that caused it are bypassed or gone, and the track
+  // plays late by exactly that much.  Measured before this line existed, a
+  // track frozen with a linear-phase EQ came out 511 samples — 10.6 ms —
+  // behind a track next to it that had been level with it a moment earlier;
+  // a compressor cost 384 and a saturator 128.  Freeze is meant to change
+  // the CPU and nothing else.
+  return trimLeading(rendered, insertLatency(track, sampleRate));
+}
+
+/**
+ * Drop `samples` from the front of a buffer, keeping its length in time.
+ *
+ * The tail is not extended: a render already carries `tailSec` of it, so
+ * taking the head off shortens the file by the latency and loses nothing but
+ * silence.
+ */
+function trimLeading(buffer: AudioBuffer, samples: number): AudioBuffer {
+  const drop = Math.max(0, Math.min(Math.round(samples), buffer.length - 1));
+  if (drop === 0) return buffer;
+  const ctx = makeOfflineContext(buffer.numberOfChannels, 1, buffer.sampleRate);
+  const out = ctx.createBuffer(
+    buffer.numberOfChannels, buffer.length - drop, buffer.sampleRate);
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    out.getChannelData(c).set(buffer.getChannelData(c).subarray(drop));
+  }
+  return out as unknown as AudioBuffer;
 }
 
 export interface TrackWindowOptions extends RenderOptions {
@@ -145,6 +377,27 @@ export interface TrackWindowOptions extends RenderOptions {
  * seconds of rendering for numbers that a well-chosen thirty seconds gives
  * just as well, and a button that takes ten seconds is a button nobody
  * presses twice.
+ *
+ * ── Isolated means their PROCESSING goes too, not only their sound ─────────
+ *
+ * Muting the other tracks stops them being heard.  It does not stop them
+ * being compensated for: delay compensation shifts the whole render by the
+ * deepest latency anywhere in the session, and a muted track is still in the
+ * session.  So a linear-phase EQ sitting on a track nobody is looking at
+ * moved this window by exactly its own 511 samples — cross-correlation 1.0000
+ * against the unshifted render, which is what says it is a shift and not a
+ * change of tone.
+ *
+ * 10.6 ms of window is not audible and it is not harmless.  It moved 63 of a
+ * source profile's 129 fields, and it halved the attack the compressor advice
+ * recommends — 56 ms against 28 ms, off the same audio, because the burst the
+ * window starts on is a different part of the burst.  The advice cache could
+ * not see it either: its key covers the measured track's clips and inserts,
+ * so the same key held two different measurements and the user got whichever
+ * was taken first.
+ *
+ * Both callers of this ask for one channel, on its own.  Neither wants
+ * another channel's latency in the answer.
  */
 export async function renderTrackWindow(
   session: DawSession,
@@ -176,7 +429,10 @@ export async function renderTrackWindow(
         };
       }
       if (t.kind === 'master') return { ...t, inserts: [], volumeDb: 0, pan: 0, mute: false, solo: false };
-      return { ...t, mute: true, solo: false };
+      // `inserts: []` is the line that keeps the answer about this track.
+      // Their delay is what leaks, and a muted track has no sound for them to
+      // be doing anything to.
+      return { ...t, inserts: [], mute: true, solo: false };
     }),
   };
 

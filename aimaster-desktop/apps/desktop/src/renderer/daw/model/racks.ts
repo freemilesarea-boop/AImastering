@@ -181,11 +181,18 @@ const BLUEPRINTS: readonly RackBlueprint[] = [
     id: 'loui-vocal',
     name: 'LOUI VOCAL RACK',
     description: '보컬 한 채널을 네 개 노브로',
+    // The EQ is here so PRESENCE has a band of its own.  Without it the macro
+    // owned the dynamic EQ's FREQUENCY while CLEAN owned its range — and the
+    // range's default is 0, which switches the band off, so PRESENCE was
+    // sweeping the corner of a filter that was not doing anything.  Measured,
+    // it changed the render by 0.0 % with CLEAN down.  The drum rack's ATTACK
+    // already works this way (a mid bell on an eq3) and measures 100 %.
     devices: [
       { pluginId: 'denoise',      label: 'DENOISE' },
       { pluginId: 'pitchcorrect', label: 'PITCH' },
       { pluginId: 'dyneq',        label: 'DYN EQ' },
       { pluginId: 'comp',         label: 'COMP' },
+      { pluginId: 'eq3',          label: 'EQ' },
       { pluginId: 'deesser',      label: 'DE-ESSER' },
       { pluginId: 'saturation',   label: 'SATURATION' },
       { pluginId: 'exciter',      label: 'AIR' },
@@ -197,32 +204,51 @@ const BLUEPRINTS: readonly RackBlueprint[] = [
           { device: 0, param: 'amount',      from: 0,  to: 0.85 },
           { device: 0, param: 'thresholdDb', from: -60, to: -42 },
           { device: 2, param: 'rangeDb',     from: 0,  to: -8 },
-          { device: 4, param: 'amount',      from: 0,  to: 0.55 },
+          { device: 5, param: 'amount',      from: 0,  to: 0.55 },
         ],
       },
       {
+        // The compressor belongs to ONE knob, and it is this one: thickness is
+        // compression.  It used to own the threshold alone while PRESENCE owned
+        // the ratio, whose `from` is where the ratio sits at rest — so with
+        // PRESENCE down the ratio was pinned at 1 and the threshold had nothing
+        // to work with.  Measured, BODY changed the render by 1.9 % at full,
+        // against 27.8 % for CLEAN and 39.6 % for PRESENCE.  Verified the same
+        // way standalone: threshold −22 with ratio 1 moves a vocal 0.01 dB, and
+        // with ratio 4 it moves 2.77 dB.
+        //
+        // The ratio rests at 1.6 rather than 1, so the chain is always lightly
+        // compressing and PRESENCE's attack has something to sharpen.  The
+        // makeup comes with it, because a thickness knob that drops the level
+        // 2.56 dB is a volume knob wearing a disguise; with it the level moves
+        // +0.44 dB and the render changes 12.3 %.
         name: 'BODY', label: '두께',
         targets: [
-          { device: 5, param: 'driveDb',     from: 0,  to: 10 },
-          { device: 5, param: 'mix',         from: 0,  to: 0.45 },
-          { device: 3, param: 'thresholdDb', from: -6, to: -22 },
+          { device: 3, param: 'thresholdDb', from: -6,  to: -22 },
+          { device: 3, param: 'ratio',       from: 1.6, to: 3.5 },
+          { device: 3, param: 'makeupDb',    from: 0,   to: 3 },
+          { device: 6, param: 'driveDb',     from: 0,   to: 10 },
+          { device: 6, param: 'mix',         from: 0,   to: 0.45 },
         ],
       },
       {
+        // Speed and a forward band.  The dynamic EQ's frequency is gone from
+        // here: that band is CLEAN's cut, and `rangeDb` only goes down, so a
+        // presence macro had no business steering it.
         name: 'PRESENCE', label: '존재감',
         targets: [
-          { device: 3, param: 'ratio',    from: 1,  to: 3.5 },
-          { device: 3, param: 'attackMs', from: 30, to: 8 },
-          { device: 3, param: 'makeupDb', from: 0,  to: 3 },
-          { device: 2, param: 'freqHz',   from: 300, to: 2600 },
+          { device: 4, param: 'midDb',     from: 0,   to: 3.5 },
+          { device: 4, param: 'midHz',     from: 900, to: 2600 },
+          { device: 3, param: 'attackMs',  from: 30,  to: 8 },
+          { device: 3, param: 'releaseMs', from: 120, to: 80 },
         ],
       },
       {
         name: 'AIR', label: '공기감',
         targets: [
-          { device: 6, param: 'amount', from: 0,    to: 0.8 },
-          { device: 6, param: 'mix',    from: 0,    to: 0.4 },
-          { device: 6, param: 'freqHz', from: 4000, to: 7000 },
+          { device: 7, param: 'amount', from: 0,    to: 0.8 },
+          { device: 7, param: 'mix',    from: 0,    to: 0.4 },
+          { device: 7, param: 'freqHz', from: 4000, to: 7000 },
         ],
       },
     ],

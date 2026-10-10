@@ -15,9 +15,13 @@
 // `audio:master` exactly as before, so nothing regresses for someone who
 // never opens the Studio.
 //
-// The main-process handler already falls back to the Python renderer on any
-// Rust failure, so a render here cannot fail merely because the Rust backend
-// is missing on this machine.
+// The main-process handler used to fall back to the Python renderer on any
+// Rust failure, which is why this file once said "a render here cannot fail
+// merely because the Rust backend is missing on this machine".  It could
+// not fail, and that was the bug: the Python renderer takes five scalar
+// options and cannot read a chain config, so the fallback returned a master
+// with none of the Studio work in it and reported success.  It now refuses,
+// and `chainConfigHonored` is how it says so.
 
 import { buildChainConfig } from '../chain-config.js';
 import { freeBandToWire } from '../modules/eq-graph-model.js';
@@ -32,6 +36,15 @@ interface RustRenderResponse {
   ok: boolean;
   backend: 'rust' | 'python';
   fallbackUsed: boolean;
+  /**
+   * False when the chain config was sent but could not be applied.
+   *
+   * Absent on an older main process, which is why it is checked for
+   * `=== false` rather than falsiness — treating "the field is missing" as
+   * "the settings were dropped" would fail every render on a mismatched
+   * build.
+   */
+  chainConfigHonored?: boolean;
   outputPath?: string;
   previewPath?: string;
   metrics?: unknown;
@@ -161,6 +174,17 @@ export async function renderSong(input: RenderSongInput): Promise<RenderSongOutp
     options: { ...options, targetLufs: target },
   }) as RustRenderResponse;
 
+  // The settings were saved; what failed is the engine that applies them.
+  // So the message says that, instead of leaving the user to conclude — as
+  // they did — that 설정 저장 does not work.
+  if (res.chainConfigHonored === false) {
+    throw new Error(
+      '스튜디오 설정을 반영할 수 없어 마스터링을 중단했습니다. '
+      + '설정은 저장되어 있습니다 — 앱을 다시 설치하거나 업데이트한 뒤 다시 시도하세요. '
+      + `(오프라인 체인 엔진 사용 불가: ${res.error || '원인 불명'})`,
+    );
+  }
+
   if (!res.ok || !res.outputPath) {
     throw new Error(res.error || 'render failed');
   }
@@ -181,11 +205,15 @@ export async function renderSong(input: RenderSongInput): Promise<RenderSongOutp
       ?? input.analysis.loudness,
     spectralBalance: null,
     analysisReport: null,
+    // Reaching here with `fallbackUsed` means the main process is older
+    // than the refusal above: it rendered through the engine that cannot
+    // read a chain config and called it success.  Say so plainly rather
+    // than "일부가 반영되지 않았을 수 있습니다" — none of it was.
     pipelineWarnings: res.fallbackUsed
       ? [{
           code: 'rust_offline_fallback',
           level: 'warning',
-          userMessage: 'Rust 렌더에 실패해 기존 엔진으로 처리했습니다. 스튜디오 설정 일부가 반영되지 않았을 수 있습니다.',
+          userMessage: '오프라인 체인 엔진을 쓸 수 없어 기존 엔진으로 처리했습니다. 이 파일에는 스튜디오 설정이 반영되지 않았습니다.',
         }]
       : [],
     processingTimeSec: (res.renderMs ?? 0) / 1000,

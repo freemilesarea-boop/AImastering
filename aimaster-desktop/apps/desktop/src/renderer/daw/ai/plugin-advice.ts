@@ -24,6 +24,7 @@
 
 import type { SourceProfile } from './source-profile.js';
 import { findPlugin } from '../engine/plugins.js';
+import { harmonyErrorCents, harmonyWindowForMs } from '../engine/pitch-shift.js';
 
 export interface PluginAdvice {
   pluginId: string;
@@ -124,6 +125,16 @@ const ADVISORS: Record<string, Advisor> = {
 
   dcblock: () => ({ refuse: '설정할 파라미터가 없습니다 — 켜면 그게 전부입니다' }),
 
+  // The only device here that refuses because there is nothing to advise
+  // rather than nothing to set.  Tilt, Average, Hold and Scope are all
+  // properties of the DISPLAY, and no measurement of the audio decides how
+  // somebody wants to look at it.  An advisor that picked a tilt from the
+  // spectrum would be choosing what the spectrum should look like, which is
+  // a way of deciding the answer before the measurement.
+  analyzer: () => ({
+    refuse: '분석기는 소리를 바꾸지 않습니다 — 기울기와 평균은 보는 방식이지 측정이 정하는 값이 아닙니다',
+  }),
+
   // ── EQ ──────────────────────────────────────────────────────────────────
 
   eq3: (p) => {
@@ -140,6 +151,168 @@ const ADVISORS: Record<string, Advisor> = {
       headline: `${hz(hpf)} 하이패스${low < -0.5 ? ` · 머드 ${db(low)}` : ''}${high > 0.5 ? ` · 에어 ${db(high)}` : ''}`,
       evidence,
       confidence: 0.7,
+    };
+  },
+
+  matcheq: (p) => {
+    // The curve is NOT advised, and cannot be: it is the difference between a
+    // reference's spectrum and this one, and an advisor is handed only this
+    // one.  What it CAN decide is what to do with a curve once it exists, and
+    // those three controls are where a match is won or lost.
+    //
+    //   · SMOOTH separates tonality from arrangement.  Two pieces of music
+    //     never agree band to band, and the finer the resolution the more of
+    //     the disagreement is which note was played.  A dense, busy source
+    //     needs more smoothing than a sparse one — and density reads as a low
+    //     crest factor, because everything is sounding at once.
+    //   · LIMIT is how far a reference may be believed.  A source whose low
+    //     end starts high is missing a sub the reference may well have, and
+    //     the difference there will be enormous and meaningless.
+    //   · AMOUNT belongs under 100 always.  Matching a reference exactly
+    //     makes a worse copy of it, and the number engineers settle on is
+    //     around two thirds.
+    const dense = 1 - percussive(p);
+    const smoothOct = clamp(round(0.3 + dense * 0.5, 0.05), 0.2, 1);
+    // A source with no bottom cannot be given one by an EQ, so the limit is
+    // tightened rather than letting the curve ask for twenty decibels of it.
+    const thin = p.lowRolloffHz > 90;
+    const limitDb = clamp(round(thin ? 4 : 7, 0.5), 0, 18);
+    const amount = 0.65;
+    return {
+      params: {
+        amount, smoothOct, limitDb,
+        // The middle length, measured rather than assumed.  A match curve is
+        // NOT broad enough for the shortest response — a band is 164 Hz wide
+        // at 785 Hz and 255 taps only build down to 1478 Hz — and on a 5.5 dB
+        // gap the middle length closed 1.24 dB of it against the short one's
+        // 1.75, for eight milliseconds more delay.  The long one reached 1.16
+        // for four times that, which is not a trade worth advising.
+        length: 1,
+        mix: 1, outDb: 0,
+      },
+      headline: `${Math.round(amount * 100)}% · ${smoothOct.toFixed(2)} 옥타브 평활 · `
+        + `한계 ${limitDb.toFixed(0)} dB — 커브는 레퍼런스를 재야 생깁니다`,
+      evidence: [
+        `크레스트 ${p.crestDb.toFixed(1)} dB`,
+        `저역 시작 ${hz(p.lowRolloffHz)}`,
+        `중심 ${hz(p.centroidHz)}`,
+      ],
+      // The three knobs follow the source; the curve is a measurement this
+      // advisor never sees, so it is not claiming to have matched anything.
+      confidence: 0.4,
+    };
+  },
+
+  harmonizer: (p) => {
+    // The INTERVAL is not advised, and the reason is not modesty.  A
+    // harmoniser shifts everything it is given by the same amount, so a third
+    // is only a third against one chord; over a progression it is a third
+    // above a scale that does not exist.  No measurement of a sound decides
+    // which interval belongs over it — that is the arrangement.
+    //
+    // The WINDOW it can decide, and there is a law for it rather than a
+    // preference.  The splice makes the output periodic at the window, so the
+    // spectrum is a comb at the window rate, and a shifted tone that misses a
+    // comb line is carried by its neighbours — worst case, half a spacing.
+    // Half a spacing is a fixed number of HERTZ and what that is worth in
+    // cents depends on where it lands, so a low source needs a long window
+    // and a bright one does not.  `harmonyWindowForMs` is that arithmetic.
+    //
+    // Aimed at the source's own low end rather than at an octave below it:
+    // aiming at the worst interval the controls allow would ask for the
+    // longest window on every source with any bass in it, which is a rule
+    // that stops telling anyone anything.  What is left over is reported.
+    const lowHz = clamp(p.lowRolloffHz, 40, 2000);
+    const windowMs = clamp(round(harmonyWindowForMs(lowHz, 25), 5), 20, 200);
+    const leftover = harmonyErrorCents(lowHz, windowMs / 1000);
+
+    // The MIX follows the crest factor.  A splice lands hardest on a
+    // transient — a long window drags more of the previous moment across it —
+    // so percussive material takes less of the wet path, and a sustained
+    // source can take a lot, because a splice inside a held note is where
+    // this technique hides best.
+    const perc = percussive(p);
+    const mix = clamp(round(0.45 - perc * 0.3, 0.05), 0.1, 0.45);
+    return {
+      params: {
+        windowMs, mix,
+        // Left where the device rests: one voice audible, one silent.
+        v1Db: -4, v2Db: -60,
+        spread: 0.6, outDb: 0,
+      },
+      headline: `창 ${windowMs.toFixed(0)} ms — ${hz(lowHz)} 에서 `
+        + `${leftover.toFixed(0)}센트 오차가 남습니다`
+        + ` · 블렌드 ${Math.round(mix * 100)}%`
+        + (perc > 0.6 ? ' (트랜지언트가 많아 낮춰 잡았습니다)' : ''),
+      evidence: [
+        `저역 시작 ${hz(p.lowRolloffHz)}`,
+        `크레스트 ${p.crestDb.toFixed(1)} dB`,
+        `창 반주기 ${(1000 / (2 * (windowMs / 1000) * 1000)).toFixed(1)} Hz`,
+      ],
+      // Two settings out of ten, and the two left alone are the ones that
+      // decide what it plays.
+      confidence: 0.35,
+    };
+  },
+
+  linphase: (p) => {
+    // The same corrective moves eq8 would make, decided the same way — but
+    // the LENGTH is the decision this device adds, and a measurement can
+    // genuinely make it.  Two things pull against each other:
+    //
+    //   · detail.  The response can only resolve what it is long enough to
+    //     resolve: 255 taps reach about 190 Hz at 48 kHz, 1023 about 47.  A
+    //     narrow cut low down needs the long one or it simply does not happen.
+    //   · PRE-RINGING.  A symmetric response rings ahead of the transient as
+    //     well as behind it, and longer means the ringing starts earlier.  On
+    //     a close-miked snare that is a tick before the hit.
+    //
+    // So: percussive material gets the short one and pays in accuracy;
+    // sustained material gets the long one, because there is no transient for
+    // the pre-ringing to sit in front of.
+    const perc = percussive(p);
+    const needsLowDetail = p.lowRolloffHz < 120 || (p.resonance?.hz ?? 1000) < 300;
+    const length = perc > 0.6 ? 0 : (needsLowDetail ? 2 : 1);
+
+    const hpf = clamp(round(highPassHz(p), 5), 20, 500);
+    const mud = clamp(round(-p.mudDb * 0.7, 0.5), -18, 18);
+    const air = clamp(round(p.airDb < -6 ? Math.min(4, -p.airDb * 0.35) : 0, 0.5), -18, 18);
+    const b1Hz = clamp(p.resonance?.hz ?? 400, 100, 2000);
+    const b1Q = p.resonance ? clamp(2 + p.resonance.excessDb / 3, 1, 8) : 1.2;
+    const b1Db = p.resonance
+      ? clamp(round(-p.resonance.excessDb * 0.5, 0.5), -18, 0) : mud;
+    const harsh = clamp(round(-Math.max(0, p.harshDb) * 0.5, 0.5), -18, 0);
+
+    const taps = [255, 1023, 4095][length] ?? 1023;
+    const evidence = [
+      `크레스트 ${p.crestDb.toFixed(1)} dB`,
+      `저역 시작 ${hz(p.lowRolloffHz)}`,
+      `머드 ${db(p.mudDb)}`,
+      `에어 ${db(p.airDb)}`,
+    ];
+    if (p.resonance) evidence.push(`공진 ${hz(p.resonance.hz)} ${db(p.resonance.excessDb)}`);
+    return {
+      params: {
+        hpfHz: hpf,
+        lowDb: mud, lowHz: 120,
+        b1Db, b1Hz, b1Q,
+        b2Db: harsh, b2Hz: clamp(p.sibilanceHz > 0 ? Math.min(p.sibilanceHz, 5000) : 3000, 500, 12000),
+        b2Q: 1.2,
+        highDb: air, highHz: 9000,
+        length,
+        mix: 1,
+        outDb: 0,
+      },
+      headline: `${taps}탭 (${((taps - 1) / 2 / 48_000 * 1000).toFixed(1)} ms 지연) — `
+        + (perc > 0.6
+          ? `크레스트 ${p.crestDb.toFixed(1)} dB, 트랜지언트 앞의 프리링잉을 짧게`
+          : (needsLowDetail
+            ? `저역 ${hz(p.lowRolloffHz)} 을 분해하려면 이만큼 길어야 합니다`
+            : '분해능과 지연이 균형을 이루는 길이')),
+      evidence,
+      // The curve is as confident as eq8's; the LENGTH is a judgement about
+      // how much pre-ringing somebody will accept, and that is not measurable.
+      confidence: 0.55,
     };
   },
 
@@ -261,6 +434,85 @@ const ADVISORS: Record<string, Advisor> = {
       evidence: [`다이내믹 레인지 ${p.dynamicRangeDb.toFixed(1)} dB`, `크레스트 ${p.crestDb.toFixed(1)} dB`,
         `어택 ${ms(p.attackMs)}`, `감쇠 ${ms(p.decayMs)}`],
       confidence: 0.75,
+    };
+  },
+
+  mbwidth: (p) => {
+    if (p.channels < 2) {
+      return { refuse: '모노 소스입니다 — 넓힐 사이드가 없습니다' };
+    }
+    // The one thing this device is always right about: a bass that does not
+    // survive mono.  The profile measures the correlation below 120 Hz
+    // separately for exactly this.
+    const bassIsFighting = p.bassCorrelation < 0.7;
+    const lowWidth = bassIsFighting
+      ? 0
+      : clamp(round(0.4 + p.bassCorrelation * 0.6, 0.05), 0, 1);
+    // Above it, widen what is narrow and leave alone what is already wide.
+    // `widthPercent` is the whole mix; 100 is ordinary stereo.
+    const room = Math.max(0, 110 - p.widthPercent) / 110;
+    const hiWidth = clamp(round(1 + room * 0.6, 0.05), 1, 1.8);
+    const midWidth = clamp(round(1 + room * 0.25, 0.05), 1, 1.4);
+    if (p.correlation < 0.2 && !bassIsFighting) {
+      return {
+        refuse: `상관도 ${p.correlation.toFixed(2)} — 이미 넓습니다. 더 벌리면 모노에서 무너집니다`,
+      };
+    }
+    // The crossover goes where the bass actually stops, not at a round number.
+    const lowX = clamp(round(Math.max(90, Math.min(300, p.lowRolloffHz * 2.2)), 10), 60, 500);
+    return {
+      params: {
+        lowXHz: lowX, highXHz: 4000,
+        lowWidth, midWidth, hiWidth, outDb: 0,
+      },
+      headline: bassIsFighting
+        ? `${lowX} Hz 아래를 모노로 — 저역 상관도 ${p.bassCorrelation.toFixed(2)} 는 모노에서 사라집니다`
+        : `위를 ${Math.round(hiWidth * 100)}% 로 — 폭 ${Math.round(p.widthPercent)}% 에서 벌릴 여유가 있습니다`,
+      evidence: [`상관도 ${p.correlation.toFixed(2)}`,
+        `저역 상관도 ${p.bassCorrelation.toFixed(2)}`,
+        `폭 ${Math.round(p.widthPercent)}%`,
+        `저역 끝 ${p.lowRolloffHz.toFixed(0)} Hz`],
+      confidence: bassIsFighting ? 0.8 : 0.6,
+    };
+  },
+
+  upward: (p) => {
+    // The one thing an upward compressor can do that nothing else can is
+    // raise what is quiet — and the one thing it must never do is raise what
+    // is quiet AND noise.  The profile measures the noise floor, so the
+    // question has an answer rather than a guess: how much room is there
+    // between where the quiet parts sit and where the noise sits?
+    const headroom = p.rmsDb - p.noiseFloorDb;
+    if (headroom < 18) {
+      return {
+        refuse: `조용한 부분과 노이즈 플로어 사이가 ${headroom.toFixed(0)} dB 뿐입니다 — `
+          + '올리면 노이즈가 같이 올라옵니다',
+      };
+    }
+    if (p.dynamicRangeDb < 4) {
+      return { refuse: `다이내믹 레인지 ${p.dynamicRangeDb.toFixed(1)} dB — 올릴 골이 없습니다` };
+    }
+    // Threshold under the average, so it works on the dips rather than on the
+    // whole signal; ratio from how deep those dips go.
+    const threshold = clamp(round(p.rmsDb - 4, 0.5), -60, 0);
+    const ratio = clamp(round(1.4 + p.dynamicRangeDb / 14, 0.1), 1, 8);
+    // Never more than half the range, and never more than the headroom over
+    // the noise leaves: whichever of the two is meaner wins.
+    const depth = clamp(round(Math.min(p.dynamicRangeDb / 2, (headroom - 12) / 2), 0.5), 0, 24);
+    // The floor sits above the noise, not on it.
+    const floor = clamp(round(p.noiseFloorDb + 8, 1), -80, -24);
+    const attack = clamp(round(Math.max(20, p.attackMs * 2), 5), 5, 300);
+    const release = clamp(round(Math.max(150, p.decayMs * 1.5), 10), 20, 1500);
+    return {
+      params: {
+        thresholdDb: threshold, ratio, depthDb: depth, floorDb: floor,
+        attackMs: attack, releaseMs: release, outDb: 0, mix: 1,
+      },
+      headline: `${depth.toFixed(0)} dB 들어올립니다 · 플로어 ${floor} dB — `
+        + `노이즈까지 ${headroom.toFixed(0)} dB 여유`,
+      evidence: [`RMS ${p.rmsDb.toFixed(1)} dB`, `노이즈 플로어 ${p.noiseFloorDb.toFixed(1)} dB`,
+        `다이내믹 레인지 ${p.dynamicRangeDb.toFixed(1)} dB`, `감쇠 ${ms(p.decayMs)}`],
+      confidence: 0.7,
     };
   },
 
@@ -422,6 +674,137 @@ const ADVISORS: Record<string, Advisor> = {
     headline: `${p.tempoBpm.toFixed(0)} BPM 기준 1마디 주기 — 깊이는 취향입니다`,
     evidence: [`템포 ${p.tempoBpm.toFixed(0)} BPM`],
     confidence: 0.35,
+  }),
+
+  amp: (p) => ({
+    params: {
+      // How many stages, not how hard one is driven — that is the decision an
+      // amplifier actually offers, and it is the one thing here a measurement
+      // can help with: a source that is already dense does not want three
+      // valves in front of it.
+      gain: isVoice(p) ? 28 : 50,
+      stages: isVoice(p) ? 1 : 2,
+      bass: isVoice(p) ? -3 : 0,
+      mid: 0,
+      treble: 0,
+      stack: 0,
+      presence: 3,
+      master: 40,
+      sag: 35,
+      // A guitar cabinet's 80 Hz high-pass takes the fundamental off anything
+      // that lives down there, so the recommendation is to turn it off rather
+      // than to hide the problem behind a Bass knob.
+      cab: isVoice(p) ? 1 : 1,
+      mic: isVoice(p) ? 70 : 45,
+      level: isVoice(p) ? -3 : 0,
+    },
+    headline: isVoice(p)
+      ? '목소리에는 한 단, 마이크는 오프 액시스 — 캐비닛의 고역 차단이 목적입니다'
+      : '두 단 크런치에 2×12 — 기타 앰프의 가장 평범한 자리',
+    evidence: [
+      isVoice(p) ? '보컬로 판정' : '보컬이 아님',
+      `${isVoice(p) ? 1 : 2} 단`,
+    ],
+    // Low on purpose: how much gain a part wants is the performance's
+    // question, not the signal's.
+    confidence: 0.35,
+  }),
+
+  tape: (p) => {
+    // Tape speed is the one setting here a measurement can genuinely decide,
+    // and it decides it for a reason that is not about tone in general: the
+    // head bump is a PEAK at a known frequency, and whether that is glue or
+    // mud depends entirely on whether the source already lives there.
+    //
+    //   · 7.5 ips puts it at 35 Hz — under almost everything, so it adds
+    //     weight without touching a fundamental
+    //   · 15 ips puts it at 60 Hz — on top of a bass guitar's low E and a
+    //     kick's body, which is why that speed is called fat and why it is
+    //     the wrong one for a bass
+    //   · 30 ips puts it at 100 Hz — above the sub, which keeps the bottom
+    //     clean and is why it is the mastering speed
+    //
+    // So the rule is to keep the bump off the source's own low end, and the
+    // measurement is where that low end starts.
+    const lowHz = p.lowRolloffHz;
+    const speed = lowHz > 140 ? 1 : (lowHz > 70 ? 2 : 0);
+    const bumpHz = [35, 60, 100][speed] ?? 60;
+
+    // How hard to hit it follows the crest.  A percussive source only reaches
+    // the curve on transients, so it can be driven harder before anything
+    // sustained is affected; a source already squashed sits in the bend all
+    // the time and 10 dB in would just be distortion.
+    const drive = Math.round(clamp(2 + percussive(p) * 9, 0, 11));
+
+    // Bias is a straight trade — brighter and dirtier one way, cleaner and
+    // duller the other — so it follows what the source can spare.  Something
+    // already dark has no top to give away.
+    const bright = clamp((p.centroidHz - 700) / 2600, 0, 1);
+    const bias = Math.round((0.38 + bright * 0.24) * 100) / 100;
+
+    // Wow and flutter are pitch modulation, and a sustained pitched source
+    // reports it immediately while a percussive one hides it.  Low on
+    // anything that holds a note.
+    const steady = 1 - percussive(p);
+    const wow = Math.round(clamp(0.35 - steady * 0.3, 0.03, 0.35) * 100) / 100;
+
+    return {
+      params: {
+        speed, drive, bias,
+        bump: isLowEnd(p) ? 1.5 : 3,
+        wow,
+        flutter: Math.round(clamp(wow * 0.9, 0.05, 0.35) * 100) / 100,
+        // Zero, always.  Hiss is a decision to add noise to a recording that
+        // does not have any, and no measurement of the source can make that
+        // decision for someone — it is a period reference, not a repair.
+        hiss: 0,
+        crosstalk: 0.2,
+        mix: 1,
+        out: 0,
+      },
+      headline: `${[7.5, 15, 30][speed] ?? 15} ips — 헤드 범프 ${bumpHz} Hz 를 `
+        + `이 소스의 저역(${Math.round(lowHz)} Hz)에서 비켜 세웁니다`,
+      evidence: [
+        `저역 시작 ${Math.round(lowHz)} Hz`,
+        `크레스트 ${p.crestDb.toFixed(1)} dB`,
+        `중심 ${Math.round(p.centroidHz)} Hz`,
+      ],
+      // Where the bump goes is a measurement; how much tape somebody wants is
+      // not, and that is most of this device.
+      confidence: 0.4,
+    };
+  },
+
+  rotary: (p) => ({
+    params: {
+      // The two speeds a rotary speaker has are not arbitrary and are not
+      // tempo: a Leslie's chorale sits under one turn a second and its
+      // tremolo around six or seven, and everything between is the ramp
+      // rather than a setting anybody stops at.  So this picks an END and
+      // says which, instead of dividing the bar into a rate the way the
+      // chorus and the flanger do.
+      rateHz: isVoice(p) ? 0.7 : 6.4,
+      accelSec: 1.6,
+      xoverHz: isVoice(p) ? 900 : 800,
+      doppler: 100,
+      // A voice through a rotary is an effect rather than an instrument, so
+      // it wants less of the throb and less of the wet.
+      throb: isVoice(p) ? 35 : 60,
+      micAngle: 90,
+      balance: 0,
+      drive: isVoice(p) ? 8 : 25,
+      mix: isVoice(p) ? 45 : 100,
+    },
+    headline: isVoice(p)
+      ? '보컬에는 느린 코랄로, 절반만 섞어서 — 목소리가 회전하면 가사가 지워집니다'
+      : '빠른 트레몰로 — 오르간과 기타가 이 스피커에 들어가던 속도입니다',
+    evidence: [
+      isVoice(p) ? '보컬로 판정' : '보컬이 아님',
+      `크로스오버 ${isVoice(p) ? 900 : 800} Hz`,
+    ],
+    // Low, and honestly so: which of the two speeds a part wants is a
+    // musical decision and nothing in a measurement decides it.
+    confidence: 0.3,
   }),
 
   flanger: (p) => ({
@@ -711,7 +1094,10 @@ export const LOW_CONFIDENCE = 0.45;
  * top — so applying it is one assignment and never leaves half the device on
  * the last thing somebody did.
  */
-export function adviseFor(pluginId: string, profile: SourceProfile): AdviceResult {
+export function adviseFor(
+  pluginId: string, profile: SourceProfile,
+  current: Record<string, number> = {},
+): AdviceResult {
   const descriptor = findPlugin(pluginId);
   if (!descriptor) return { ok: false, reason: '알 수 없는 장치입니다' };
 
@@ -728,11 +1114,22 @@ export function adviseFor(pluginId: string, profile: SourceProfile): AdviceResul
 
   // Defaults underneath, advice on top, everything clamped to the device's own
   // declared range.  An advisor cannot put a device somewhere it cannot go.
+  //
+  // With one exception, and it is the same rule from the other side: a value
+  // the device MEASURED is not a value an advisor may invent, so a `curve`
+  // parameter keeps whatever is already there.  Falling back to the default
+  // would zero the match EQ's reference curve every time somebody asked for
+  // advice about its Amount — advice that silently deletes a measurement.
   const params: Record<string, number> = {};
   for (const def of descriptor.params) {
     const suggested = draft.params[def.id];
-    params[def.id] = typeof suggested === 'number' && Number.isFinite(suggested)
-      ? clamp(suggested, def.min, def.max)
+    if (typeof suggested === 'number' && Number.isFinite(suggested)) {
+      params[def.id] = clamp(suggested, def.min, def.max);
+      continue;
+    }
+    const held = def.curve ? current[def.id] : undefined;
+    params[def.id] = typeof held === 'number' && Number.isFinite(held)
+      ? clamp(held, def.min, def.max)
       : def.default;
   }
 
