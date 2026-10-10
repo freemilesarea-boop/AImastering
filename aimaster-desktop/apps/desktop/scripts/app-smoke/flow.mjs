@@ -379,6 +379,54 @@ try {
       ? `${held.checked} numeric controls, all reachable`
       : `${held.bad.length} of ${held.checked}: ${held.bad.slice(0, 4).join('; ')}`,
   );
+  // 13 — the worklet assets the preview needs are actually servable.
+  //
+  //      Packaged Electron loads the renderer from file:// inside app.asar,
+  //      where fetching a relative asset is unreliable — so the main process
+  //      reads these with Node fs (which understands asar) and hands the
+  //      bytes over IPC.  That path has three parties: the renderer asks by
+  //      name, `loui:read-worklet-asset` allow-lists the name, and the build
+  //      has to have put the file in dist/renderer.  Nothing checked that
+  //      they agree, and a disagreement is invisible until the packaged app
+  //      tries to start its preview engine — which is the same shape as the
+  //      bug this whole directory exists for.
+  //
+  //      `preview-worklet-selftest` proves the wasm WORKS; this proves it
+  //      can be DELIVERED.  Asked through the real bridge, in the real app.
+  const assets = await page.evaluate(async () => {
+    const names = [
+      'loui-mastering-wasm.nomodules.wasm',
+      'loui-mastering-wasm.nomodules.js',
+      'mastering-chain.worklet.js',
+      'analyzer-tap.worklet.js',
+    ];
+    const bridge = window.louiAssets;
+    if (!bridge || typeof bridge.read !== 'function') {
+      return { bridge: false, rows: [] };
+    }
+    const rows = [];
+    for (const name of names) {
+      try {
+        const p = await bridge.read(name);
+        rows.push({ name, ok: p.size > 0, kind: p.kind, size: p.size });
+      } catch (e) {
+        rows.push({ name, ok: false, kind: 'error', size: 0, e: String(e?.message ?? e) });
+      }
+    }
+    return { bridge: true, rows };
+  });
+  if (!assets.bridge) {
+    skip('every worklet asset the preview needs is servable', 'the louiAssets preload bridge');
+  } else {
+    const bad = assets.rows.filter((r) => !r.ok);
+    expect(
+      bad.length === 0 && assets.rows.length === 4,
+      'every worklet asset the preview needs is servable',
+      bad.length === 0
+        ? assets.rows.map((r) => `${r.name.replace('loui-mastering-wasm.', '')} ${Math.round(r.size / 1024)}KB`).join(', ')
+        : bad.map((r) => `${r.name}: ${r.e ?? r.kind}`).join('; '),
+    );
+  }
 } finally {
   await browser.close();
 }
