@@ -28,9 +28,13 @@
 // band_width_pct[4] and stereoize, LimiterConfig has character.  A flag that
 // can only be added is a flag that goes stale, and this one had.
 //
-// What is NOT settled by `wired` is whether the PREVIEW can let you hear it.
-// The realtime chain carries 17 of 223 parameters; the selftest prints the
-// per-module map so that number stays visible rather than being discovered.
+// The preview is not a narrower thing than the render here: the worklet is
+// fed `buildChainConfig`'s own output (see `useRealtimePreview`), so a
+// `wired` parameter is in the preview's config too.  An earlier version of
+// this header claimed the preview carried only 17 of 223 parameters — that
+// was measured off `stateToChainConfig`, a five-module mapping that
+// `scripts/fixtures/test-only-exports.txt` already lists as reached by
+// nothing but a test.
 
 import type {
   AllModulesDefinitions,

@@ -134,28 +134,8 @@ function reachesRender(moduleId: ModuleId, def: ParameterDef): boolean {
   return false;
 }
 
-/** Does moving it change the PREVIEW's config — i.e. can the user hear it live? */
-function reachesPreview(moduleId: ModuleId, def: ParameterDef): boolean {
-  const moved = elsewhere(def, base[moduleId].parameters[def.id]);
-  if (moved === null) return true;
-  for (const bypass of [true, false]) {
-    const reference: AllModulesParameterState = {
-      ...base, [moduleId]: { ...base[moduleId], bypass },
-    };
-    const after: AllModulesParameterState = {
-      ...base,
-      [moduleId]: {
-        ...base[moduleId], bypass,
-        parameters: { ...base[moduleId].parameters, [def.id]: moved },
-      },
-    };
-    if (JSON.stringify(stateToChainConfig(reference)) !== JSON.stringify(stateToChainConfig(after))) return true;
-  }
-  return false;
-}
-
 const measured: { id: string; reaches: boolean; declared: boolean; support: string;
-                  status: string; render: boolean; preview: boolean }[] = [];
+                  status: string; render: boolean }[] = [];
 for (const moduleId of MODULE_IDS) {
   const defs = ALL_MODULE_PARAMETER_DEFS[moduleId];
   if (!defs) continue;
@@ -173,7 +153,6 @@ for (const moduleId of MODULE_IDS) {
       support: classifyParamExport(def),
       status: def.binding.status,
       render: reachesRender(moduleId, def),
-      preview: reachesPreview(moduleId, def),
     });
   }
 }
@@ -247,32 +226,21 @@ check('an unimplemented parameter tells the user, in Korean', () => {
   assert(bad.length === 0, `not a sentence a user can read: ${bad.join(', ')}`);
 });
 
-// What the PREVIEW can let you hear, per module.
+// There is no per-module "what the preview can let you hear" map here, and
+// the reason is worth keeping.  One was added, printing "the preview chain
+// carries 17 of 223 parameters" with the 19 modules it could not play — all
+// measured off `stateToChainConfig`.  That function builds a flat five-module
+// config for `native-dsp-chain`, the WebAudio fallback, and NOTHING in the
+// app calls it: `scripts/fixtures/test-only-exports.txt` has listed it as a
+// test-only export the whole time.  The app's preview worklet is fed
+// `buildChainConfig`'s suite config by `useRealtimePreview`, the same one the
+// render uses, so the split that map described does not exist.  Sixteen
+// controls were tagged "내보내기에만 반영" in the real app on the strength of
+// it before the config was traced; the tags were wrong and came out.
 //
-// `wired` says the render carries a value; it says nothing about whether the
-// user can audition it.  That difference is the real gap in this product and
-// it is a number nobody had: the realtime chain carries a small fraction of
-// the suite, and three modules split MID-MODULE, which is the worst case for
-// a user — in the EQ panel, moving Air Gain is audible and moving Air Freq
-// is not, and nothing on screen distinguishes them from a broken control.
-// Printed rather than asserted: which modules the preview implements is a
-// product decision, and a test that froze today's answer would fight it.
-const perModule = new Map<string, { heard: number; total: number; ids: string[] }>();
-for (const m of measured) {
-  const moduleId = m.id.slice(0, m.id.lastIndexOf('.'));
-  const row = perModule.get(moduleId) ?? { heard: 0, total: 0, ids: [] };
-  row.total += 1;
-  if (m.preview) { row.heard += 1; row.ids.push(m.id.slice(moduleId.length + 1)); }
-  perModule.set(moduleId, row);
-}
-const heardTotal = measured.filter((m) => m.preview).length;
-console.log(`\n      the preview chain carries ${heardTotal} of ${measured.length} parameters`);
-const split = [...perModule].filter(([, r]) => r.heard > 0 && r.heard < r.total);
-const silentModules = [...perModule].filter(([, r]) => r.heard === 0).map(([k]) => k);
-console.log(`      ${silentModules.length} module(s) it cannot play at all: ${silentModules.join(', ')}`);
-for (const [moduleId, r] of split) {
-  console.log(`      ${moduleId}: ${r.heard}/${r.total} audible — ${r.ids.join(', ')}`);
-}
+// `reaches` below still looks at both configs, which is right for its own
+// question — does anything at all read this parameter — because a selftest
+// reading the test-only config is exactly who that config is for.
 
 console.log('');
 for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);

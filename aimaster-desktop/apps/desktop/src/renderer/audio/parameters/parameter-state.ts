@@ -90,9 +90,10 @@ export interface EngineBindingTarget {
    *     not going to be.  The export module's format / rate / depth are
    *     render-stage decisions, not chain stages, and the sweep skips them.
    *
-   * What this does NOT say is whether the PREVIEW can let you hear it: the
-   * realtime chain carries 17 of 223 parameters, and the same selftest
-   * prints that map per module.
+   * The preview hears the same thing: `useRealtimePreview` takes a
+   * `ChainConfigWire` — the config `buildChainConfig` makes for the render —
+   * and posts it to the worklet, so there is no second, narrower config
+   * standing between a wired parameter and the preview.
    */
   status: 'wired' | 'pending' | 'unavailable';
   /** Optional adapter-specific note for diagnostics. */
