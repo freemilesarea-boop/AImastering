@@ -104,7 +104,58 @@ function reaches(moduleId: ModuleId, def: ParameterDef): boolean {
   return false;
 }
 
-const measured: { id: string; reaches: boolean; declared: boolean; support: string }[] = [];
+/**
+ * Does moving this parameter change the RENDER's chain config specifically?
+ *
+ * `reaches` above is satisfied by either config, which is the right question
+ * for "does anything hear this at all".  `binding.status` asks a narrower
+ * one — does the chain the Studio render runs on carry the value — so it
+ * needs its own measure, and the two must not be conflated: 194 parameters
+ * move the render config and not the preview's.
+ */
+function reachesRender(moduleId: ModuleId, def: ParameterDef): boolean {
+  const moved = elsewhere(def, base[moduleId].parameters[def.id]);
+  if (moved === null) return true;
+  for (const bypass of [true, false]) {
+    const reference: AllModulesParameterState = {
+      ...base, [moduleId]: { ...base[moduleId], bypass },
+    };
+    const after: AllModulesParameterState = {
+      ...base,
+      [moduleId]: {
+        ...base[moduleId], bypass,
+        parameters: { ...base[moduleId].parameters, [def.id]: moved },
+      },
+    };
+    const a = JSON.stringify(buildChainConfig({ state: reference, matchTargetCurveDb: MATCH_TARGET }));
+    const b = JSON.stringify(buildChainConfig({ state: after, matchTargetCurveDb: MATCH_TARGET }));
+    if (a !== b) return true;
+  }
+  return false;
+}
+
+/** Does moving it change the PREVIEW's config — i.e. can the user hear it live? */
+function reachesPreview(moduleId: ModuleId, def: ParameterDef): boolean {
+  const moved = elsewhere(def, base[moduleId].parameters[def.id]);
+  if (moved === null) return true;
+  for (const bypass of [true, false]) {
+    const reference: AllModulesParameterState = {
+      ...base, [moduleId]: { ...base[moduleId], bypass },
+    };
+    const after: AllModulesParameterState = {
+      ...base,
+      [moduleId]: {
+        ...base[moduleId], bypass,
+        parameters: { ...base[moduleId].parameters, [def.id]: moved },
+      },
+    };
+    if (JSON.stringify(stateToChainConfig(reference)) !== JSON.stringify(stateToChainConfig(after))) return true;
+  }
+  return false;
+}
+
+const measured: { id: string; reaches: boolean; declared: boolean; support: string;
+                  status: string; render: boolean; preview: boolean }[] = [];
 for (const moduleId of MODULE_IDS) {
   const defs = ALL_MODULE_PARAMETER_DEFS[moduleId];
   if (!defs) continue;
@@ -120,6 +171,9 @@ for (const moduleId of MODULE_IDS) {
       reaches: reaches(moduleId, def),
       declared: def.unimplemented !== undefined,
       support: classifyParamExport(def),
+      status: def.binding.status,
+      render: reachesRender(moduleId, def),
+      preview: reachesPreview(moduleId, def),
     });
   }
 }
@@ -134,6 +188,31 @@ check('and nothing claims to be unimplemented after it starts working', () => {
   const stale = measured.filter((m) => m.reaches && m.declared).map((m) => m.id);
   assert(stale.length === 0,
     `${stale.length} parameter(s) are marked unimplemented but move the config: ${stale.join(', ')}`);
+});
+
+check('a parameter marked wired moves the config the render is built from', () => {
+  // What this does NOT catch: a wrong `binding.path`.  The measure is
+  // state → config, and the config is built by `chain-config.ts` reading
+  // parameter IDs, not binding paths — so renaming a path to nonsense
+  // leaves this green.  Tried it, to see.  What it does catch is the
+  // regression that matters: a field dropped from the render's config while
+  // the definition still claims the render carries it.
+  const lying = measured.filter((m) => m.status === 'wired' && !m.render).map((m) => m.id);
+  assert(lying.length === 0,
+    `${lying.length} parameter(s) say 'wired' and move no render config: ${lying.join(', ')}`);
+});
+
+check('and nothing says pending for a value the render already carries', () => {
+  // The direction this field actually failed in.  Twenty-three entries said
+  // `pending`, several with notes promising "M2-full will add it", for
+  // fields the Rust engine's own config structs already had and its DSP
+  // already read.  `unimplemented` has been measured both ways since it was
+  // introduced; `status` was asserted and nothing checked it.
+  const stale = measured
+    .filter((m) => m.status !== 'wired' && m.render)
+    .map((m) => `${m.id} [${m.status}]`);
+  assert(stale.length === 0,
+    `${stale.length} parameter(s) claim the render cannot carry them, and it does: ${stale.join(', ')}`);
 });
 
 check('the sweep is actually looking at the suite', () => {
@@ -167,6 +246,33 @@ check('an unimplemented parameter tells the user, in Korean', () => {
   }
   assert(bad.length === 0, `not a sentence a user can read: ${bad.join(', ')}`);
 });
+
+// What the PREVIEW can let you hear, per module.
+//
+// `wired` says the render carries a value; it says nothing about whether the
+// user can audition it.  That difference is the real gap in this product and
+// it is a number nobody had: the realtime chain carries a small fraction of
+// the suite, and three modules split MID-MODULE, which is the worst case for
+// a user — in the EQ panel, moving Air Gain is audible and moving Air Freq
+// is not, and nothing on screen distinguishes them from a broken control.
+// Printed rather than asserted: which modules the preview implements is a
+// product decision, and a test that froze today's answer would fight it.
+const perModule = new Map<string, { heard: number; total: number; ids: string[] }>();
+for (const m of measured) {
+  const moduleId = m.id.slice(0, m.id.lastIndexOf('.'));
+  const row = perModule.get(moduleId) ?? { heard: 0, total: 0, ids: [] };
+  row.total += 1;
+  if (m.preview) { row.heard += 1; row.ids.push(m.id.slice(moduleId.length + 1)); }
+  perModule.set(moduleId, row);
+}
+const heardTotal = measured.filter((m) => m.preview).length;
+console.log(`\n      the preview chain carries ${heardTotal} of ${measured.length} parameters`);
+const split = [...perModule].filter(([, r]) => r.heard > 0 && r.heard < r.total);
+const silentModules = [...perModule].filter(([, r]) => r.heard === 0).map(([k]) => k);
+console.log(`      ${silentModules.length} module(s) it cannot play at all: ${silentModules.join(', ')}`);
+for (const [moduleId, r] of split) {
+  console.log(`      ${moduleId}: ${r.heard}/${r.total} audible — ${r.ids.join(', ')}`);
+}
 
 console.log('');
 for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);

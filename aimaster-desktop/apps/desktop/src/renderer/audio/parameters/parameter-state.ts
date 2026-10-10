@@ -77,10 +77,22 @@ export interface EngineBindingTarget {
    */
   path: string;
   /**
-   * Whether any adapter currently writes / reads this binding.
-   *   - `'wired'`: ready today (e.g. limiter ceiling already exists)
-   *   - `'pending'`: M2-full plans to wire it
-   *   - `'unavailable'`: not on any roadmap (export-only / debug-only)
+   * Whether the chain the Studio render runs on carries this value.
+   *   - `'wired'`: it does.  `parameter-reach-selftest` measures this by
+   *     moving the parameter and rebuilding the render's chain config, and
+   *     fails a `wired` entry that moves nothing.
+   *   - `'pending'`: it does not yet.  Measured too, in the other
+   *     direction: an entry that says `pending` while already moving the
+   *     config fails, because that is how this field went stale before —
+   *     twenty-three entries promised "M2-full will add it" for fields the
+   *     Rust engine had all along.
+   *   - `'unavailable'`: there is no DSP module to carry it, and there is
+   *     not going to be.  The export module's format / rate / depth are
+   *     render-stage decisions, not chain stages, and the sweep skips them.
+   *
+   * What this does NOT say is whether the PREVIEW can let you hear it: the
+   * realtime chain carries 17 of 223 parameters, and the same selftest
+   * prints that map per module.
    */
   status: 'wired' | 'pending' | 'unavailable';
   /** Optional adapter-specific note for diagnostics. */
@@ -111,8 +123,12 @@ interface BaseParameterDef {
   /**
    * Set when NOTHING implements this parameter yet.
    *
-   * Different from `binding.status`, which says whether the Python preview
-   * render carries the value.  This says the value reaches no engine at all:
+   * Different from `binding.status`, which says whether the render's chain
+   * carries the value.  (That doc used to say "the Python preview render",
+   * which is a third thing again — Python is the fallback, not the path a
+   * Studio render takes — and reading it is what sent one audit looking for
+   * twenty-three missing features that were all present.)  This says the
+   * value reaches no engine at all:
    * move it and neither chain config changes, so no renderer, preview or
    * export can behave differently.
    *

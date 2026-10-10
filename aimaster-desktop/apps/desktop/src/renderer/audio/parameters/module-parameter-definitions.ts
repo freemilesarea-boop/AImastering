@@ -17,6 +17,20 @@
 // different seam — `chain-config.ts` and `realtime-mastering-chain.ts` build
 // the render's config and the preview's from the parameter STATE — and
 // `parameter-reach-selftest` holds every parameter to reaching one of them.
+//
+// `binding.status` means ONE thing: does the chain the Studio render runs on
+// carry this value.  It is measured now, not asserted — the same selftest
+// fails a `wired` parameter that moves no render config.  Twenty-three
+// entries here said `pending` with notes promising "M2-full will add it",
+// and every one of them was already in the Rust engine's own config structs
+// (`dsp-core/.../mastering/config.rs`) and used by its DSP: EqConfig has all
+// eleven bands, DynamicsConfig has mix_pct, ImagerConfig has low_mono_hz,
+// band_width_pct[4] and stereoize, LimiterConfig has character.  A flag that
+// can only be added is a flag that goes stale, and this one had.
+//
+// What is NOT settled by `wired` is whether the PREVIEW can let you hear it.
+// The realtime chain carries 17 of 223 parameters; the selftest prints the
+// per-module map so that number stays visible rather than being discovered.
 
 import type {
   AllModulesDefinitions,
@@ -52,8 +66,8 @@ const EQ_DEFS: ModuleParameterDefinitions = {
   bypassBinding: {
     moduleType: 'adaptive-eq',
     path: 'bypass',
-    status: 'pending',
-    note: 'Adapter-side bypass not yet exposed; will be added in M2-full.',
+    status: 'wired',
+    note: 'EqConfig.bypass; toggling it moves both chain configs.',
   },
   parameters: [
     {
@@ -64,7 +78,7 @@ const EQ_DEFS: ModuleParameterDefinitions = {
       binding: {
         moduleType: 'adaptive-eq',
         path: 'bands[lowCut].freqHz',
-        status: 'pending',
+        status: 'wired',
       },
     },
     {
@@ -80,13 +94,13 @@ const EQ_DEFS: ModuleParameterDefinitions = {
       // disagreement to save a slider.
       min: 0.3, max: 6, default: 0.707, step: 0.001,
       format: fmt.qFactor, automatable: true,
-      binding: { moduleType: 'adaptive-eq', path: 'bands[lowCut].q', status: 'pending' },
+      binding: { moduleType: 'adaptive-eq', path: 'bands[lowCut].q', status: 'wired' },
     },
     {
       kind: 'number', id: 'lowShelfHz', label: 'Low Shelf Freq',
       unit: 'Hz', min: 20, max: 1000, default: 120, step: 1,
       format: fmt.integer, automatable: true,
-      binding: { moduleType: 'adaptive-eq', path: 'bands[lowShelf].freqHz', status: 'pending' },
+      binding: { moduleType: 'adaptive-eq', path: 'bands[lowShelf].freqHz', status: 'wired' },
     },
     {
       kind: 'number', id: 'lowShelfDb', label: 'Low Shelf',
@@ -98,7 +112,7 @@ const EQ_DEFS: ModuleParameterDefinitions = {
       binding: {
         moduleType: 'adaptive-eq',
         path: 'bands[lowShelf].gainDb',
-        status: 'pending',
+        status: 'wired',
       },
     },
     {
@@ -106,13 +120,13 @@ const EQ_DEFS: ModuleParameterDefinitions = {
       // step 0.001 for the Butterworth default — see lowCutQ above.
       min: 0.3, max: 2, default: 0.707, step: 0.001,
       format: fmt.qFactor, automatable: true,
-      binding: { moduleType: 'adaptive-eq', path: 'bands[lowShelf].q', status: 'pending' },
+      binding: { moduleType: 'adaptive-eq', path: 'bands[lowShelf].q', status: 'wired' },
     },
     {
       kind: 'number', id: 'presenceHz', label: 'Presence Freq',
       unit: 'Hz', min: 100, max: 16_000, default: 3000, step: 1,
       format: fmt.integer, automatable: true,
-      binding: { moduleType: 'adaptive-eq', path: 'bands[presence].freqHz', status: 'pending' },
+      binding: { moduleType: 'adaptive-eq', path: 'bands[presence].freqHz', status: 'wired' },
     },
     {
       kind: 'number', id: 'presenceDb', label: 'Presence',
@@ -121,7 +135,7 @@ const EQ_DEFS: ModuleParameterDefinitions = {
       binding: {
         moduleType: 'adaptive-eq',
         path: 'bands[presence].gainDb',
-        status: 'pending',
+        status: 'wired',
       },
     },
     {
@@ -129,13 +143,13 @@ const EQ_DEFS: ModuleParameterDefinitions = {
       hint: 'Higher is narrower',
       min: 0.3, max: 12, default: 1.1, step: 0.01,
       format: fmt.ratio, automatable: true,
-      binding: { moduleType: 'adaptive-eq', path: 'bands[presence].q', status: 'pending' },
+      binding: { moduleType: 'adaptive-eq', path: 'bands[presence].q', status: 'wired' },
     },
     {
       kind: 'number', id: 'airHz', label: 'Air Freq',
       unit: 'Hz', min: 2000, max: 20_000, default: 12_000, step: 10,
       format: fmt.integer, automatable: true,
-      binding: { moduleType: 'adaptive-eq', path: 'bands[air].freqHz', status: 'pending' },
+      binding: { moduleType: 'adaptive-eq', path: 'bands[air].freqHz', status: 'wired' },
     },
     {
       kind: 'number', id: 'airDb', label: 'Air',
@@ -144,7 +158,7 @@ const EQ_DEFS: ModuleParameterDefinitions = {
       binding: {
         moduleType: 'adaptive-eq',
         path: 'bands[air].gainDb',
-        status: 'pending',
+        status: 'wired',
       },
     },
     {
@@ -152,7 +166,7 @@ const EQ_DEFS: ModuleParameterDefinitions = {
       // step 0.001 for the Butterworth default — see lowCutQ above.
       min: 0.3, max: 2, default: 0.707, step: 0.001,
       format: fmt.qFactor, automatable: true,
-      binding: { moduleType: 'adaptive-eq', path: 'bands[air].q', status: 'pending' },
+      binding: { moduleType: 'adaptive-eq', path: 'bands[air].q', status: 'wired' },
     },
     {
       kind: 'number', id: 'outputGainDb', label: 'Output Gain',
@@ -187,7 +201,7 @@ const DYNAMICS_DEFS: ModuleParameterDefinitions = {
   bypassBinding: {
     moduleType: 'bus-comp',
     path: 'bypass',
-    status: 'pending',
+    status: 'wired',
   },
   parameters: [
     {
@@ -233,8 +247,11 @@ const DYNAMICS_DEFS: ModuleParameterDefinitions = {
       binding: {
         moduleType: 'bus-comp',
         path: 'mixPct',
-        status: 'pending',
-        note: 'bus-comp has no `mixPct` field today; M2-full will add it.',
+        status: 'wired',
+        note: 'DynamicsConfig.mix_pct. The claim here used to be that '
+          + 'bus-comp had no such field; dynamics.rs reads it at line 89 and '
+          + 'its own test sweeps 100/88/50/40 % asserting less wet means less '
+          + 'reduction.',
       },
     },
   ],
@@ -247,7 +264,7 @@ const IMAGER_DEFS: ModuleParameterDefinitions = {
   bypassBinding: {
     moduleType: 'stereo-imager',
     path: 'bypass',
-    status: 'pending',
+    status: 'wired',
   },
   parameters: [
     {
@@ -270,7 +287,7 @@ const IMAGER_DEFS: ModuleParameterDefinitions = {
       binding: {
         moduleType: 'stereo-imager',
         path: 'lowMonoFrequency',
-        status: 'pending',
+        status: 'wired',
       },
     },
     {
@@ -285,7 +302,7 @@ const IMAGER_DEFS: ModuleParameterDefinitions = {
       binding: {
         moduleType: 'stereo-imager',
         path: 'stereoize',
-        status: 'pending',
+        status: 'wired',
       },
     },
     {
@@ -299,28 +316,28 @@ const IMAGER_DEFS: ModuleParameterDefinitions = {
       // the module that could not express it.
       unit: '%', min: 0, max: 200, default: 40, step: 1,
       format: fmt.integer, automatable: false,
-      binding: { moduleType: 'stereo-imager', path: 'bands[0].width', status: 'pending' },
+      binding: { moduleType: 'stereo-imager', path: 'bands[0].width', status: 'wired' },
     },
     {
       kind: 'number', id: 'bandMidLowPct', label: 'Mid-Low Band',
       // step 1 — see bandLowPct above.
       unit: '%', min: 0, max: 200, default: 100, step: 1,
       format: fmt.integer, automatable: false,
-      binding: { moduleType: 'stereo-imager', path: 'bands[1].width', status: 'pending' },
+      binding: { moduleType: 'stereo-imager', path: 'bands[1].width', status: 'wired' },
     },
     {
       kind: 'number', id: 'bandMidHighPct', label: 'Mid-High Band',
       // step 1 — see bandLowPct above.
       unit: '%', min: 0, max: 200, default: 110, step: 1,
       format: fmt.integer, automatable: false,
-      binding: { moduleType: 'stereo-imager', path: 'bands[2].width', status: 'pending' },
+      binding: { moduleType: 'stereo-imager', path: 'bands[2].width', status: 'wired' },
     },
     {
       kind: 'number', id: 'bandHighPct', label: 'High Band',
       // step 1 — see bandLowPct above.
       unit: '%', min: 0, max: 200, default: 90, step: 1,
       format: fmt.integer, automatable: false,
-      binding: { moduleType: 'stereo-imager', path: 'bands[3].width', status: 'pending' },
+      binding: { moduleType: 'stereo-imager', path: 'bands[3].width', status: 'wired' },
     },
   ],
 };
@@ -332,7 +349,7 @@ const LIMITER_DEFS: ModuleParameterDefinitions = {
   bypassBinding: {
     moduleType: 'limiter',
     path: 'bypass',
-    status: 'pending',
+    status: 'wired',
     note: 'Disabling the limiter at this stage is dangerous; bypass surfaces as UI lock + warning.',
   },
   parameters: [
@@ -430,7 +447,7 @@ const LIMITER_DEFS: ModuleParameterDefinitions = {
       binding: {
         moduleType: 'limiter',
         path: 'character',
-        status: 'pending',
+        status: 'wired',
         // 'pending' is still the right answer for what this field grades —
         // `classifyParamExport` reads it against the PYTHON renderable map,
         // and Python has no limiter character at all.  What was out of date
