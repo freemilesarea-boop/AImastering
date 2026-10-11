@@ -57,6 +57,24 @@ try {
   process.exitCode = 1;
 }
 
+// ── The Python engine ─────────────────────────────────────────────────────────
+//
+// Not copied — checked.  Building it needs a Python venv and PyInstaller, and
+// CI does that before it gets here.  What this script can do is refuse to let
+// `pnpm dist` spend four minutes making an installer that cannot analyse a
+// file.  See scripts/lib/engine-binary.cjs for what was measured.
+const { engineBlocker, engineWaived } = require('./lib/engine-binary.cjs');
+const blocker = engineBlocker(BIN_DIR);
+if (blocker !== null) {
+  console.error(`\n${blocker}`);
+  process.exitCode = 1;
+} else if (engineWaived(BIN_DIR)) {
+  console.warn('\n⚠ engine binary missing and AIMASTER_ALLOW_NO_ENGINE=1 — '
+    + 'the package will not be able to analyse audio.');
+} else {
+  console.log('✓ engine  (already built)');
+}
+
 if (!process.exitCode) {
   console.log('\nFFmpeg binaries ready in public/bin/');
 }
