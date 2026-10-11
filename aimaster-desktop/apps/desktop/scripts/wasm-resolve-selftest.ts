@@ -23,7 +23,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  wasmNodeCandidates, WASM_NODE_RESOURCE_DIR, pythonFallbackMayStandIn,
+  wasmNodeCandidates, WASM_NODE_RESOURCE_DIR, pythonFallbackMayStandIn, flatConfigProblems,
   applyChainConfigForRender,
   type OfflineChainConfig, type WasmMasteringChain,
 } from '../src/main/offline/load-mastering-chain-node.js';
@@ -226,6 +226,33 @@ check(
   !pythonFallbackMayStandIn({ suiteConfig: { limiter: { enabled: true } } }),
   'it takes five scalars and cannot apply a chain — the master would be the original',
 );
+// 7b. And never for the OTHER half of its own union, which is what it used to
+//     do.  The guard checked `suiteConfig` alone, so a flat config carrying
+//     +6 dB of low shelf and +6 of air read as "nothing to drop" — measured,
+//     `pythonFallbackMayStandIn(flatWithSettings)` returned true — and the
+//     Python path would have handed back a master with none of it, reported
+//     as finished.  Which is the same complaint task #67 came in on, arriving
+//     through the other door.
+check(
+  'nor for a flat config carrying settings',
+  !pythonFallbackMayStandIn({ eqLowShelfDb: 6, eqAirDb: 6, limCeilingDbtp: -1 }),
+  'masterFile can apply no field of either shape, so any non-empty config is something to drop',
+);
+check(
+  'nor for one in a shape it cannot even read',
+  !pythonFallbackMayStandIn({ eq: { lowShelfDb: 6 } }),
+  'the IPC boundary is a cast, so this is what a stale renderer sends',
+);
+check(
+  'but an empty config really is nothing to drop',
+  pythonFallbackMayStandIn({}) && pythonFallbackMayStandIn(null) && pythonFallbackMayStandIn(undefined),
+  'a request that asked for no chain gets the five scalars and no error',
+);
+check(
+  'and something that is not an object at all is refused, not guessed at',
+  !pythonFallbackMayStandIn('balanced') && !pythonFallbackMayStandIn(0),
+  'being wrong towards refusing costs the caller an error message, not a user their master',
+);
 
 // 8. A WASM build without `setConfigJson` cannot honour a suite config
 //    either. It used to fall through to the 22-argument flat call, with a
@@ -267,6 +294,50 @@ check(
   'a flat config still goes through the positional call',
   flatCalls.length === 1 && flatCalls[0]!.length === 22,
   `${flatCalls.length} call(s), ${flatCalls[0]?.length ?? 0} args`,
+);
+
+// 9. A flat config that is NOT complete.  wasm-bindgen turns each missing
+//    argument into NaN, and the Rust limiter panicked on its own output
+//    clamp — `min > max, or either was NaN` from `Limiter::process_stereo`.
+//    The chain survives it (a fresh chain after the panic renders
+//    bit-identically, peak 0.3874 either way), so what was missing is not a
+//    recovery but an answer.
+const before = flatCalls.length;
+let flatThrew = '';
+try {
+  applyChainConfigForRender(oldChain, { eq: { lowShelfDb: 6 } } as unknown as OfflineChainConfig);
+} catch (e) { flatThrew = (e as Error).message; }
+check(
+  'a flat config missing its fields is refused, not passed through as NaN',
+  flatThrew !== '' && flatCalls.length === before,
+  flatCalls.length > before
+    ? `it called setConfig(${flatCalls[before]!.map(String).join(', ')})`
+    : 'nothing was applied',
+);
+check(
+  'and the refusal names the fields, so the caller can fix the right one',
+  /inputGainDb/.test(flatThrew) && /limCeilingDbtp/.test(flatThrew) && /22 of 22/.test(flatThrew),
+  flatThrew.slice(0, 110),
+);
+// Not only absent fields: a field that arrived as NaN is the same hazard,
+// and `withAddedInputGain` produces exactly that from `undefined + gain`.
+check(
+  'a field that arrived non-finite is refused too',
+  flatConfigProblems({ ...flat, inputGainDb: Number.NaN }).length === 1
+    && flatConfigProblems({ ...flat, limCeilingDbtp: Number.POSITIVE_INFINITY }).length === 1,
+  `${flatConfigProblems({ ...flat, inputGainDb: Number.NaN }).join(', ')}`,
+);
+check(
+  'and a complete one has no problems to report',
+  flatConfigProblems(flat).length === 0,
+  flatConfigProblems(flat).join(', '),
+);
+// A boolean field is checked as a boolean: `0` is not `false` across the
+// wasm-bindgen boundary, it is a different argument.
+check(
+  'a boolean field holding a number is a problem, not a coercion',
+  flatConfigProblems({ ...flat, eqBypass: 0 as unknown as boolean }).length === 1,
+  flatConfigProblems({ ...flat, eqBypass: 0 as unknown as boolean }).join(', '),
 );
 
 console.log(`\n=== ${passed} passed, ${failed} failed ===\n`);

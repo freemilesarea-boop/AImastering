@@ -391,18 +391,28 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
   // reported bug: mix in the Studio, press 설정 저장, run the mastering, get
   // the original back with no sign anything went wrong.
   //
-  // So: a request that carries a `suiteConfig` is a request for THAT chain.
+  // So: a request that carries a CHAIN CONFIG is a request for THAT chain.
   // If it cannot be honoured, this refuses, and the renderer turns the
   // refusal into a visible error on the row.  An output nobody asked for is
-  // worse than no output.  Requests without a suiteConfig keep the old
-  // fallback.
+  // worse than no output.  Only a request that carries no config at all —
+  // nothing for the Python path to drop — still falls back.
   //
-  // Verified on-device, because nothing automated reaches this branch: it
-  // needs an Electron main process, so the selftests can only cover the
-  // pieces around it (`pythonFallbackMayStandIn`, and `renderSong` refusing
-  // a `chainConfigHonored: false` answer).  Driven through the real IPC in
-  // a running app, with a suite config carrying lowShelf +6 / air +6 /
-  // presence +4:
+  // This used to say "requests without a suiteConfig keep the old fallback",
+  // and `pythonFallbackMayStandIn` implemented exactly that: it checked the
+  // one key.  `OfflineChainConfig` is a union, and the other half of it —
+  // the 22 flat fields — read as "nothing to drop" while carrying +6 dB of
+  // shelf.  So did a config in a shape the predicate cannot parse at all,
+  // which is what a renderer built before the suiteConfig switch sends
+  // across an auto-update.  Measured both, and both came back `true`.
+  //
+  // Verified on-device, because it needs an Electron main process: the
+  // selftests can only cover the pieces around it
+  // (`pythonFallbackMayStandIn`, `flatConfigProblems`, and `renderSong`
+  // refusing a `chainConfigHonored: false` answer).  `pnpm smoke:packaged`
+  // now drives this channel in a PACKAGED app and judges the result by the
+  // output audio, so the branch is no longer reached only by hand.  Driven
+  // through the real IPC in a running app, with a suite config carrying
+  // lowShelf +6 / air +6 / presence +4:
   //
   //   engine present → ok: true, backend 'rust', fallbackUsed false,
   //                    chainConfigHonored true, renderMs 879,
