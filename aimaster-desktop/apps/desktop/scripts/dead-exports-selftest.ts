@@ -36,7 +36,8 @@
  *   · some file imports that NAME from a specifier that resolves to F; or
  *   · some file pulls F in wholesale — `import * as ns`, `export * from`, or a
  *     dynamic `import()`, any of which could reach anything F exports; or
- *   · a `.mjs`/`.cjs` build script mentions the name.
+ *   · a `.mjs`/`.cjs` build script mentions the name — `scripts/app-smoke/`
+ *     excepted, because that is the suite, not the build (see `scriptFiles`).
  *
  * The last two are deliberately generous.  Being wrong towards "alive" leaves
  * dead code in the tree; being wrong towards "dead" tells somebody to delete
@@ -107,7 +108,25 @@ function find(exts: string[]): string[] {
 function sourceFiles(): string[] { return find(['ts', 'tsx']); }
 
 /** …plus the build scripts, which are not TypeScript and are not parsed. */
-function scriptFiles(): string[] { return find(['mjs', 'cjs']); }
+/**
+ * The `.mjs`/`.cjs` scripts, MINUS the on-device smoke harness.
+ *
+ * `prebuild.cjs` and `esbuild.main.cjs` mentioning a name is the app's own
+ * build reaching for it.  `scripts/app-smoke/` is not that — it is the suite,
+ * driven through a running app instead of imported, and counting it as a
+ * caller is the same "a test vouching for its own subject" the check below
+ * exists to rule out.
+ *
+ * It was not a theoretical difference.  `flow-packaged.mjs` posts the Studio's
+ * suite config, which has a `declick:` key — and that lone object key made
+ * `declick.ts::declick` read as live, although the app imports only the
+ * `ClickEvent` type from that file and every other `'declick'` in `src/` is a
+ * module id string.  The name match is all this search has, so the fix is to
+ * ask the right set of files, not to make the match cleverer.
+ */
+function scriptFiles(): string[] {
+  return find(['mjs', 'cjs']).filter((f) => !f.startsWith('scripts/app-smoke/'));
+}
 
 /**
  * …minus the files whose exports are a framework's contract, not a caller's.

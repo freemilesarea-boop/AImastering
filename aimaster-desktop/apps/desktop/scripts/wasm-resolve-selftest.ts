@@ -106,6 +106,41 @@ check(
   over.includes(path.join('/Res', WASM_NODE_RESOURCE_DIR, 'loui_dsp_wasm.cjs')),
   over[over.length - 1] ?? '',
 );
+// 5b. WHERE in the list it sits, which is not a detail.  The ancestor walk
+//     runs BEFORE the packaged candidate, so a package whose `out/` lives
+//     inside the workspace resolves the WORKSPACE copy, not the one
+//     electron-builder shipped.  Measured, not reasoned: a packaged build
+//     launched from `apps/desktop/out/linux-unpacked` loaded
+//     `/home/user/AImastering/aimaster-desktop/packages/dsp-wasm/pkg-node/
+//     loui_dsp_wasm.cjs` — the dev tree — and said so in a Rust panic's
+//     stack trace.  Twelve ancestors of the same binary copied to /tmp held
+//     no candidate, and the render then came off the resources copy.
+//
+//     So this ordering is the reason an on-device packaged verification is
+//     only valid OUTSIDE the source tree, and
+//     `scripts/app-smoke/boot-packaged.sh` copies the app out before
+//     launching it.  Nothing else in the repo would have told you that.
+const resCandidate = path.join('/Res', WASM_NODE_RESOURCE_DIR, 'loui_dsp_wasm.cjs');
+const shadowing = wasmNodeCandidates(DESKTOP, '/Res');
+const ancestorHits = shadowing.filter((c) => c.includes(path.join('packages', 'dsp-wasm', 'pkg-node')));
+check(
+  'the packaged candidate comes after the ancestor walk, so a workspace copy shadows it',
+  shadowing.indexOf(resCandidate) === shadowing.length - 1 && ancestorHits.length > 0,
+  `${ancestorHits.length} ancestor candidates, packaged at index ${shadowing.indexOf(resCandidate)} of ${shadowing.length}`,
+);
+check(
+  'and from a layout with no workspace above it, the packaged candidate is the only one that can exist',
+  (() => {
+    const outside = wasmNodeCandidates('/opt/LV DAW/resources/app.asar/dist-electron/main', '/opt/LV DAW/resources');
+    const packaged = path.join('/opt/LV DAW/resources', WASM_NODE_RESOURCE_DIR, 'loui_dsp_wasm.cjs');
+    // Every other candidate is an ancestor guess under /opt, /opt/LV DAW, …
+    // none of which a real install creates.
+    return outside.includes(packaged)
+      && outside.filter((c) => c !== packaged).every((c) => !fs.existsSync(c));
+  })(),
+  'an installed app has nothing but resourcesPath to fall back on',
+);
+
 process.env['LOUI_WASM_NODE_PATH'] = '/explicit/loui_dsp_wasm.cjs';
 check(
   'LOUI_WASM_NODE_PATH is tried first',

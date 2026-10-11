@@ -80,6 +80,7 @@ jobs:
             --hidden-import soundfile --hidden-import numpy \
             --collect-all soundfile --collect-all numpy \
             --exclude-module tkinter --exclude-module pytest --exclude-module matplotlib \
+            --exclude-module pkg_resources --exclude-module setuptools \
             app/main.py
           chmod +x ../../apps/desktop/public/bin/engine
           ls -la ../../apps/desktop/public/bin/
@@ -241,6 +242,8 @@ jobs:
             --exclude-module tkinter \
             --exclude-module pytest \
             --exclude-module matplotlib \
+            --exclude-module pkg_resources \
+            --exclude-module setuptools \
             app/main.py
           chmod +x ../../apps/desktop/public/bin/engine
           ls -la ../../apps/desktop/public/bin/
@@ -484,6 +487,8 @@ jobs:
             --exclude-module tkinter `
             --exclude-module pytest `
             --exclude-module matplotlib `
+            --exclude-module pkg_resources `
+            --exclude-module setuptools `
             app\main.py
           Get-ChildItem ..\..\apps\desktop\public\bin\
 

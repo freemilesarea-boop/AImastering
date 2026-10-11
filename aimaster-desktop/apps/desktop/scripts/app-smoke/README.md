@@ -66,3 +66,45 @@ flow has actually broken.
 The zustand stores are module singletons, so importing one in the page gets
 the instance the app is rendering from. Step 2 checks that assumption
 rather than trusting it.
+
+---
+
+## The packaged flow — `pnpm smoke:packaged`
+
+`boot.sh` + `flow.mjs` drive a **dev** build: vite, the renderer's module
+graph, source paths. Three defects got past all of it, because each lived
+in a layer only packaging creates:
+
+| what shipped | what the user got |
+| --- | --- |
+| `resources/bin/engine` absent | first `audio:analyze` → `spawn … ENOENT` |
+| `resources/bin/engine` present, built with CI's own command | `ModuleNotFoundError: No module named 'backports'` on startup |
+| the loader counting `../../../../../` to `pkg-node` | right from `src/main/offline`, one level too high from `dist-electron/main` — so every packaged build silently took the Python path |
+
+So `boot-packaged.sh` + `flow-packaged.mjs` drive `out/linux-unpacked`
+instead. It needs `pnpm dist` first.
+
+**It copies the app out of the source tree before launching it, and that is
+the point.** `wasmNodeCandidates()` walks *up* from the main bundle's
+directory before it tries `process.resourcesPath`. `out/linux-unpacked`
+sits inside the workspace, so a package launched in place resolves
+`packages/dsp-wasm/pkg-node` — the dev copy — and the shipped
+`resources/dsp-wasm-node` is never touched. The first run of this probe did
+exactly that, and only a Rust panic's stack trace gave it away. The boot
+script now walks the ancestors of the copy and refuses to start if any of
+them holds a workspace, so the run cannot quietly become meaningless again.
+`wasm-resolve-selftest` pins the ordering this depends on.
+
+The render step is judged by the **output audio**, not by the handler's
+`chainConfigHonored` flag. The flag records which branch ran, so it cannot
+tell you the chain did anything: with the EQ bypassed the flag still reads
+`honored=true` while the measurement reads `60 Hz +0.01 dB`. With the two
++6 dB shelves asked for, the file comes back `60 Hz +5.27 dB, 14 kHz
++4.41 dB` relative to 1 kHz — the 32 Hz low cut and the limiter taking the
+rest.
+
+What it cannot cover: macOS and Windows packages, which cannot be
+cross-built here. On those hosts the prebuild gate falls back to checking
+that the engine binary is *present* (`engineStatus` reports
+`unverifiable`, and `pnpm dist` says so) because a `win32` binary cannot be
+executed to ask whether it starts.
