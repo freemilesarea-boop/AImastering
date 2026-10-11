@@ -26,11 +26,14 @@
 #   device or a running engine.  Deleting them would cost the workbench and
 #   buy nothing.
 #
-# advertised-but-unwired
-#   A capability whose own docblock says it is in use, with nothing calling
-#   it.  Not a fixture and not a panel awaiting a decision — a claim that
-#   needs either wiring or correcting.  Named so it stops hiding among the
-#   other two.
+# There was briefly a third group, `advertised-but-unwired`, for a capability
+# whose docblock said it was in use with nothing calling it.  It had three
+# members and none of them belonged: `useNativeAnalyzer.ts` calls itself "the
+# always-on fallback", and that sentence was believed over the import graph,
+# which had it imported by `ImagerParameterPanel` all along — as were
+# `media-element-context.tsx` and `dev-mode.ts`.  The group did not exist.
+# The check now DERIVES each group from the graph and fails when a label here
+# disagrees, so the next such sentence cannot get a group of its own.
 
 src/renderer/components/product/panels/DynamicsParameterPanel.tsx  awaiting-product-decision
 src/renderer/components/product/panels/EqParameterPanel.tsx  awaiting-product-decision
@@ -50,6 +53,6 @@ src/renderer/audio/mock-analyzer-session.ts  storybook-fixture
 src/renderer/components/product/LouiRealtimeDebugPanel.tsx  storybook-fixture
 src/renderer/components/product/modules/LouiGainReductionMeter.tsx  storybook-fixture
 
-src/renderer/audio/dev-mode.ts  advertised-but-unwired
-src/renderer/audio/media-element-context.tsx  advertised-but-unwired
-src/renderer/hooks/useNativeAnalyzer.ts  advertised-but-unwired
+src/renderer/audio/dev-mode.ts  awaiting-product-decision
+src/renderer/audio/media-element-context.tsx  awaiting-product-decision
+src/renderer/hooks/useNativeAnalyzer.ts  awaiting-product-decision

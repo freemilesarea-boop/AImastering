@@ -255,17 +255,28 @@ check('a story is a caller, and the design system is alive because of it', () =>
     `${storyOnly.length} files are alive only through Storybook, and .storybook/ is gone`);
 });
 
-check('every story-only file is classified, and the classification is current', () => {
+check('every story-only file is classified, and the graph agrees with the label', () => {
   // The report named the files; it could not say why any of them was in the
-  // list, so nineteen files looked alike.  Three of them —
-  // `dev-mode.ts`, `media-element-context.tsx`, `useNativeAnalyzer.ts` —
-  // are a capability whose own docblock calls itself "the always-on
-  // fallback" with nothing calling it, and that was invisible beside the
-  // bespoke panels waiting on a product decision.
+  // list, so nineteen files looked alike.  They do not: one group is the
+  // bespoke per-module parameter panels and what they are built from, still
+  // waiting on a product decision, and one exists so a story can render
+  // without an audio device.
   //
-  // So the list is held against a committed classification: a file that
-  // becomes story-only fails until somebody says which of the three it is,
-  // and a line that is adopted, deleted or no longer story-only fails too.
+  // THE LABEL IS NOT TAKEN ON TRUST.  The first version of this check read
+  // the group out of the fixture and stopped there, and three files were in
+  // the wrong group — `useNativeAnalyzer.ts`, `media-element-context.tsx`
+  // and `dev-mode.ts`.  They were filed as a capability wired to nothing,
+  // because `useNativeAnalyzer`'s own docblock calls itself "the always-on
+  // fallback" and that was believed over the import graph.  All three are
+  // imported by `ImagerParameterPanel` / `ExportParameterPanel`: they are
+  // part of the panel set, and the graph said so the whole time.
+  //
+  // So the group is DERIVED here — reachable from the bespoke panels, or
+  // only from a story — and the fixture's label has to match it.  A new
+  // story-only file fails until somebody classifies it, a classified file
+  // that gets adopted or deleted fails, and a label that disagrees with the
+  // graph fails.  The fixture stays because a human saying "this is waiting
+  // on a decision" is worth recording; it is just no longer the authority.
   const raw = readFileSync('scripts/fixtures/story-only-files.txt', 'utf8');
   const declared = new Map<string, string>();
   for (const line of raw.split('\n')) {
@@ -275,10 +286,7 @@ check('every story-only file is classified, and the classification is current', 
     assert(parts.length === 2, `malformed line (want "<path>  <group>"): ${t}`);
     declared.set(parts[0]!, parts[1]!);
   }
-  const GROUPS = new Set(['awaiting-product-decision', 'storybook-fixture', 'advertised-but-unwired']);
-  for (const [f, g] of declared) {
-    assert(GROUPS.has(g), `${f}: unknown group "${g}" — add it to the header or fix the typo`);
-  }
+
   const live = new Set(storyOnlySources());
   const unclassified = [...live].filter((f) => !declared.has(f)).sort();
   const stale = [...declared.keys()].filter((f) => !live.has(f)).sort();
@@ -288,6 +296,21 @@ check('every story-only file is classified, and the classification is current', 
   assert(stale.length === 0,
     `${stale.length} line(s) in story-only-files.txt are no longer story-only:\n    ${stale.join('\n    ')}\n`
     + '  Take them out — the list only goes down.');
+
+  // The one thing given by name rather than derived: where the bespoke panels
+  // live.  Everything else about the grouping follows from the graph.
+  const panelRoots = SOURCES.filter((f) => f.startsWith('src/renderer/components/product/panels/'));
+  assert(panelRoots.length > 0,
+    'no bespoke panels found — if they were adopted or deleted, this grouping goes with them');
+  const fromPanels = reachedFrom(panelRoots);
+  const wrong: string[] = [];
+  for (const [f, label] of declared) {
+    const derivedGroup = fromPanels.has(f) ? 'awaiting-product-decision' : 'storybook-fixture';
+    if (label !== derivedGroup) wrong.push(`${f}: filed as ${label}, graph says ${derivedGroup}`);
+  }
+  assert(wrong.length === 0,
+    `${wrong.length} file(s) are in a group the import graph disagrees with:\n    ${wrong.sort().join('\n    ')}\n`
+    + '  Fix the label, not the graph.');
 });
 
 check('nothing is allow-listed without a reason', () => {
