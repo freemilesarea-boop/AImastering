@@ -255,6 +255,41 @@ check('a story is a caller, and the design system is alive because of it', () =>
     `${storyOnly.length} files are alive only through Storybook, and .storybook/ is gone`);
 });
 
+check('every story-only file is classified, and the classification is current', () => {
+  // The report named the files; it could not say why any of them was in the
+  // list, so nineteen files looked alike.  Three of them —
+  // `dev-mode.ts`, `media-element-context.tsx`, `useNativeAnalyzer.ts` —
+  // are a capability whose own docblock calls itself "the always-on
+  // fallback" with nothing calling it, and that was invisible beside the
+  // bespoke panels waiting on a product decision.
+  //
+  // So the list is held against a committed classification: a file that
+  // becomes story-only fails until somebody says which of the three it is,
+  // and a line that is adopted, deleted or no longer story-only fails too.
+  const raw = readFileSync('scripts/fixtures/story-only-files.txt', 'utf8');
+  const declared = new Map<string, string>();
+  for (const line of raw.split('\n')) {
+    const t = line.trim();
+    if (t === '' || t.startsWith('#')) continue;
+    const parts = t.split(/\s+/);
+    assert(parts.length === 2, `malformed line (want "<path>  <group>"): ${t}`);
+    declared.set(parts[0]!, parts[1]!);
+  }
+  const GROUPS = new Set(['awaiting-product-decision', 'storybook-fixture', 'advertised-but-unwired']);
+  for (const [f, g] of declared) {
+    assert(GROUPS.has(g), `${f}: unknown group "${g}" — add it to the header or fix the typo`);
+  }
+  const live = new Set(storyOnlySources());
+  const unclassified = [...live].filter((f) => !declared.has(f)).sort();
+  const stale = [...declared.keys()].filter((f) => !live.has(f)).sort();
+  assert(unclassified.length === 0,
+    `${unclassified.length} story-only file(s) are not classified:\n    ${unclassified.join('\n    ')}\n`
+    + '  Add each to scripts/fixtures/story-only-files.txt with its group.');
+  assert(stale.length === 0,
+    `${stale.length} line(s) in story-only-files.txt are no longer story-only:\n    ${stale.join('\n    ')}\n`
+    + '  Take them out — the list only goes down.');
+});
+
 check('nothing is allow-listed without a reason', () => {
   // ALLOWED is empty today.  If it stops being empty, every entry has to name
   // a file that exists — an allow-list with stale entries hides the next one.

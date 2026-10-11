@@ -1,0 +1,55 @@
+# Files the shipped app never renders — alive only because a story imports
+# them.  `reachable-files-selftest` prints the live list and holds it against
+# this one: a new entry fails until it is classified here, and a line whose
+# file is gone or no longer story-only fails too.  The list only goes down.
+#
+# The report used to print the list and stop there, which left nineteen files
+# looking identical.  They are not: one group is waiting on a product
+# decision, one exists so a story can run without an engine, and one is a
+# feature that describes itself as always-on and is wired to nothing.  That
+# last group is the one worth reading, and it was invisible in a flat list.
+#
+# Format:  <path>  <group>
+#
+# Groups
+# ------
+# awaiting-product-decision
+#   The five bespoke per-module parameter panels and the controls they are
+#   built from.  The app renders the generic panel instead.
+#   `LouiModuleSlideOver.tsx:18` still documents these as its children and
+#   imports none of them — the slide-over is live, but `LouiPresetSlideOver`
+#   is its only caller.  Adopt them or delete them; until then they are
+#   known, not forgotten.
+#
+# storybook-fixture
+#   Correctly story-only: these exist so a story renders without an audio
+#   device or a running engine.  Deleting them would cost the workbench and
+#   buy nothing.
+#
+# advertised-but-unwired
+#   A capability whose own docblock says it is in use, with nothing calling
+#   it.  Not a fixture and not a panel awaiting a decision — a claim that
+#   needs either wiring or correcting.  Named so it stops hiding among the
+#   other two.
+
+src/renderer/components/product/panels/DynamicsParameterPanel.tsx  awaiting-product-decision
+src/renderer/components/product/panels/EqParameterPanel.tsx  awaiting-product-decision
+src/renderer/components/product/panels/ExportParameterPanel.tsx  awaiting-product-decision
+src/renderer/components/product/panels/ImagerParameterPanel.tsx  awaiting-product-decision
+src/renderer/components/product/panels/LimiterParameterPanel.tsx  awaiting-product-decision
+src/renderer/components/product/panels/index.ts  awaiting-product-decision
+src/renderer/components/product/panels/usePanelStateBridge.ts  awaiting-product-decision
+src/renderer/components/product/controls/LouiKnob.tsx  awaiting-product-decision
+src/renderer/components/product/controls/LouiMiniMeter.tsx  awaiting-product-decision
+src/renderer/components/product/controls/LouiValueBadge.tsx  awaiting-product-decision
+src/renderer/components/product/controls/index.ts  awaiting-product-decision
+src/renderer/components/product/modules/ExportSupportBadge.tsx  awaiting-product-decision
+src/renderer/audio/modules/realtime-gr-context.tsx  awaiting-product-decision
+
+src/renderer/audio/mock-analyzer-session.ts  storybook-fixture
+src/renderer/components/product/LouiRealtimeDebugPanel.tsx  storybook-fixture
+src/renderer/components/product/modules/LouiGainReductionMeter.tsx  storybook-fixture
+
+src/renderer/audio/dev-mode.ts  advertised-but-unwired
+src/renderer/audio/media-element-context.tsx  advertised-but-unwired
+src/renderer/hooks/useNativeAnalyzer.ts  advertised-but-unwired
