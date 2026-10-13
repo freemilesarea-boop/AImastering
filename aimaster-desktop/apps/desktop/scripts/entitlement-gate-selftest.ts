@@ -18,6 +18,11 @@
  * fixed.  See that file's header for why a one-line tightening would be a
  * guess about billing.
  *
+ * None of it gates anything today: this build ships free, and the export gate
+ * that would read the entitlement snapshot was deleted (two other suites
+ * forbid one reappearing without them).  That is the reason to pin the rule
+ * now — it is the only moment when getting it wrong is free.
+ *
  * Run:  pnpm --filter @aimaster/desktop test:entitlement-gate
  */
 

@@ -122,14 +122,37 @@ contextBridge.exposeInMainWorld('electronAPI', {
 // Lets the renderer load AudioWorklet + WASM assets via the main process
 // (Node fs reads inside app.asar), bypassing Chromium's file:// fetch
 // restrictions in the packaged app.
+//
+// Same shape as `window.updater` below: the channel is a literal here, so
+// `INVOKE_CHANNELS` never runs for it.  What the renderer DOES supply is the
+// asset NAME, and that is checked — `loui:read-worklet-asset` answers only
+// from a fixed allowlist of four files (see main/index.ts), so a name is not
+// a path and cannot walk out of the renderer directory.
+//
+// Same shape as `window.updater` below: the channel is a literal here, so
+// `INVOKE_CHANNELS` never runs for it.  What the renderer DOES supply is the
+// asset NAME, and that is checked — `loui:read-worklet-asset` answers only
+// from a fixed allowlist of four files (see main/index.ts), so a name is not
+// a path and cannot walk out of the renderer directory.
 contextBridge.exposeInMainWorld('louiAssets', {
   read: (name: string) => ipcRenderer.invoke('loui:read-worklet-asset', name),
 });
 
 // ── Dedicated `window.updater` namespace (v3.4.3) ─────────────────────────────
 // Keeps the auto-update API ergonomic for the renderer instead of forcing
-// callers through the generic invoke() bridge.  All channels are still routed
-// through the validated INVOKE_CHANNELS list above.
+// callers through the generic invoke() bridge.
+//
+// These calls do NOT go through the `invoke` wrapper, so `INVOKE_CHANNELS` is
+// not what guards them — they hand `ipcRenderer.invoke` a literal, and there
+// is no caller-supplied name to validate.  That is also why they are safe:
+// the renderer cannot ask this namespace for a channel it was not given a
+// method for.  The channels stay listed above for the same reason the licence
+// ones do — so the surface is in one place — but removing one from the list
+// would not disable the method, and this comment used to say it would.
+//
+// `window.louiAssets` below is the same shape, and says so.  `ipc-surface-
+// selftest` holds the rule both ways: a channel the renderer can NAME must be
+// allowlisted; a channel hardcoded here needs only a handler.
 contextBridge.exposeInMainWorld('updater', {
   checkForUpdates: () => ipcRenderer.invoke('updater:check'),
   downloadUpdate:  () => ipcRenderer.invoke('updater:download'),

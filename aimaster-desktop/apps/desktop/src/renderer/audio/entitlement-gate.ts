@@ -34,11 +34,23 @@
 // is paid forever.  The entitlement row is built by a Supabase function that
 // is not in this tree.
 //
-// What raises the stakes: `entitlementBridge.ts` does NOT re-check expiry.
-// It takes `paid === true` off the IPC and stores it (`entitlementPaid:
-// next.paid === true`), so this expression is the only expiry check anywhere
-// in the app.  There is no second line of defence to make an empty expiry
-// harmless locally — only the server's `status` could.
+// How much it matters TODAY: nothing.  `entitlementBridge.ts` does not
+// re-check expiry — it takes `paid === true` off the IPC and stores it — but
+// it also has no consumer: the export gate that would have called
+// `getEntitlementPaid()` was deleted, and two selftests
+// (`export-gate-selftest`, `license-free-selftest`) currently FORBID one
+// reappearing.  This build ships free, so the value computed here goes
+// nowhere and an empty expiry costs nobody anything.
+//
+// It matters the moment that changes.  The bridge's own header lists the
+// three steps to turn the entitlement half back on, and step 2 is adding
+// that gate.  On the day it lands, this expression becomes the only expiry
+// check in the app, with no second line of defence — so the asymmetry is
+// recorded now, while it is free to be wrong, rather than found later by a
+// customer.
+//
+// (An earlier version of this paragraph said the stakes were live, which
+// overstated it by leaving out the missing consumer.)
 //
 // Tightening it would be a one-line change and a guess about billing — and
 // guessing wrong revokes paying users, which is worse than the hole it
