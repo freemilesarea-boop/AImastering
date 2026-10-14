@@ -34,6 +34,15 @@
 # `media-element-context.tsx` and `dev-mode.ts`.  The group did not exist.
 # The check now DERIVES each group from the graph and fails when a label here
 # disagrees, so the next such sentence cannot get a group of its own.
+#
+# `dev-mode.ts` nearly left this list: the WASM analyzer's crash-hunt
+# instrumentation was briefly gated on `isDevMode()`, which made the file
+# app-reached and the ratchet said so.  That gate was wrong — `isDevMode()`
+# is "ON automatically in a dev build", so the instrumentation would still
+# have spoken in every dev session — and it is now an explicit opt-in of its
+# own.  The file stays here.  Worth recording because the ratchet is not a
+# reason to pick a design: it reports where a file sits, and this one sat
+# where it sits for a reason.
 
 src/renderer/components/product/panels/DynamicsParameterPanel.tsx  awaiting-product-decision
 src/renderer/components/product/panels/EqParameterPanel.tsx  awaiting-product-decision

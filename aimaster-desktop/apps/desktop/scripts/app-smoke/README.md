@@ -67,6 +67,39 @@ The zustand stores are module singletons, so importing one in the page gets
 the instance the app is rendering from. Step 2 checks that assumption
 rather than trusting it.
 
+**"every page the app can route to mounts something."**
+The flow never leaves home, and the headless suite tests the DAW, mixer and
+arrangement MODELS — so a `DawPage` that throws on mount leaves all of it
+green and the feature dead. Each of the eight routes is visited through the
+store the app routes with, and the step records where each one landed:
+`mastering`, `result` and `tweak` need a selected file and bounce to home
+without one, which is the defensive redirect working. Measured clean:
+`home 209, mastering→home 209, result→home 209, tweak→home 209, studio 473,
+qc 26, daw 239, settings 67` nodes. Made `DawPage` throw to check the step
+is load-bearing: `daw: landed daw, 6 nodes, 7 error(s)` — the ErrorBoundary
+fallback, caught by both the node count and the error count.
+
+**"the renderer logged no errors through any of it."**
+Every other step asserts its own result; none of them asks what *else*
+happened. A React error inside a panel, a failed dynamic import, an
+unhandled rejection — all of it used to be invisible. `pageerror` and
+`console.error` are collected from before the first interaction.
+
+It found something on its first run: `[wasm-analyzer-session] DIAG build v3
+loaded`, logged at **error** level on every app start. Five such lines live
+in `wasm-analyzer-session.ts`, deliberately at `console.error` so a level
+filter cannot hide them — crash-hunt instrumentation from the dlmalloc panic
+that once hard-disabled the realtime preview. That panic was fixed at the
+source and the lines stayed, so every user's console, and anything that
+collects errors, saw them as faults. They are now behind an explicit
+`__LOUI_ANALYZER_DIAG__` / `localStorage['loui.analyzerDiag']` opt-in.
+
+`isDevMode()` was tried as the gate first and is the wrong trigger: it is
+"ON automatically in a dev build", so the lines would still speak in every
+dev session and in every smoke run, and this step would have needed a
+carve-out for them. A carve-out in the one step that asks "what else
+happened" is how that step stops meaning anything.
+
 ---
 
 ## The packaged flow — `pnpm smoke:packaged`

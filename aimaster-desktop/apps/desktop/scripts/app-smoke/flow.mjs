@@ -113,6 +113,21 @@ console.log(`\napp-smoke: the mastering flow, end to end\n  source  ${src}\n`);
 const browser = await chromium.connectOverCDP(`http://localhost:${PORT}`);
 const page = browser.contexts()[0].pages().find((p) => !p.url().startsWith('devtools://'));
 
+// Everything the renderer threw or logged as an error, from here on.
+//
+// The flow below drove the whole mastering path and nobody was listening: a
+// React error inside a panel, a failed dynamic import, an unhandled
+// rejection — all of it was invisible, because every step asserts its own
+// result and none of them asks what else happened.  Collected from before
+// the first interaction so the last step can account for all of it.
+const rendererErrors = [];
+if (page) {
+  page.on('pageerror', (e) => rendererErrors.push({ kind: 'pageerror', text: String(e?.message ?? e) }));
+  page.on('console', (m) => {
+    if (m.type() === 'error') rendererErrors.push({ kind: 'console', text: m.text() });
+  });
+}
+
 try {
   // 1 — the app is up and the bridge is there.
   const url = page ? page.url() : '(no page)';
@@ -427,6 +442,56 @@ try {
         : bad.map((r) => `${r.name}: ${r.e ?? r.kind}`).join('; '),
     );
   }
+  // ── Every page the app can route to actually mounts ───────────────────
+  //
+  // The flow above never leaves home, and the headless suite tests DAW,
+  // mixer and arrangement MODELS — a `DawPage` that throws on mount would
+  // leave all of it green and the feature dead.  So each route is visited
+  // for real, through the store the app routes with.
+  //
+  // Three of the eight require data and bounce to home without it; by this
+  // point the flow has queued and rendered a file, so they should mount.
+  // The step records where each one landed rather than assuming.
+  const ROUTES = ['home', 'mastering', 'result', 'tweak', 'studio', 'qc', 'daw', 'settings'];
+  const visits = [];
+  for (const route of ROUTES) {
+    const before = rendererErrors.length;
+    let landed;
+    try {
+      landed = await page.evaluate(async (r) => {
+        const m = await import('/stores/appStore.ts');
+        m.useAppStore.getState().setPage(r);
+        await new Promise((res) => setTimeout(res, 450));
+        const root = document.getElementById('root');
+        return {
+          page: m.useAppStore.getState().currentPage,
+          nodes: root ? root.querySelectorAll('*').length : -1,
+        };
+      }, route);
+    } catch (e) {
+      landed = { page: '(threw)', nodes: -1, e: String(e?.message ?? e) };
+    }
+    visits.push({ route, ...landed, errors: rendererErrors.length - before });
+  }
+  const emptyPage = visits.filter((v) => v.nodes < 10);
+  const threw = visits.filter((v) => v.page === '(threw)' || v.errors > 0);
+  expect(
+    emptyPage.length === 0 && threw.length === 0,
+    'every page the app can route to mounts something',
+    emptyPage.length === 0 && threw.length === 0
+      ? visits.map((v) => `${v.route}${v.page === v.route ? '' : `→${v.page}`} ${v.nodes}`).join(', ')
+      : [...emptyPage, ...threw].map((v) => `${v.route}: landed ${v.page}, ${v.nodes} nodes, ${v.errors} error(s)${v.e ? ` — ${v.e}` : ''}`).join('; '),
+  );
+
+  // ── And nothing was thrown along the way ──────────────────────────────
+  expect(
+    rendererErrors.length === 0,
+    'the renderer logged no errors through any of it',
+    rendererErrors.length === 0
+      ? 'clean'
+      : rendererErrors.slice(0, 6).map((e) => `[${e.kind}] ${e.text.slice(0, 120)}`).join(' | ')
+        + (rendererErrors.length > 6 ? ` … and ${rendererErrors.length - 6} more` : ''),
+  );
 } finally {
   await browser.close();
 }
