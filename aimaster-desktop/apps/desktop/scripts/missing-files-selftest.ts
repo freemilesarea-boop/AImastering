@@ -28,7 +28,7 @@
  * to a client, so the render refuses.
  */
 
-import { OfflineAudioContext } from 'node-web-audio-api';
+import { OfflineAudioContext } from './lib/offline-audio-context.js';
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 
 import * as fs from 'node:fs';

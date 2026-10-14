@@ -22,7 +22,7 @@
  * Run:  pnpm --filter @aimaster/desktop test:advice
  */
 
-import { OfflineAudioContext } from 'node-web-audio-api';
+import { OfflineAudioContext } from './lib/offline-audio-context.js';
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 
 import { profileBuffer, type SourceProfile } from '../src/renderer/daw/ai/source-profile.js';

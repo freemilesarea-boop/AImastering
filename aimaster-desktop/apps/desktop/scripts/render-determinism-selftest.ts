@@ -47,7 +47,7 @@ import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-import { OfflineAudioContext } from 'node-web-audio-api';
+import { OfflineAudioContext } from './lib/offline-audio-context.js';
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 
 import { createNote, DEFAULT_MIDI_CONFIG } from '../src/renderer/daw/model/midi.js';

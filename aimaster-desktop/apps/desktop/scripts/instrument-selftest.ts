@@ -23,7 +23,7 @@
  * Run via:  pnpm --filter @aimaster/desktop test:instruments
  */
 
-import { OfflineAudioContext } from 'node-web-audio-api';
+import { OfflineAudioContext } from './lib/offline-audio-context.js';
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 import { INSTRUMENTS, findInstrument, defaultInstrumentParams } from '../src/renderer/daw/engine/instruments.js';
 import { pluckedString, stringDelay } from '../src/renderer/daw/engine/string-model.js';
