@@ -483,6 +483,108 @@ try {
       : [...emptyPage, ...threw].map((v) => `${v.route}: landed ${v.page}, ${v.nodes} nodes, ${v.errors} error(s)${v.e ? ` — ${v.e}` : ''}`).join('; '),
   );
 
+  // ── The DAW, driven rather than merely mounted ────────────────────────
+  //
+  // The step above proves `DawPage` renders.  These drive it: the headless
+  // suite has eighty-odd tests over the DAW's MODELS, and not one of them
+  // can tell whether the transport clock is actually wired to anything.
+  //
+  // The rate is sampled IN FLIGHT — two readings while already playing —
+  // and the reason is a measurement that went wrong first.  Sampling from
+  // before `play()` gave 1.502 s of wall clock for 1.401 s of playhead, a
+  // ratio of 0.933, which reads as a 7%-slow clock; the missing 0.101 s was
+  // the rAF loop starting.  In flight it measures 0.9962–0.9997 over four
+  // runs, so the band below is wide enough for a loaded machine and still
+  // catches a clock that does not move (0) or runs away (2).
+  const daw = await page.evaluate(async () => {
+    const app = await import('/stores/appStore.ts');
+    app.useAppStore.getState().setPage('daw');
+    await new Promise((r) => setTimeout(r, 600));
+    const m = await import('/stores/dawStore.ts');
+    const S = () => m.useDawStore.getState();
+
+    const tracksAtOpen = S().session.tracks?.length ?? -1;
+
+    // An edit, and the undo that takes it back.
+    S().addTrackHere('audio');
+    await new Promise((r) => setTimeout(r, 150));
+    const afterAdd = S().session.tracks?.length ?? -1;
+    const canUndo = S().canUndo();
+    S().undo();
+    await new Promise((r) => setTimeout(r, 150));
+    const afterUndo = S().session.tracks?.length ?? -1;
+
+    // The clock.
+    S().stop(); S().seek(0);
+    S().play();
+    await new Promise((r) => setTimeout(r, 400));
+    const w0 = performance.now(), h0 = S().playheadSec;
+    await new Promise((r) => setTimeout(r, 1200));
+    const w1 = performance.now(), h1 = S().playheadSec;
+    const playing = S().isPlaying;
+    S().stop();
+    await new Promise((r) => setTimeout(r, 400));
+    const stoppedAt = S().playheadSec, stillPlaying = S().isPlaying;
+    const rate = (h1 - h0) / ((w1 - w0) / 1000);
+
+    // The loop, entered from just inside its end so a wrap has to happen.
+    const LOOP_FROM = 1.0, LOOP_TO = 2.0;
+    S().seek(0);
+    S().setLoop(LOOP_FROM, LOOP_TO);
+    if (!S().loopEnabled) S().toggleLoop();
+    S().seek(LOOP_TO - 0.2);
+    S().play();
+    const samples = [];
+    for (let i = 0; i < 14; i++) {
+      await new Promise((r) => setTimeout(r, 120));
+      samples.push(S().playheadSec);
+    }
+    S().stop();
+    if (S().loopEnabled) S().toggleLoop();
+
+    return { tracksAtOpen, afterAdd, canUndo, afterUndo,
+             rate, playing, stoppedAt, stillPlaying, h1,
+             loop: { from: LOOP_FROM, to: LOOP_TO, samples } };
+  });
+
+  expect(
+    daw.tracksAtOpen >= 1 && daw.afterAdd === daw.tracksAtOpen + 1
+      && daw.canUndo === true && daw.afterUndo === daw.tracksAtOpen,
+    'the DAW takes an edit and gives it back',
+    `${daw.tracksAtOpen} track(s) at open → ${daw.afterAdd} after add → ${daw.afterUndo} after undo`,
+  );
+
+  expect(
+    daw.playing === true && daw.rate > 0.9 && daw.rate < 1.1,
+    'the playhead runs at real time while playing',
+    `${daw.rate.toFixed(4)} playhead-seconds per wall second, sampled in flight`,
+  );
+
+  expect(
+    daw.stillPlaying === false && Math.abs(daw.stoppedAt - daw.h1) < 0.05,
+    'and stop freezes it where it was',
+    `isPlaying ${daw.stillPlaying}, playhead ${daw.h1.toFixed(3)} → ${daw.stoppedAt.toFixed(3)} over 400 ms`,
+  );
+
+  {
+    // A wrap must happen, every sample must stay inside the loop (plus one
+    // sampling interval of slop at the top), and the landing carries the
+    // remainder rather than snapping to the start — measured 1.921 → 1.059,
+    // which is the loop end plus the overshoot, not the loop start.
+    const { from, to, samples } = daw.loop;
+    const wraps = samples.filter((v, i) => i > 0 && v < samples[i - 1] - 0.3).length;
+    const outside = samples.filter((v) => v < from - 0.02 || v > to + 0.2);
+    const landings = samples.filter((v, i) => i > 0 && v < samples[i - 1] - 0.3);
+    const snapped = landings.filter((v) => Math.abs(v - from) < 0.005);
+    expect(
+      wraps >= 1 && outside.length === 0 && snapped.length === 0,
+      'a loop keeps the playhead inside it, carrying the remainder',
+      `${wraps} wrap(s) in [${from}, ${to}], range ${Math.min(...samples).toFixed(3)}–${Math.max(...samples).toFixed(3)}`
+      + (outside.length ? `, OUTSIDE: ${outside.map((v) => v.toFixed(3)).join(', ')}` : '')
+      + (snapped.length ? `, snapped to start: ${snapped.map((v) => v.toFixed(3)).join(', ')}` : ''),
+    );
+  }
+
   // ── And nothing was thrown along the way ──────────────────────────────
   expect(
     rendererErrors.length === 0,

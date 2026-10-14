@@ -79,6 +79,28 @@ qc 26, daw 239, settings 67` nodes. Made `DawPage` throw to check the step
 is load-bearing: `daw: landed daw, 6 nodes, 7 error(s)` — the ErrorBoundary
 fallback, caught by both the node count and the error count.
 
+**The DAW, driven rather than merely mounted.**
+The headless suite has eighty-odd tests over the DAW's *models*, and not one
+of them can tell whether the transport clock is wired to anything. Four
+steps drive it: an edit and its undo (1 track → 2 → 1), the playhead's rate
+while playing, stop, and a loop.
+
+The rate is sampled **in flight** — two readings while already playing — and
+that is a correction, not a style. Sampling from before `play()` gave
+1.502 s of wall clock for 1.401 s of playhead: a ratio of 0.933, which reads
+as a 7%-slow clock. The missing 0.101 s was the rAF loop starting. In flight
+it measures 0.9962–0.9997 over four runs.
+
+The loop step checks three things, because only together do they mean
+anything: a wrap *happens*, every sample stays inside the loop, and the
+landing **carries the remainder** instead of snapping to the start — 1.921 →
+1.059 is the loop end plus the overshoot, which is what task #48 ("make the
+loop wrap land where the loop ends") settled.
+
+Break-tested all four: stubbing out `dawRuntime.play` gives
+`0.0000 playhead-seconds per wall second` and `0 wrap(s)`; leaving
+`isPlaying` true in `stop()` fails the stop step alone.
+
 **"the renderer logged no errors through any of it."**
 Every other step asserts its own result; none of them asks what *else*
 happened. A React error inside a panel, a failed dynamic import, an
