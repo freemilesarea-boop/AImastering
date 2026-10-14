@@ -158,6 +158,22 @@ tell you the chain did anything: with the EQ bypassed the flag still reads
 +4.41 dB` relative to 1 kHz — the 32 Hz low cut and the limiter taking the
 rest.
 
+It collects the renderer's errors too, for the same reason the dev flow
+does — but the list it watches is a different list. `file://` instead of
+Vite, reads out of the asar, a Content-Security-Policy only the packaged
+page carries: none of those can fail in a dev build, and nothing was
+listening for them here. One limit is worth writing down: Playwright
+attaches over CDP *after* the window has booted, so anything thrown during
+the first paint is already gone. What the step covers is what the steps
+below it provoke.
+
+Both flows wait 500 ms before reading that list, and the wait is not a
+precaution — it was measured. With a `console.error` and a thrown error
+injected into the packaged page and the wait taken out, the list held only
+the synchronous `console.error`: the `pageerror` and the app's own
+`[AIMASTER:window-error]` line were both still in flight when the step ran.
+An error thrown from a `setTimeout` would have been reported as `clean`.
+
 What it cannot cover: macOS and Windows packages, which cannot be
 cross-built here. On those hosts the prebuild gate falls back to checking
 that the engine binary is *present* (`engineStatus` reports

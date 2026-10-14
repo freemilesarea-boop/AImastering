@@ -586,6 +586,12 @@ try {
   }
 
   // ── And nothing was thrown along the way ──────────────────────────────
+  // CDP delivers console events asynchronously, so a message logged by the
+  // last step can still be in flight when that step's promise settles.  The
+  // packaged flow measured it: with this wait removed and errors injected
+  // into the page, a `pageerror` from a setTimeout never arrived and the step
+  // read `clean`.
+  await page.waitForTimeout(500);
   expect(
     rendererErrors.length === 0,
     'the renderer logged no errors through any of it',

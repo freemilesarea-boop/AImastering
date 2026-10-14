@@ -119,6 +119,26 @@ const b = await chromium.connectOverCDP(`http://localhost:${PORT}`);
 const pages = b.contexts()[0].pages();
 const page = pages.find((p) => !p.url().startsWith('devtools://')) ?? pages[0];
 
+// Everything the PACKAGED renderer threw or logged as an error.
+//
+// The dev smoke grew this step and it earned its place on the first run.  A
+// packaged renderer has its own failure modes that a dev server cannot show
+// at all: an asset served from `file://` instead of Vite, a read out of the
+// asar, a Content-Security-Policy that only the packaged page carries.  Each
+// of those surfaces as a console error and nothing was listening.
+//
+// Attaching this LATE is the one limit worth stating: by the time Playwright
+// connects over CDP the window has already booted, so anything thrown during
+// the first paint is already gone.  What this catches is everything the
+// steps below provoke — which is the part the harness controls.
+const rendererErrors = [];
+if (page) {
+  page.on('pageerror', (e) => rendererErrors.push({ kind: 'pageerror', text: String(e?.message ?? e) }));
+  page.on('console', (m) => {
+    if (m.type() === 'error') rendererErrors.push({ kind: 'console', text: m.text() });
+  });
+}
+
 try {
   expect(page.url().startsWith('file://'), 'the renderer is the packaged file:// bundle',
     `${page.url().slice(0, 56)}…`);
@@ -214,6 +234,22 @@ try {
     bad('and the file carries the two shelves that were asked for', `no output at ${String(rr.outputPath)}`);
     bad('and writes a real file', 'no output');
   }
+  // CDP delivers console events asynchronously, so a message logged by the
+  // last `evaluate` can still be in flight when that call's promise settles.
+  // Measured, not assumed: with a thrown error and a console.error injected
+  // into the page and this wait removed, the list held only the synchronous
+  // console.error — the `pageerror` and the app's own window-error line were
+  // both still in flight.  An error thrown asynchronously would have been
+  // reported as `clean`.
+  await page.waitForTimeout(500);
+  expect(
+    rendererErrors.length === 0,
+    'the packaged renderer logged no errors while all that happened',
+    rendererErrors.length === 0
+      ? 'clean'
+      : rendererErrors.slice(0, 6).map((e) => `[${e.kind}] ${e.text.slice(0, 130)}`).join(' | ')
+        + (rendererErrors.length > 6 ? ` … and ${rendererErrors.length - 6} more` : ''),
+  );
 } finally {
   await b.close();
 }
