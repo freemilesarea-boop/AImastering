@@ -91,6 +91,22 @@ that is a correction, not a style. Sampling from before `play()` gave
 as a 7%-slow clock. The missing 0.101 s was the rAF loop starting. In flight
 it measures 0.9962–0.9997 over four runs.
 
+**Crash recovery, end to end.**
+Two steps drive the one path whose entire job is to survive the app dying.
+Both autosaves are written through the real IPC handler, so the previous
+generation the listing hands back is one the app made and not one the test
+planted; then the page is reloaded, because the prompt scans once on mount,
+and the banner's own text is read back.
+
+This is what had never been driven. The decision model was tested against
+hand-made records, and the main process's half could not be imported outside
+Electron at all — so nothing noticed that `autosave:list` filtered
+`*.louisession`, which excludes `*.louisession.bak`. The copy the handler
+deliberately kept for a broken session was written, swept after thirty days
+and deleted on a clean save, and no code path could reach it. The second step
+reads `그 전 · 방금 전으로 복구` out of the live banner, which is also how a
+wrong Korean particle in that label was caught (`방금 전 로 복구`).
+
 The loop step checks three things, because only together do they mean
 anything: a wrap *happens*, every sample stays inside the loop, and the
 landing **carries the remainder** instead of snapping to the start — 1.921 →

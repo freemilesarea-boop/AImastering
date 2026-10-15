@@ -107,6 +107,49 @@ export interface RecoveryInfo {
    * the offer stands, which is the safe direction.
    */
   sessionId?: string;
+  /**
+   * Which of the two copies on disk this is.
+   *
+   * The main process keeps the autosave before last as a `.bak`, for the case
+   * where the newest one faithfully preserves a session that was already
+   * broken.  Absent on a listing from a build that only reported one, and
+   * treated as `'latest'` then — that build had nothing else to offer.
+   */
+  generation?: 'latest' | 'previous';
+}
+
+/** A newest autosave, with the copy before it when one survived. */
+export interface RecoveryPair {
+  latest: RecoveryInfo;
+  previous?: RecoveryInfo;
+}
+
+/**
+ * Pair each newest autosave with the generation before it.
+ *
+ * By PATH, not by position: the listing is sorted by time across every
+ * project, so one session's `.bak` can sit between another session's newest
+ * and its own.  A `previous` whose `latest` is not in the listing is dropped
+ * rather than promoted — the pair exists to give a second chance at one
+ * project, and alone it is a file nobody asked about.
+ */
+export function pairGenerations(records: readonly RecoveryInfo[]): RecoveryPair[] {
+  const latest = records.filter((r) => (r.generation ?? 'latest') === 'latest');
+  const byPath = new Map(latest.map((r) => [r.path, r] as const));
+  const previousFor = new Map<string, RecoveryInfo>();
+  for (const r of records) {
+    if ((r.generation ?? 'latest') !== 'previous') continue;
+    const ownerPath = r.path.slice(0, -'.bak'.length);
+    if (!r.path.endsWith('.bak') || !byPath.has(ownerPath)) continue;
+    const held = previousFor.get(ownerPath);
+    // More than one cannot happen today, but if it ever does, the newer copy
+    // is the one worth keeping.
+    if (!held || r.savedAtMs > held.savedAtMs) previousFor.set(ownerPath, r);
+  }
+  return latest.map((r) => {
+    const prev = previousFor.get(r.path);
+    return prev ? { latest: r, previous: prev } : { latest: r };
+  });
 }
 
 /**
@@ -128,12 +171,26 @@ export function isRecoverable(
   return { offer: true };
 }
 
-/** `3분 전 · 내 곡` — the restore prompt. */
-export function describeRecovery(info: RecoveryInfo, nowMs: number): string {
+/** `3분 전` / `방금 전` / `2시간 전` — how long ago, for a prompt. */
+export function describeAge(info: RecoveryInfo, nowMs: number): string {
   const ageMs = Math.max(0, nowMs - info.savedAtMs);
   const minutes = Math.floor(ageMs / 60_000);
-  const when = minutes < 1 ? '방금 전'
+  return minutes < 1 ? '방금 전'
     : minutes < 60 ? `${minutes}분 전`
     : `${Math.floor(minutes / 60)}시간 전`;
-  return `${when} · ${info.sessionName}`;
+}
+
+/** `3분 전 · 내 곡` — the restore prompt. */
+export function describeRecovery(info: RecoveryInfo, nowMs: number): string {
+  return `${describeAge(info, nowMs)} · ${info.sessionName}`;
+}
+
+/**
+ * `그 전 · 12분 전` — the second choice.
+ *
+ * Deliberately does NOT repeat the session name: it sits under the newest
+ * offer for the same project, and repeating it reads as a second project.
+ */
+export function describePrevious(info: RecoveryInfo, nowMs: number): string {
+  return `그 전 · ${describeAge(info, nowMs)}`;
 }

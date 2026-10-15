@@ -23,6 +23,7 @@ import VocalEditor from '../components/daw/vocal/VocalEditor.js';
 import VideoViewer from '../components/daw/video/VideoViewer.js';
 import { useVideoStore } from '../stores/videoStore.js';
 import { findRecoveries, loadRecovery, type RecoveryOffer } from '../daw/engine/autosave-driver.js';
+import type { RecoveryInfo } from '../daw/model/autosave.js';
 import { premium } from '../theme/premium.js';
 import ReferencePanel from '../components/daw/reference/ReferencePanel.js';
 import WarpEditor from '../components/daw/warp/WarpEditor.js';
@@ -686,14 +687,31 @@ function RecoveryPrompt() {
   if (dismissed || offers.length === 0) return null;
   const offer = offers[0]!;
 
-  const restore = async (): Promise<void> => {
+  /**
+   * Restore one generation.
+   *
+   * On a failure the banner is kept open when there is an older copy to try,
+   * and only then.  The previous shape dismissed on every outcome, so a
+   * recovery file that would not parse spent the user's one chance and left
+   * the copy the main process had deliberately kept unreachable.
+   */
+  const restore = async (info: RecoveryInfo, fallbackLeft: boolean): Promise<void> => {
     const api = window.electronAPI;
     if (!api) return;
-    const result = await loadRecovery((c, ...a) => api.invoke(c as never, ...a), offer.info);
+    const result = await loadRecovery((c, ...a) => api.invoke(c as never, ...a), info);
+    if ('error' in result) {
+      if (!fallbackLeft) setDismissed(true);
+      notify(
+        fallbackLeft
+          ? `복구하지 못했습니다: ${result.error} — 그 전 자동 저장을 시도해 보세요`
+          : `복구하지 못했습니다: ${result.error}`,
+        'error',
+      );
+      return;
+    }
     setDismissed(true);
-    if ('error' in result) { notify(`복구하지 못했습니다: ${result.error}`, 'error'); return; }
     useDawStore.getState().loadSession(result.session);
-    notify(`${offer.info.sessionName} 을 복구했습니다`, 'success');
+    notify(`${info.sessionName} 을 복구했습니다`, 'success');
   };
 
   return (
@@ -717,7 +735,7 @@ function RecoveryPrompt() {
         세션을 대체합니다.
       </p>
       <div className="flex gap-1.5">
-        <button onClick={() => { void restore(); }}
+        <button onClick={() => { void restore(offer.info, offer.previous !== undefined); }}
           className="h-6 px-2.5 rounded text-[11px]"
           style={{ background: 'rgba(198,167,104,0.16)', color: premium.accent.light,
                    border: `1px solid ${premium.accent.deep}` }}>복구</button>
@@ -726,6 +744,19 @@ function RecoveryPrompt() {
           style={{ background: 'transparent', color: premium.text.muted,
                    border: `1px solid ${premium.surface.hairline}` }}>무시</button>
       </div>
+      {/* The copy from before the newest one, when the main process still has
+          it.  Shown only then, and under the two buttons rather than beside
+          them: it is the way out of a broken session, not an equal choice. */}
+      {offer.previous && (
+        <button onClick={() => { void restore(offer.previous!.info, false); }}
+          style={{ marginTop: 9, background: 'transparent', padding: 0,
+                   fontSize: 11, color: premium.text.muted,
+                   textDecoration: 'underline', textUnderlineOffset: 3 }}>
+          {/* `으로`, not `로`: the label always ends in `전`, which closes on a
+              consonant.  The running app read "방금 전 로 복구". */}
+          {offer.previous.label}으로 복구
+        </button>
+      )}
     </div>
   );
 }

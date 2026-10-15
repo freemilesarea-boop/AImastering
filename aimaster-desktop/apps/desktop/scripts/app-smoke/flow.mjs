@@ -585,6 +585,76 @@ try {
     );
   }
 
+  // ── Crash recovery, end to end ────────────────────────────────────────
+  //
+  // The app writes an autosave, keeps the one before it as a `.bak`, and
+  // offers them back at startup.  Nothing had ever driven that chain: the
+  // decision model was tested with hand-made records, and the main process's
+  // half — the atomic write, the kept generation, the listing — could not be
+  // imported outside Electron at all.  So the `.bak` was written, swept after
+  // thirty days and deleted on a clean save while `autosave:list` filtered
+  // `*.louisession`, which excludes it, and no code path could reach it.
+  //
+  // Both writes here go through the real IPC handler, so the previous
+  // generation this reads back is one the app made, not one the test planted.
+  {
+    const sessionJson = (name) => JSON.stringify({
+      version: 3, id: 'smoke-recovery', name,
+      sampleRate: 48000, tempoBpm: 120, timeSignature: [4, 4],
+      files: [], tracks: [], padding: 'x'.repeat(2000),
+    }, null, 2);
+
+    const written = await page.evaluate(async ([first, second]) => {
+      const api = window.electronAPI;
+      const a = await api.invoke('autosave:write', { id: 'smoke-recovery', data: first });
+      // A distinct second write is what produces the backup: the handler
+      // copies the current target aside before the new bytes land.
+      const b = await api.invoke('autosave:write', { id: 'smoke-recovery', data: second });
+      const list = await api.invoke('autosave:list');
+      return { a, b, list };
+    }, [sessionJson('스모크 복구 — 먼저'), sessionJson('스모크 복구 — 나중')]);
+
+    const mine = (written.list ?? []).filter((r) => String(r.path ?? '').includes('smoke-recovery'));
+    const latest = mine.find((r) => r.generation === 'latest');
+    const previous = mine.find((r) => r.generation === 'previous');
+    expect(
+      latest !== undefined && previous !== undefined
+        && previous.path === `${latest.path}.bak`
+        && latest.sessionName === '스모크 복구 — 나중'
+        && previous.sessionName === '스모크 복구 — 먼저'
+        && latest.savedAtMs >= previous.savedAtMs,
+      'the app keeps the autosave before last, and the listing hands back both',
+      mine.map((r) => `${r.generation}:${r.sessionName}`).join(' | ')
+      + (latest && previous ? `, latest leads by ${(latest.savedAtMs - previous.savedAtMs).toFixed(0)} ms` : ''),
+    );
+
+    // Now the prompt itself, after a reload — it scans once, on mount.
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(2500);
+    const prompt = await page.evaluate(async () => {
+      const m = await import('/stores/appStore.ts');
+      m.useAppStore.getState().setPage('daw');
+      await new Promise((res) => setTimeout(res, 900));
+      const text = document.body.innerText ?? '';
+      const banner = text.includes('복구할 세션이 있습니다');
+      const buttons = Array.from(document.querySelectorAll('button')).map((b) => b.innerText.trim());
+      return { banner, previousControl: buttons.find((t) => t.startsWith('그 전 ·')) ?? null, buttons: buttons.slice(0, 40) };
+    });
+    expect(
+      prompt.banner && prompt.previousControl !== null,
+      'and the restore prompt offers the previous copy as a second choice',
+      prompt.banner
+        ? `banner up, "${prompt.previousControl ?? 'NO PREVIOUS CONTROL'}"`
+        : 'no recovery banner at all',
+    );
+
+    // Leave the profile as it was found, so a second run of this flow is not
+    // greeted by the first run's leftovers.
+    await page.evaluate(async () => {
+      await window.electronAPI.invoke('autosave:clear', 'smoke-recovery');
+    });
+  }
+
   // ── And nothing was thrown along the way ──────────────────────────────
   // CDP delivers console events asynchronously, so a message logged by the
   // last step can still be in flight when that step's promise settles.  The
