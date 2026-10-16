@@ -585,6 +585,72 @@ try {
     );
   }
 
+  // ── The decoded-audio store, with ffmpeg and a real disk ──────────────
+  //
+  // `daw:pcm-source` decodes a source once and keeps the samples on disk
+  // under a 12 GB cap.  The sweep that enforces the cap counted `*.f32` only,
+  // so a `.part` file left by a killed decode — up to ~4 GB for a file at the
+  // handler's three-hour ceiling — was counted by nothing and deleted by
+  // nothing.  Driven here rather than only in a temp directory, because the
+  // store's directory, its ffmpeg and its sweep all live in the main process.
+  {
+    const decode = async (rate) => page.evaluate(async ([w, r]) => {
+      try { return { ok: true, r: await window.electronAPI.invoke('daw:pcm-source', { path: w, sampleRate: r }) }; }
+      catch (e) { return { ok: false, e: String(e?.message ?? e) }; }
+    }, [src, rate]);
+
+    const first = await decode(48000);
+    const info = first.r ?? {};
+    const sizeOk = first.ok && typeof info.pcmPath === 'string' && fs.existsSync(info.pcmPath)
+      && fs.statSync(info.pcmPath).size === info.frames * info.channels * 4;
+    expect(
+      sizeOk && Array.isArray(info.peaks) && info.peaks.length > 0,
+      'ffmpeg decodes a source into the store, and the file size IS the frame count',
+      first.ok
+        ? `${info.frames} frames x ${info.channels}ch, ${(fs.statSync(info.pcmPath).size / 1e6).toFixed(2)} MB, `
+          + `${info.peaks?.length} peaks`
+        : first.e.slice(0, 140),
+    );
+
+    if (sizeOk) {
+      const dir = path.dirname(info.pcmPath);
+      const key = path.basename(info.pcmPath).replace(/\.f32$/, '');
+      expect(
+        fs.existsSync(path.join(dir, `${key}.json`)),
+        'and writes the sidecar the next session reads instead of decoding again',
+        `${key.slice(0, 10)}….json beside ${key.slice(0, 10)}….f32`,
+      );
+
+      // A decode that died: ffmpeg had written most of the file and nothing
+      // ever came back to remove it.  Aged two hours so the sweep can tell it
+      // from one being written right now.
+      const orphan = path.join(dir, `${'f'.repeat(40)}.11111111-2222-3333-4444-555555555555.part`);
+      fs.writeFileSync(orphan, Buffer.alloc(3 * 1024 * 1024));
+      const old = (Date.now() - 2 * 60 * 60 * 1000) / 1000;
+      fs.utimesSync(orphan, old, old);
+
+      // A different rate is a different store, so this one misses the cache
+      // and the sweep runs for real.
+      const second = await decode(44100);
+      expect(
+        second.ok && !fs.existsSync(orphan),
+        'and the next decode sweeps out a part-file no request could ever use',
+        second.ok
+          ? (fs.existsSync(orphan) ? 'the orphan is STILL THERE' : 'orphan gone, 3 MB reclaimed')
+          : second.e.slice(0, 140),
+      );
+      // Leave the profile as it was found.
+      for (const n of fs.readdirSync(dir)) {
+        if (n.startsWith(key) || n.startsWith(path.basename(String(second.r?.pcmPath ?? '')).slice(0, 40))) {
+          try { fs.rmSync(path.join(dir, n), { force: true }); } catch { /* fine */ }
+        }
+      }
+    } else {
+      bad('and writes the sidecar the next session reads instead of decoding again', 'no store');
+      bad('and the next decode sweeps out a part-file no request could ever use', 'no store');
+    }
+  }
+
   // ── Crash recovery, end to end ────────────────────────────────────────
   //
   // The app writes an autosave, keeps the one before it as a `.bak`, and

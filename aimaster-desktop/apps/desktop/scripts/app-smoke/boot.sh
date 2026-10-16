@@ -25,10 +25,55 @@ FP="$(node -p "require('@ffprobe-installer/ffprobe').path" 2>/dev/null)"
 # Unconditional, with a distinct display per run: a stale Xvfb that pgrep
 # can see but whose socket is gone makes Electron exit with "Missing X
 # server", and checking for one by name is how that happens.
-Xvfb ":$DISP" -screen 0 1600x1000x24 > "$WORK/xvfb.log" 2>&1 &
-sleep 3
-[ -S "/tmp/.X11-unix/X$DISP" ] || { echo "X$DISP socket missing"; exit 1; }
-echo "display  :$DISP"
+#
+# The LOCK is the other half, and it cost a run to learn.  Xvfb refuses to
+# start while /tmp/.X<n>-lock exists — "Server is already active for display
+# 98 … If this server is no longer running, remove /tmp/.X98-lock" — and the
+# readiness check below used to be `[ -S /tmp/.X11-unix/X$DISP ]`, which a
+# LEFTOVER SOCKET FILE satisfies with no server behind it.  So the boot
+# reported "display :98", Electron exited with "Missing X server", and the
+# run died ninety seconds later as "CDP down", blaming the app for a display
+# that was never there.  A check that cannot fail is worse than no check.
+# `xdpyinfo` is the real answer to "does this display answer"; it is not
+# installed everywhere, and where it is missing a LIVE Xvfb on this display
+# must not have its lock removed from under it.  Matching the process by name
+# is the fallback, and only in that direction: a name match that is wrong
+# here costs a refused boot with Xvfb's own reason printed, not a silent one.
+display_is_dead() {
+  if command -v xdpyinfo > /dev/null 2>&1; then
+    ! xdpyinfo -display ":$DISP" > /dev/null 2>&1
+  else
+    ! pgrep -f "Xvfb :$DISP " > /dev/null 2>&1
+  fi
+}
+if display_is_dead; then
+  # A socket or lock without a server behind it: Xvfb will refuse to start
+  # while either is there, so clear them before asking.
+  if [ -e "/tmp/.X$DISP-lock" ] || [ -S "/tmp/.X11-unix/X$DISP" ]; then
+    echo "display  :$DISP had a stale lock/socket — removing"
+    rm -f "/tmp/.X$DISP-lock" "/tmp/.X11-unix/X$DISP"
+  fi
+  Xvfb ":$DISP" -screen 0 1600x1000x24 > "$WORK/xvfb.log" 2>&1 &
+  XVFB_PID=$!
+  # Ask the display whether it answers, rather than whether a file exists.
+  # Xvfb needs a moment, so poll instead of sleeping a fixed three seconds.
+  for _ in $(seq 1 30); do
+    kill -0 "$XVFB_PID" 2>/dev/null || break
+    if [ -S "/tmp/.X11-unix/X$DISP" ] && ! display_is_dead; then break; fi
+    sleep 0.5
+  done
+  if ! kill -0 "$XVFB_PID" 2>/dev/null; then
+    echo "Xvfb for :$DISP exited — it says why:"; tail -5 "$WORK/xvfb.log"; exit 1
+  fi
+  [ -S "/tmp/.X11-unix/X$DISP" ] || {
+    echo "X$DISP socket missing after 15s"; tail -5 "$WORK/xvfb.log"; exit 1; }
+  echo "display  :$DISP"
+else
+  # One is already running — a previous run's, left up on purpose.  Starting a
+  # second Xvfb on the same display just makes it refuse, so reuse it and say
+  # so rather than failing on a display that works.
+  echo "display  :$DISP (reusing the one already running)"
+fi
 echo "ffmpeg   $FF"
 echo "ffprobe  $FP"
 

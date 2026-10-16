@@ -32,6 +32,27 @@ change. Run this before a release, and after any change to the main
 process, the IPC surface, or the render path — the three places a headless
 test cannot follow.
 
+## The boot is not ready when a FILE says so
+
+`boot.sh` used to call the display ready when `/tmp/.X11-unix/X98` existed.
+A socket file outlives its server, and Xvfb refuses to start while
+`/tmp/.X98-lock` is there — it says so on its own stderr, which nothing read:
+
+    Fatal server error:
+    (EE) Server is already active for display 98
+      If this server is no longer running, remove /tmp/.X98-lock
+
+So the boot printed `display :98`, Electron exited with "Missing X server",
+and the run died ninety seconds later as **`CDP down`** — a failure reported
+in the wrong place, blaming the app for a display that was never there. The
+boot now asks whether the display ANSWERS: if it does — a previous run's, left
+up on purpose — it is reused, because starting a second Xvfb on the same
+display only makes it refuse; if it does not, a stale lock and socket are
+cleared, Xvfb is started, and the boot polls until it answers or prints
+Xvfb's own reason for dying. `xdpyinfo` is the real test and
+is not installed everywhere; where it is missing, a live `Xvfb :98` process is
+the fallback, so a running display never has its lock removed from under it.
+
 ## Two steps that exist for a reason worth stating
 
 **"the saved move is still there after a reload."** Every other step proves
@@ -90,6 +111,20 @@ that is a correction, not a style. Sampling from before `play()` gave
 1.502 s of wall clock for 1.401 s of playhead: a ratio of 0.933, which reads
 as a 7%-slow clock. The missing 0.101 s was the rAF loop starting. In flight
 it measures 0.9962–0.9997 over four runs.
+
+**The decoded-audio store, with ffmpeg and a real disk.**
+Three steps drive `daw:pcm-source`: a decode whose store file's size must
+equal `frames x channels x 4` (the handler's claim that "the file size IS the
+frame count" — no estimate, no slack), the sidecar beside it, and the sweep.
+
+The sweep step plants a two-hour-old `.part` in the store's own directory —
+the path comes from the decode's own reply, not from a guess — and then asks
+for a different sample rate, because a different rate is a different store and
+only a miss runs the sweep. It exists because the sweep counted `*.f32` only:
+a `.part` left by a killed decode was counted by nothing and removed by
+nothing, which at the handler's three-hour ceiling is ~4 GB inside a store
+that advertises 12 GB. Breaking the sweep makes this step read `the orphan is
+STILL THERE`.
 
 **Crash recovery, end to end.**
 Two steps drive the one path whose entire job is to survive the app dying.
