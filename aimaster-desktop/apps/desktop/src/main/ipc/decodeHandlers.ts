@@ -41,6 +41,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { resolveFFmpegPath, resolveFFprobePath } from '@aimaster/audio-engine';
 import { log } from '../utils/logger.js';
+import { storeKey, sweepStore } from '../utils/pcm-store.js';
 
 export interface PcmSourceRequest {
   /** Absolute path of the source file. */
@@ -74,51 +75,9 @@ const MAX_CHANNELS = 2;
 const MAX_SECONDS = 3 * 60 * 60;
 /** Peak envelope resolution - matches the renderer's waveform buckets. */
 const PEAK_BUCKETS = 4096;
-/** How much decoded audio to keep on disk before dropping the oldest. */
-const STORE_CAP_BYTES = 12 * 1024 * 1024 * 1024;
 
 function storeDir(): string {
   return path.join(app.getPath('userData'), 'pcm-store');
-}
-
-/**
- * Identify a decode by what would change its samples: which file, which
- * version of it, and the rate it was resampled to.
- */
-function storeKey(filePath: string, mtimeMs: number, size: number, sampleRate: number): string {
-  return crypto.createHash('sha1')
-    .update(`${filePath} ${Math.round(mtimeMs)} ${size} ${sampleRate}`)
-    .digest('hex');
-}
-
-/** Drop the least recently used stores until the directory is inside its cap. */
-function sweepStore(): void {
-  const dir = storeDir();
-  let names: string[];
-  try { names = fs.readdirSync(dir); } catch { return; }
-
-  const entries: Array<{ file: string; bytes: number; atime: number }> = [];
-  let total = 0;
-  for (const name of names) {
-    if (!name.endsWith('.f32')) continue;
-    const file = path.join(dir, name);
-    try {
-      const stat = fs.statSync(file);
-      entries.push({ file, bytes: stat.size, atime: stat.atimeMs });
-      total += stat.size;
-    } catch { /* vanished */ }
-  }
-  if (total <= STORE_CAP_BYTES) return;
-
-  entries.sort((a, b) => a.atime - b.atime);
-  for (const entry of entries) {
-    if (total <= STORE_CAP_BYTES) break;
-    try {
-      fs.unlinkSync(entry.file);
-      fs.rmSync(entry.file.slice(0, -4) + '.json', { force: true });
-      total -= entry.bytes;
-    } catch { /* another run got there first */ }
-  }
 }
 
 function collectText(bin: string, args: string[]): Promise<string> {
@@ -255,7 +214,13 @@ export function registerDecodeHandlers(ipc: IpcMain, packaged: boolean, resource
       throw new Error(`daw:pcm-source: ${Math.round(info.durationSec / 60)}분짜리 파일은 너무 깁니다`);
     }
 
-    sweepStore();
+    // Counts every byte the store owns, leftovers included, and clears what
+    // no request can turn into a hit — see `utils/pcm-store.ts`.
+    const swept = sweepStore(dir);
+    if (swept.removedOrphans.length > 0 || swept.evicted.length > 0) {
+      log.info(`[pcm] swept ${swept.removedOrphans.length} leftover(s), evicted `
+        + `${swept.evicted.length} store(s), ${(swept.keptBytes / 1e9).toFixed(2)} GB kept`);
+    }
     // Decode to a temporary name so a crash mid-write cannot leave a
     // half-written store that the key says is complete.
     const partial = path.join(dir, `${key}.${crypto.randomUUID()}.part`);
@@ -276,14 +241,23 @@ export function registerDecodeHandlers(ipc: IpcMain, packaged: boolean, resource
       if (frames <= 0) throw new Error('디코딩 결과가 비어 있습니다');
 
       const peaks = await computePeaks(partial, frames, info.channels);
-      await fs.promises.rename(partial, pcmPath);
       const side: Sidecar = { sampleRate, channels: info.channels, frames, peaks };
+      // Sidecar FIRST, then the rename.  A death between the two used to leave
+      // the whole decode — up to ~4 GB for a three-hour file — as a `.f32`
+      // that no request can read, because the hit path needs the sidecar's
+      // frame count.  This way the leftover is a 32 KB `.json` instead, and
+      // the rename stays the single atomic step that publishes the store.
       await fs.promises.writeFile(sidePath, JSON.stringify(side));
+      await fs.promises.rename(partial, pcmPath);
 
       log.info(`[pcm] ${path.basename(resolved)} -> ${frames} frames x ${info.channels}ch @ ${sampleRate}`);
       return { key, pcmPath, ...side };
     } catch (err) {
       await fs.promises.rm(partial, { force: true }).catch(() => { /* never written */ });
+      // The sidecar now lands before the rename, so a failure between them
+      // would leave one pointing at samples that never arrived.  The sweep
+      // would clear it in an hour; clearing it here means it is never seen.
+      await fs.promises.rm(sidePath, { force: true }).catch(() => { /* never written */ });
       throw err;
     }
   });
