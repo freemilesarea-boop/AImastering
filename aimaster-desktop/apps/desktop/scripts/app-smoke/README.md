@@ -53,6 +53,20 @@ Xvfb's own reason for dying. `xdpyinfo` is the real test and
 is not installed everywhere; where it is missing, a live `Xvfb :98` process is
 the fallback, so a running display never has its lock removed from under it.
 
+## The app that answers must be the app you just built
+
+Both boot scripts kill anything already serving CDP on their port before they
+launch, and stop if it will not die. Launching a second Electron does **not**
+take the port from the first: the newcomer starts and serves nothing, the flow
+connects to the old app, and every step reports on code that is no longer on
+disk. That is how it was found — a licence step was broken on purpose to check
+it was load-bearing and the flow came back 26/26 green, because the app
+answering had been booted four minutes earlier. The same poke against a freshly
+booted app moved the trial count from 0 to 1 immediately.
+
+A run still leaves its app up on purpose, so you can open the window and look
+at it afterwards. The next run is what cleans up.
+
 ## Two steps that exist for a reason worth stating
 
 **"the saved move is still there after a reload."** Every other step proves

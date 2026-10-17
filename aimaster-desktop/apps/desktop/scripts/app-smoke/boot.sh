@@ -87,6 +87,33 @@ if ! curl -s -m 2 http://localhost:5173 > /dev/null; then
 fi
 echo "vite     up"
 
+# A previous run's Electron still listening on this port is the most dangerous
+# thing in this script.  Launching a second one does not take the port from it:
+# the newcomer starts, logs, and serves nothing, while the flow connects to the
+# OLD app and measures code that is no longer on disk.  That is not a theory —
+# it happened here.  A licence step was deliberately broken in the source to
+# prove it was load-bearing, the bundle rebuilt below contained the break, and
+# the flow reported 26/26 green: the app answering was the one booted four
+# minutes earlier.  Poking the same IPC on a freshly booted app moved the trial
+# count from 0 to 1 at once.
+#
+# So: anything already serving CDP here is killed before we build our own
+# expectations on it, and if it will not die we stop rather than measure it.
+if curl -s -m 2 "http://127.0.0.1:$PORT/json/version" > /dev/null 2>&1; then
+  echo "CDP      :$PORT answered BEFORE launch — killing the previous run's Electron"
+  # By PID from the port in its own argv.  `pkill -f` would match this script.
+  ps -eo pid,args --no-headers | grep -F -- "remote-debugging-port=$PORT" \
+    | grep -v grep | awk '{print $1}' | xargs -r kill -9
+  for _ in $(seq 1 20); do
+    curl -s -m 2 "http://127.0.0.1:$PORT/json/version" > /dev/null 2>&1 || break
+    sleep 0.5
+  done
+  if curl -s -m 2 "http://127.0.0.1:$PORT/json/version" > /dev/null 2>&1; then
+    echo "something is STILL serving CDP on $PORT — refusing to measure it"; exit 1
+  fi
+  echo "CDP      :$PORT is clear"
+fi
+
 DISPLAY=":$DISP" AIMASTER_FFMPEG="$FF" AIMASTER_FFPROBE="$FP" \
   npx electron --no-sandbox --remote-debugging-port="$PORT" \
   dist-electron/main/index.js > "$WORK/electron.log" 2>&1 &

@@ -721,6 +721,39 @@ try {
     });
   }
 
+  // ── The licence, on the real store ────────────────────────────────────
+  // license-core-selftest drives the service against a Map.  This asks the
+  // running app, where the store is electron-store on disk and the machine id
+  // comes from the machine: `_readTrialUsed` calls `machineIdSync` OUTSIDE its
+  // try block, so a host that cannot produce an id rejects `license:status`
+  // rather than answering free, and the only place that shows up is here.
+  //
+  // `remaining` is Infinity, which CDP serialises as null — compared as a
+  // string so a missing value cannot read as a pass.
+  {
+    const lic = await page.evaluate(async () => {
+      const api = window.electronAPI;
+      const before = await api.invoke('license:status');
+      const gate = await api.invoke('license:can-process');
+      await api.invoke('license:decrement-trial');
+      const after = await api.invoke('license:status');
+      const remaining = await api.invoke('license:get-remaining');
+      return { before, gate: { ...gate, remaining: String(gate.remaining) }, after, remaining: String(remaining) };
+    });
+    expect(
+      lic.before?.tier === 'free' && lic.before?.trialUsed === 0 && lic.before?.trialMax === 3
+        && lic.before?.canSaveMasterWav === true,
+      'the app reads its own licence store and reports an honest free build',
+      JSON.stringify(lic.before),
+    );
+    expect(
+      lic.gate?.allowed === true && lic.gate?.isPaid === true && lic.gate?.remaining === 'Infinity'
+        && lic.remaining === 'Infinity' && lic.after?.trialUsed === 0,
+      'and a processing run is allowed without counting anything',
+      `gate=${JSON.stringify(lic.gate)}, trialUsed after a run=${String(lic.after?.trialUsed)}`,
+    );
+  }
+
   // ── And nothing was thrown along the way ──────────────────────────────
   // CDP delivers console events asynchronously, so a message logged by the
   // last step can still be in flight when that step's promise settles.  The

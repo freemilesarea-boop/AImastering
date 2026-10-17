@@ -22,12 +22,21 @@ import { parseRangeHeader, contentTypeForPath } from './utils/localFileResponse.
 import { applyBundledFfmpegEnv } from './utils/ffmpegEnv.js';
 import { devServerUrl } from './utils/devServerUrl.js';
 
-// ── License gate REMOVED (v3.6.0-rc.1+1) ─────────────────────────────────────
-// The previous LICENSE_HMAC_SECRET startup gate has been removed for the
-// internal RC test cycle.  License-key activation is not used in this build,
-// so requiring a production secret was blocking testers without giving the
-// app any real protection.  License IPC handlers / UI are also disabled —
-// see preload/index.ts and renderer/App.tsx.
+// ── The licence secret is not a startup gate ─────────────────────────────────
+// `assertLicenseSecretReady()` would throw on a build with no injected
+// LICENSE_HMAC_SECRET.  Nothing calls it: a missing secret weakens the local
+// tamper check on a stored record, but the server is what actually decides a
+// licence, so refusing to start would trade a weak check for a dead app.  The
+// packaged-build case is logged instead — see the `isLicenseSecretProductionReady`
+// branch further down, which is the whole of the startup handling.
+//
+// The two sentences that used to be here said the IPC handlers and the UI were
+// disabled as well, and pointed at preload/index.ts and renderer/App.tsx for
+// proof.  Both say the opposite: all seven licence channels are bridged, this
+// file registers their handlers, and App.tsx mounts the dialog.  What makes
+// them dormant is `LICENSE_ENFORCED`, one constant in shared-types, which the
+// dialog checks before it can open and `canProcess` checks before it can
+// refuse — see license-free-selftest and license-core-selftest.
 
 const isDev = !app.isPackaged;
 
