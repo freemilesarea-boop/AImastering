@@ -239,7 +239,6 @@ src/renderer/daw/model/track-header.ts::colorTracks
 src/renderer/daw/model/track-header.ts::nextTrackColor
 src/renderer/daw/model/track-header.ts::noteSummary
 src/renderer/daw/model/track-header.ts::tracksWithNotes
-src/renderer/daw/model/video.ts::frameAt
 src/renderer/daw/model/video.ts::timelineTimeAt
 src/renderer/daw/model/warp.ts::clearMarkers
 src/renderer/daw/model/warp.ts::clipSourceSpan
