@@ -14,8 +14,7 @@ import pytest
 TEST_DIR = "/tmp/aimaster-test"
 
 
-@pytest.fixture(scope="session", autouse=True)
-def canonical_ffmpeg_env() -> None:
+def _resolve_canonical_ffmpeg_env() -> None:
     """Give canonical analysis an explicit ffmpeg path for the test session.
 
     Canonical analysis refuses to run off a PATH-resolved bare name, so the
@@ -32,6 +31,22 @@ def canonical_ffmpeg_env() -> None:
     found = shutil.which("ffmpeg")
     if found:
         os.environ["AIMASTER_FFMPEG"] = os.path.abspath(found)
+
+
+# Called at IMPORT, not from a session fixture.
+#
+# `tests/mastering/test_extract_commercial_reference.py` carries
+#
+#     pytestmark = pytest.mark.skipif(not os.environ.get("AIMASTER_FFMPEG"), ...)
+#
+# and that condition is a plain bool, evaluated while the module is being
+# imported for collection — long before any fixture, autouse or not, has run.
+# As a session fixture this resolution was always too late: all 30 tests in
+# that file removed themselves on every machine where nobody had exported the
+# variable by hand, and the only trace was a skip count in a release runbook
+# ("79 passed, 41 skipped") that made it look normal.  Measured: 30 skipped in
+# 0.29 s as the suite ran it, 30 PASSED in 30 s with the variable exported.
+_resolve_canonical_ffmpeg_env()
 
 
 def _ffmpeg_available() -> bool:

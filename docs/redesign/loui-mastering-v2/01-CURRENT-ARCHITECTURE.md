@@ -316,7 +316,7 @@ FFmpeg / FFprobe → 임시 .wav 생성 → 다음 단계 → ...
 
 | 영역 | 위치 | 갯수 | 상태 |
 |---|---|---|---|
-| Python pytest | `services/python-audio/tests/` | ~120 (79 passed / 41 skipped) | 부분 동작 |
+| Python pytest | `services/python-audio/tests/` | 526 (526 passed / 0 skipped, 2026-10-18 측정) | 동작 — `pnpm test:python` (~14분). 메인 체인에는 `test:python-suite`(2초)가 들어가 있어 자기 자신을 skip 하는 테스트가 생기면 실패한다 |
 | TS UI 스모크 | `apps/desktop/scripts/phase-e-*.ts` | ~81 | 동작 |
 | Loudness selftest | `apps/desktop/scripts/loudness-selftest.ts` | 1 calibration | 동작 |
 | Release smoke | `release-smoke.ts` | 3 장르 샘플 | 수동 실행 |
