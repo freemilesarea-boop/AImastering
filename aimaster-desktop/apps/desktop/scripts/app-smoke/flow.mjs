@@ -5,11 +5,13 @@
 // See README.md for why this exists and what it deliberately does not do.
 
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
 
 const PORT = process.argv[2] ?? '9333';
 const WORK = process.argv[3] ?? '/tmp/smoke';
+const FF = process.env.AIMASTER_FFMPEG ?? 'ffmpeg';
 const SR = 48_000;
 
 let step = 0;
@@ -719,6 +721,58 @@ try {
     await page.evaluate(async () => {
       await window.electronAPI.invoke('autosave:clear', 'smoke-recovery');
     });
+  }
+
+  // ── What the engine noticed about the file ────────────────────────────
+  // `analyze` has always returned `warnings` — Korean, written for the user —
+  // and shared-types did not declare the field, so no renderer code could
+  // read it and none did.  Measured on a mono 22.05 kHz wav: three warnings
+  // crossed the IPC boundary and the user was told none of them.
+  //
+  // Driven through the real engine here, because the warnings are the engine's
+  // judgement about the file and a stub would only prove the markup renders.
+  {
+    const mono = path.join(WORK, 'media', 'mono-22k.wav');
+    fs.writeFileSync(mono, Buffer.alloc(0));
+    const built = spawnSync(FF, ['-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
+      '-ar', '22050', '-ac', '1', '-acodec', 'pcm_s16le', mono], { encoding: 'utf8' });
+
+    const shown = await page.evaluate(async (monoPath) => {
+      const api = window.electronAPI;
+      const analysis = await api.invoke('audio:analyze', monoPath);
+      const store = await import('/stores/audioStore.ts');
+      const app = await import('/stores/appStore.ts');
+      app.useAppStore.getState().setPage('home');
+      store.useAudioStore.getState().clearQueue();
+      store.useAudioStore.getState().addFilesToQueue([monoPath]);
+      const id = store.useAudioStore.getState().queue[0]?.id;
+      store.useAudioStore.getState().updateQueueItem(id, { analysis });
+      await new Promise((r) => setTimeout(r, 400));
+      const list = document.querySelector('[data-testid="analysis-warnings"]');
+      const text = list ? list.innerText.trim() : '';
+      store.useAudioStore.getState().clearQueue();
+      return {
+        codes: (analysis.warnings ?? []).map((w) => w.code),
+        rendered: text,
+        lines: list ? list.querySelectorAll('li').length : 0,
+      };
+    }, mono);
+
+    expect(
+      built.status === 0 && shown.codes.includes('MONO_INPUT')
+        && shown.codes.includes('NON_STANDARD_SAMPLE_RATE'),
+      'the engine says what is wrong with a mono 22 kHz file',
+      built.status === 0 ? shown.codes.join(', ') : `could not build the file: ${built.stderr}`,
+    );
+    expect(
+      shown.lines === shown.codes.length && /22050|모노/.test(shown.rendered),
+      'and the queue row the file sits on says it to the user',
+      shown.lines > 0
+        ? `${shown.lines} line(s) on the row: "${shown.rendered.replace(/\n/g, ' / ').slice(0, 110)}"`
+        : 'nothing was rendered on the row',
+    );
+    fs.rmSync(mono, { force: true });
   }
 
   // ── A file the app cannot decode ──────────────────────────────────────

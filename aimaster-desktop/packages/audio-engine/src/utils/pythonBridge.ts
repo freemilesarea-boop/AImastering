@@ -36,6 +36,8 @@ interface QueuedCall {
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
   overrideTimeoutMs?: number | undefined;
+  /** Cleared when the call is finally sent, or when the queue is rejected. */
+  readyTimer?: ReturnType<typeof setTimeout>;
 }
 
 export class PythonBridge extends EventEmitter {
@@ -90,6 +92,7 @@ export class PythonBridge extends EventEmitter {
         this.emit('ready');
         // Flush queued calls now that the bridge is ready
         for (const queued of this.readyQueue) {
+          if (queued.readyTimer) clearTimeout(queued.readyTimer);
           this._sendCall(
             queued.method, queued.params,
             queued.resolve, queued.reject,
@@ -156,12 +159,35 @@ export class PythonBridge extends EventEmitter {
         return reject(new Error('Python bridge has not been spawned'));
       }
       if (!this.ready) {
-        // Queue until READY received
-        this.readyQueue.push({
+        // Queue until READY received — with a deadline on the WAIT, not only
+        // on the sent call.
+        //
+        // The timer used to be armed inside `_sendCall`, so a call made before
+        // READY had no deadline at all: an engine that starts, stays alive and
+        // never prints READY — a PyInstaller bootloader stuck unpacking, a
+        // binary held up by a virus scanner — left every call pending for
+        // ever, with nothing for the renderer to show and no way for
+        // `audioHandlers` to know it should respawn.  Only an engine that
+        // EXITED rejected them (`_rejectQueue` on 'exit').
+        //
+        // Found by breaking this queue on purpose: the call did not fail, it
+        // stopped existing, and the test driving it hung instead of reporting.
+        const waitMs = overrideTimeoutMs
+          ?? this.opts.timeoutMs
+          ?? METHOD_TIMEOUTS[method]
+          ?? DEFAULT_TIMEOUT_MS;
+        const entry: QueuedCall = {
           method, params, overrideTimeoutMs,
           resolve: resolve as (v: unknown) => void,
           reject,
-        });
+        };
+        entry.readyTimer = setTimeout(() => {
+          this.readyQueue = this.readyQueue.filter((q) => q !== entry);
+          this.emit('log', `RPC gave up waiting for READY (${method} after ${waitMs}ms)`);
+          reject(new Error(
+            `RPC timeout after ${waitMs}ms (method: ${method}) — engine never reported READY`));
+        }, waitMs);
+        this.readyQueue.push(entry);
         return;
       }
       this._sendCall(method, params, resolve as (v: unknown) => void, reject, overrideTimeoutMs);
@@ -206,6 +232,7 @@ export class PythonBridge extends EventEmitter {
 
   private _rejectQueue(err: Error): void {
     for (const queued of this.readyQueue) {
+      if (queued.readyTimer) clearTimeout(queued.readyTimer);
       queued.reject(err);
     }
     this.readyQueue = [];

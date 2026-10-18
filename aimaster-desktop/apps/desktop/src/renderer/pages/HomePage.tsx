@@ -728,6 +728,25 @@ function QueueRow({
         </p>
       )}
 
+      {/* What the engine noticed about the FILE, as opposed to about the run.
+          `analyze` has always returned these — Korean, written for the user —
+          and until shared-types declared the field nothing could read them.
+          Measured on a mono 22.05 kHz wav: three warnings crossed the wire and
+          the user was told none of them.  Shown here because this is where the
+          file is, and before the master is the only time they are useful. */}
+      {(item.analysis?.warnings?.length ?? 0) > 0 && (
+        <ul
+          data-testid="analysis-warnings"
+          className="mt-1.5 space-y-0.5 text-[11px] leading-snug list-disc pl-4 text-amber-200/80"
+        >
+          {item.analysis!.warnings.map((w) => (
+            <li key={w.code} className={w.level === 'error' ? 'text-red-300' : ''}>
+              {w.userMessage}
+            </li>
+          ))}
+        </ul>
+      )}
+
       {/* Done: LUFS info + download buttons + preview */}
       {item.status === 'done' && item.masteringResult && (
         <>

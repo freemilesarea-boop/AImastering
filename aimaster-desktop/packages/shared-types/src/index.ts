@@ -124,6 +124,37 @@ export interface AIDetectionResult {
   upsampleSuspected: boolean;
 }
 
+/** One thing the engine noticed about a file, in words meant for the user. */
+export interface EngineWarning {
+  /** Machine-readable: NON_STANDARD_SAMPLE_RATE, MONO_INPUT, CLIPPING_DETECTED… */
+  code: string;
+  level: 'info' | 'warning' | 'error' | string;
+  /** Korean, ready to show. */
+  userMessage: string;
+  /** English detail for the log — never shown to the user. */
+  devDetail?: string;
+}
+
+/** Measured state of one audio file, as the engine reports it. */
+export interface WaveformStats {
+  sampleRate: number;
+  channels: number;
+  durationSec: number;
+  rmsDb: { l: number; r: number; overall: number };
+  samplePeakDb: { l: number; r: number; overall: number };
+  dcOffset: { dbL: number; dbR: number; detected: boolean };
+  /** null when the file is mono, or the correlation is not a number. */
+  stereoCorrelation: number | null;
+  lrBalanceDb: number;
+  lrImbalanceDetected: boolean;
+  silenceStartMs: number;
+  silenceEndMs: number;
+  clippingDetected: boolean;
+  clippingSamples: number;
+  spectralBalance: { lowToMidDb: number; highToMidDb: number } | null;
+  warnings: EngineWarning[];
+}
+
 export interface AudioAnalysisResult {
   fileInfo: AudioFileInfo;
   loudness: LoudnessStats;
@@ -131,6 +162,23 @@ export interface AudioAnalysisResult {
   dcOffsetDb: number;
   silenceStartMs: number;
   silenceEndMs: number;
+  /**
+   * What the engine noticed about this file, in Korean, ready to show.
+   *
+   * The engine has always sent this — `analyzer.py` computes it next to the
+   * loudness measurement — and this type did not declare it, so no code could
+   * read it and nothing did.  Measured on a mono 22.05 kHz file: three
+   * warnings crossed the wire ("샘플레이트 22050 Hz는 비권장 값입니다…",
+   * "모노 파일이 입력되었습니다…", WAVEFORM_DETAIL) and the user was told
+   * none of them.  Empty array on a file with nothing worth saying.
+   */
+  warnings: EngineWarning[];
+  /**
+   * The full measured picture of the input, which `dcOffsetDb`,
+   * `silenceStartMs` and `silenceEndMs` above are three fields of.  Also
+   * always sent, also undeclared until now.
+   */
+  waveform?: WaveformStats;
 }
 
 export interface MasteringOptions {
@@ -344,6 +392,22 @@ export interface MasteringResult {
    * 항상 활성이며, 모드 무관 보컬 명료도 우선.
    */
   vocalProtection?: VocalProtectionReport;
+
+  /**
+   * The style the engine actually applied, echoed back.
+   *
+   * The UI reads its own request (`options.style`) today, which is the same
+   * value whenever nothing overrode it — this is the authoritative answer,
+   * and it was being sent and dropped.
+   */
+  style?: MasteringStyle | string;
+  /**
+   * Measured state of the file that was written — the same shape `analyze`
+   * reports for the input, so before and after can be compared field by
+   * field.  `spectralBalance` above is derived from it.  Sent on every
+   * master, undeclared until now.
+   */
+  postWaveform?: WaveformStats | null;
 
   /** v3.4 — Ozone-style reference matching result */
   referenceMatch?:    ReferenceMatchReport;
