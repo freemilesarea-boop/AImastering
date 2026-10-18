@@ -39,7 +39,7 @@ import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { resolveFFmpegPath, resolveFFprobePath } from '@aimaster/audio-engine';
+import { resolveFFmpegPath, resolveFFprobePath, classifyFFmpegError } from '@aimaster/audio-engine';
 import { log } from '../utils/logger.js';
 import { storeKey, sweepStore } from '../utils/pcm-store.js';
 
@@ -174,6 +174,28 @@ async function computePeaks(
 export function registerDecodeHandlers(ipc: IpcMain, packaged: boolean, resourcesPath: string): void {
   const binOpts = { packaged, resourcesPath };
 
+/**
+ * An ffmpeg failure, in a sentence the DAW can put in front of someone.
+ *
+ * Both spawners here reject with `` `${bin} exited ${code}: ${stderr}` `` — a
+ * plain Error carrying ffmpeg's English stderr — and that string used to be
+ * what crossed the IPC boundary.  The renderer then threw even that away and
+ * recorded "소스를 준비하지 못했습니다" instead, so a file that was simply not
+ * audio, a file that had moved, and a disk with no room left all arrived at
+ * the user as the same sentence, which named none of them.
+ *
+ * `classifyFFmpegError` already knew how to tell them apart in Korean.  It was
+ * one import away and nothing called it.
+ */
+function decodeFailure(err: unknown, filePath: string, isProbe: boolean): Error {
+  const app = classifyFFmpegError(err, isProbe, filePath);
+  // The English half stays here, where support can find it; the Korean half
+  // is what travels.
+  log.warn(`[pcm] ${isProbe ? 'ffprobe' : 'ffmpeg'} failed on ${path.basename(filePath)}`
+    + ` — ${app.code}: ${app.devDetail}`);
+  return new Error(app.userMessage);
+}
+
   ipc.handle('daw:pcm-source', async (_e, req: unknown): Promise<PcmSourceResult> => {
     const request = req as Partial<PcmSourceRequest> | undefined;
     // Through the shared validator rather than its own copy of the string /
@@ -188,7 +210,20 @@ export function registerDecodeHandlers(ipc: IpcMain, packaged: boolean, resource
     }
 
     const resolved = filePath;
-    const stat = await fs.promises.stat(resolved);
+    // Before ffmpeg is involved at all.  This used to reach the renderer as
+    // `ENOENT: no such file or directory, stat '/Users/…/믹스.wav'` — Node's
+    // own English, which then became the reason the DAW remembered for the
+    // track.  A moved file is the most ordinary failure there is here.
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.stat(resolved);
+    } catch (err) {
+      const code = (err as { code?: string }).code ?? '';
+      log.warn(`[pcm] cannot stat ${path.basename(resolved)} — ${code || String(err)}`);
+      throw new Error(code === 'ENOENT'
+        ? `파일을 찾을 수 없습니다 — ${path.basename(resolved)}`
+        : `파일을 열 수 없습니다 — ${path.basename(resolved)} (${code || String(err)})`);
+    }
     if (!stat.isFile()) throw new Error('daw:pcm-source: not a regular file');
 
     const key = storeKey(resolved, stat.mtimeMs, stat.size, sampleRate);
@@ -209,7 +244,12 @@ export function registerDecodeHandlers(ipc: IpcMain, packaged: boolean, resource
       }
     } catch { /* miss - decode below */ }
 
-    const info = await probe(resolveFFprobePath(binOpts), resolved);
+    let info: ProbeResult;
+    try {
+      info = await probe(resolveFFprobePath(binOpts), resolved);
+    } catch (err) {
+      throw decodeFailure(err, resolved, true);
+    }
     if (info.durationSec > MAX_SECONDS) {
       throw new Error(`daw:pcm-source: ${Math.round(info.durationSec / 60)}분짜리 파일은 너무 깁니다`);
     }
@@ -258,7 +298,11 @@ export function registerDecodeHandlers(ipc: IpcMain, packaged: boolean, resource
       // would leave one pointing at samples that never arrived.  The sweep
       // would clear it in an hour; clearing it here means it is never seen.
       await fs.promises.rm(sidePath, { force: true }).catch(() => { /* never written */ });
-      throw err;
+      // Only ffmpeg's own failures are translated; the Korean messages this
+      // block throws itself ("디코딩 결과가 비어 있습니다") are already the
+      // sentence to show, and classifying them would turn them into UNKNOWN.
+      const msg = err instanceof Error ? err.message : String(err);
+      throw /^ffmpeg exited /.test(msg) ? decodeFailure(err, resolved, false) : err;
     }
   });
 }

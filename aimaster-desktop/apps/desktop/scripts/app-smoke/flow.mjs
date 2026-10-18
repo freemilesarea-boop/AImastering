@@ -721,6 +721,59 @@ try {
     });
   }
 
+  // ── A file the app cannot decode ──────────────────────────────────────
+  // The reason has to survive two hand-offs to be worth anything: main has to
+  // turn ffmpeg's English stderr into a sentence, and the renderer has to keep
+  // it.  Measured before this was fixed: main rejected with
+  // `ffmpeg exited 1: ... Invalid data found ...` and the renderer replaced it
+  // with "소스를 준비하지 못했습니다" — the same words for a file that is not
+  // audio, a file that has moved, and a disk with no room left.
+  //
+  // Through the real IPC with the real ffmpeg, because the classification runs
+  // in main and nothing in the renderer can stand in for it.
+  {
+    const bad = path.join(WORK, 'media', 'not-audio.wav');
+    fs.writeFileSync(bad, Buffer.from(Array.from({ length: 4096 }, (_, i) => (i * 37) % 256)));
+    const gone = path.join(WORK, 'media', '사라진 파일.wav');
+
+    const said = await page.evaluate(async ([badPath, gonePath]) => {
+      const ask = async (p) => {
+        try {
+          await window.electronAPI.invoke('daw:pcm-source', { path: p, sampleRate: 48000 });
+          return '(no error at all)';
+        } catch (e) { return String(e?.message ?? e); }
+      };
+      const store = await import('/daw/engine/audio-cache.ts');
+      store.clearAudioCache();
+      const report = await store.decodeForDisplay([{ id: 'smoke-bad', path: badPath }]);
+      const remembered = store.missingFiles().find((f) => f.id === 'smoke-bad');
+      return {
+        corrupt: await ask(badPath),
+        missing: await ask(gonePath),
+        reason: remembered?.reason ?? '(nothing was remembered)',
+        failed: report.failed.length,
+      };
+    }, [bad, gone]);
+
+    expect(
+      /손상|지원하지 않는/.test(said.corrupt) && !/ffmpeg exited/.test(said.corrupt),
+      'a file that is not audio comes back as a sentence, not as ffmpeg stderr',
+      said.corrupt.slice(0, 120),
+    );
+    expect(
+      /찾을 수 없습니다/.test(said.missing) && said.missing.includes('사라진 파일.wav')
+        && !/ENOENT|no such file/i.test(said.missing),
+      'and so does a file that is not there — naming it, before ffmpeg is involved',
+      said.missing.slice(0, 120),
+    );
+    expect(
+      said.failed === 1 && /손상|지원하지 않는/.test(said.reason),
+      'and the DAW remembers that reason against the track, not a placeholder',
+      `failed=${said.failed}, reason="${said.reason.slice(0, 90)}"`,
+    );
+    fs.rmSync(bad, { force: true });
+  }
+
   // ── The licence, on the real store ────────────────────────────────────
   // license-core-selftest drives the service against a Map.  This asks the
   // running app, where the store is electron-store on disk and the machine id
