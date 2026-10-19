@@ -189,6 +189,57 @@ try {
   expect(an.ok && typeof lufs === 'number', 'the bundled Python engine analyses a file',
     an.ok ? `${lufs?.toFixed?.(2)} LUFS` : an.e.slice(0, 150));
 
+  // ── Whose ffmpeg was that? ────────────────────────────────────────────
+  // The step above proves the engine analysed the file.  It does NOT prove it
+  // used the ffmpeg this build SHIPS: on any machine with ffmpeg on PATH —
+  // every developer's, and this container's — a packaged build that had lost
+  // its bundled binary, or lost `applyBundledFfmpegEnv`, would resolve the
+  // bare name and pass that step exactly the same way.  The user who has no
+  // system ffmpeg is the one who would find out.
+  //
+  // Both halves of the app say which binary they picked, and until now nobody
+  // read either: main logs `FFmpeg status` with the resolved path and version,
+  // and the Python engine logs its own two paths at startup.  Measured on this
+  // run — the bundled build is 7.0.2-static while the host's is 6.1.1, so the
+  // version is a second, independent discriminator.
+  {
+    const logPath = path.join(WORK, 'electron.log');
+    const log = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : '';
+    const bundled = path.join(RESOURCES, 'bin');
+    const status = /FFmpeg status (\{[^\n]*\})/.exec(log);
+    let main = null;
+    try { main = status ? JSON.parse(status[1]) : null; } catch { main = null; }
+    expect(
+      main !== null && typeof main.path === 'string' && main.path.startsWith(bundled)
+        && main.available === true && main.ffprobeAvailable === true,
+      'the main process resolved the ffmpeg it shipped, not the one on PATH',
+      main === null
+        ? (log ? 'no "FFmpeg status" line in the log' : `no log at ${logPath}`)
+        : `${main.path} (version ${String(main.version)})`,
+    );
+
+    // The engine logs the path it was GIVEN, which is not the same claim as
+    // "it ran that binary": with the shipped ffmpeg deleted and
+    // `applyBundledFfmpegEnv` still exporting its path, this check passed
+    // while the analysis above failed.  So it asserts the two halves that
+    // make the claim true — the engine was pointed inside resources, and
+    // there is a binary there — and leaves "it worked" to the step above.
+    const engineFfmpeg = /\[INFO\] ffmpeg\s+binary: (\S+)/.exec(log);
+    const engineFfprobe = /\[INFO\] ffprobe binary: (\S+)/.exec(log);
+    const present = ['ffmpeg', 'ffprobe']
+      .filter((n) => fs.existsSync(path.join(bundled, process.platform === 'win32' ? `${n}.exe` : n)));
+    expect(
+      engineFfmpeg?.[1]?.startsWith(bundled) === true
+        && engineFfprobe?.[1]?.startsWith(bundled) === true
+        && present.length === 2,
+      'and the engine was pointed at the pair that is actually in resources',
+      engineFfmpeg
+        ? `engine told ${engineFfmpeg[1]} / ${String(engineFfprobe?.[1])}; `
+          + `present in resources: ${present.join(' + ') || 'NEITHER'}`
+        : 'the engine never logged which binary it picked',
+    );
+  }
+
   const prof = await page.evaluate(async (w) => {
     try { const r = await window.electronAPI.invoke('audio:song-profile', w); return { ok: true, keys: Object.keys(r ?? {}).slice(0, 6) }; }
     catch (e) { return { ok: false, e: String(e?.message ?? e) }; }

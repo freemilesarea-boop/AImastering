@@ -8,12 +8,8 @@ import { v4 as uuidv4 } from 'uuid';import {
   analyzeFile,
   masterFile,
   runQC,
-  AppError,
-  classifyFFmpegError,
   outputDirNotWritable,
   pythonProcessFailed,
-  unknownError,
-  pathEncodingError,
 } from '@aimaster/audio-engine';
 import type {
   MasteringOptions,
@@ -25,6 +21,7 @@ import { log } from '../utils/logger.js';
 import { recordFailure } from '../utils/failureLog.js';
 import { recordPipelineWarning } from '../utils/supportBundle.js';
 import { validateAbsoluteFilePath } from '../utils/ipcValidation.js';
+import { appErrorFor } from './engine-error.js';
 import { applyBundledFfmpegEnv } from '../utils/ffmpegEnv.js';
 import { pythonFallbackMayStandIn } from '../offline/load-mastering-chain-node.js';
 import { findUp, PYTHON_ENTRY_REL } from '../utils/workspace-paths.js';
@@ -216,49 +213,14 @@ function assertTmpWritable(): void {
  *
  * Electron IPC (structured-clone) only preserves standard Error.message/name.
  * Encoding the full AppError in message lets the renderer decode it faithfully.
+ *
+ * The decision itself lives in `engine-error.ts`, which imports no electron
+ * and is driven directly by a test — see the header there for the two branches
+ * that were wrong while they were in here.
  */
 function toAppError(err: unknown, filePath = ''): never {
-  let appErr: AppError;
+  const appErr = appErrorFor(err, filePath);
 
-  if (err instanceof AppError) {
-    appErr = err;
-  } else {
-    const msg = (err as Error).message ?? String(err);
-
-    // Spawn failure: binary not found
-    if (/ENOENT|spawn/i.test(msg)) {
-      appErr = pythonProcessFailed(
-        `Engine binary not found or failed to start: ${msg}`,
-        false,
-      );
-    }
-    // Python / JSON-RPC bridge errors
-    else {
-      const anyErr = err as Record<string, unknown>;
-      if (typeof anyErr['code'] === 'number') {
-        const rpcCode = anyErr['code'] as number;
-        appErr = pythonProcessFailed(`JSON-RPC code=${rpcCode}: ${msg}`, rpcCode === -32000);
-      }
-      // Path encoding
-      else if (/EINVAL|ENAMETOOLONG/i.test(msg) && filePath) {
-        appErr = pathEncodingError(filePath, msg);
-      }
-      // FFmpeg classification
-      else {
-        try {
-          throw classifyFFmpegError(err, false, filePath);
-        } catch (classified) {
-          if (classified instanceof AppError) {
-            appErr = classified;
-          } else {
-            appErr = unknownError(msg);
-          }
-        }
-      }
-    }
-  }
-
-  // Encode all AppError fields in Error.message so Electron IPC preserves them
   const serialized = new Error(
     JSON.stringify({
       __appError: true,

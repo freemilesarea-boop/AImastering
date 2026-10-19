@@ -78,8 +78,21 @@ const BUILD_HINT = [
   '    --exclude-module pkg_resources --exclude-module setuptools \\',
   '    app/main.py',
   '',
-  'The last line is not optional: without it the binary builds and then',
-  'dies on startup with "No module named \'backports\'".',
+  'The --exclude-module line is not optional: without it the binary builds',
+  'and then dies on startup with "No module named \'backports\'".  (It used',
+  'to say "the last line", which is `app/main.py` — the one line nobody',
+  'would drop.)',
+  '',
+  'That command WRITES a new engine.spec over the one in the repo (any',
+  'PyInstaller run with --name does).  The committed spec is hand-written',
+  'and commented; restore it afterwards rather than committing the',
+  'generated one.',
+  '',
+  'Measured on this machine, 2026-10-19: PyInstaller 6.22.3 against the',
+  'pinned requirements produced a 38 MB `engine` that reaches READY and',
+  'answers `analyze` in 0.6 s.  The container loses public/bin when it is',
+  'recreated, so this is the command to run before `pnpm dist` or',
+  '`pnpm smoke:packaged` in a fresh one.',
 ].join('\n');
 
 /** Shorten captured output for an error message. */

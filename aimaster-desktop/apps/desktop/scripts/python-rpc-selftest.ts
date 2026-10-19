@@ -218,13 +218,22 @@ async function main(): Promise<void> {
   {
     const engine = fakeEngine(`(req, send) => send(JSON.stringify({ id: req.id, error: { code: -32000, message: '오디오 파일을 읽을 수 없습니다.' } }) + '\\n')`);
     const bridge = bridgeOn(engine);
-    let message = '';
-    try { await ask(bridge, 'analyze'); } catch (err) { message = (err as Error).message; }
+    const thrown = await ask(bridge, 'analyze')
+      .then(() => null, (err: Error & { rpcCode?: number }) => err);
     bridge.kill();
     check(
       'an error reply rejects with the Korean message the engine wrote',
-      message === '오디오 파일을 읽을 수 없습니다.',
-      `"${message}"`,
+      thrown?.message === '오디오 파일을 읽을 수 없습니다.',
+      `"${String(thrown?.message)}"`,
+    );
+    check(
+      'and the JSON-RPC code travels with it',
+      thrown?.rpcCode === -32000,
+      // Without the code, the engine's own sentence about a missing ffmpeg
+      // reached the user as "알 수 없는 오류가 발생했습니다": `engine-error.ts`
+      // keys on it to tell an answer FROM the engine from a failure to reach
+      // the engine at all.
+      `rpcCode=${String(thrown?.rpcCode)}`,
     );
   }
   {

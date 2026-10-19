@@ -138,7 +138,15 @@ export class PythonBridge extends EventEmitter {
           clearTimeout(pending.timer);
           this.pending.delete(rpc.id);
           if (rpc.error) {
-            pending.reject(new Error(rpc.error.message));
+            // The CODE travels with it.  `new Error(message)` alone threw it
+            // away, and the only consumer — `toAppError` in audioHandlers —
+            // keys its "this is an answer from the engine" branch on a
+            // numeric code, so that branch could never fire: the engine's own
+            // Korean sentence about a missing ffmpeg came out as "알 수 없는
+            // 오류가 발생했습니다".  Measured against the packaged engine.
+            const failure = new Error(rpc.error.message) as Error & { rpcCode?: number };
+            failure.rpcCode = rpc.error.code;
+            pending.reject(failure);
           } else {
             pending.resolve(rpc.result);
           }
