@@ -42,48 +42,51 @@ files:
   - dist/**/*
   - dist-electron/**/*
   - "!dist/renderer/**/*.map"
-  # The separation model runtime — ONE file.
+
+  # ── node_modules: nothing, except what is read at runtime ────────────────
   #
-  # `onnxruntime-web` is 133 MB installed because it ships every build variant,
-  # and this list used to carry four entries plus all of onnxruntime-common,
-  # on the assumption that the renderer would import the package at runtime.
-  # It does not, and the difference was measured rather than guessed:
-  #
-  #   · the runtime's JAVASCRIPT is bundled into dist/renderer/model.worker.js
-  #     at build time — `onnxruntime-web/wasm` folds into a classic IIFE, which
-  #     is why the model worker needs no module system and no resolution.
-  #   · the runtime's 12.86 MB `.wasm` is the only thing left, and it is never
-  #     fetched: the main process reads it with Node fs (which understands
-  #     asar) and hands the bytes over, and `env.wasm.wasmBinary` takes them.
-  #     ONNX documents that this makes `wasmPaths` irrelevant, so there is no
-  #     path that has to be right.
-  #
-  # So the earlier note's "check that `wasmPaths` points at wherever this
-  # lands" is moot — nothing points anywhere.  What DOES still need a real
-  # packaging run: that `daw:model-runtime` finds this file inside the asar.
-  # It tries app.getAppPath() first and logs which candidate won.  That run
-  # has now happened — flow-packaged.mjs drives the channel and checks the
-  # size of what came back.
-  #
-  # AND THE NARROWING ONLY APPLIED TO THE NOTE, NOT TO THE BUILD.  Naming one
-  # file here adds that file; it does not subtract the rest, because
-  # electron-builder puts every production dependency in the asar on its own.
-  # Measured on the packaged tree, before these two exclusions:
+  # electron-builder puts every production dependency in the asar on its own,
+  # whatever this list says, so naming one file here ADDS that file — it does
+  # not subtract the rest.  That is how `onnxruntime-web` got in: the list
+  # carried four of its build variants on the assumption that the renderer
+  # imports the package at runtime, and the package shipped whole besides.
+  # Measured on the packaged tree:
   #
   #     asar content total                     165.2 MB
-  #       node_modules/onnxruntime-web/dist    134.4 MB   ← all four variants
-  #       node_modules/onnxruntime-web/lib       3.0 MB   ← TypeScript sources
-  #       onnxruntime-web + -common total       137.8 MB
+  #       node_modules/onnxruntime-web/dist    134.4 MB
+  #       node_modules/onnxruntime-web/lib       3.0 MB
+  #       everything else under node_modules    21.4 MB
   #
-  # for ONE 12.9 MB file that main reads by path.  Nothing requires either
-  # package at runtime: `model-worker-entry.ts` imports `onnxruntime-web/wasm`
-  # and vite folds it into dist/renderer/model.worker.js (85 KB) at build
-  # time, and esbuild leaves only `electron` and `node-machine-id` external in
-  # the main bundle.  So the packages are excluded and the one file is put
-  # back — order matters here, the later pattern wins.
-  - "!node_modules/onnxruntime-web/**/*"
-  - "!node_modules/onnxruntime-common/**/*"
+  # None of it is loaded as a module.  `esbuild.main.cjs` bundles the main
+  # process, the plugin host and the preload with only the specifiers in its
+  # EXTERNAL list left out, and vite bundles the renderer and its workers.
+  # Measured on the three built bundles rather than assumed: the only bare
+  # specifiers reachable by `require` are node builtins, `electron` and
+  # `node-machine-id`, there is no `require` with a computed argument and no
+  # `import()` of a computed specifier.  (`require("ajv/dist/runtime/equal")`
+  # does appear — inside a string literal that ajv hands to callers who ask
+  # for standalone code.  Nothing here asks.)
+  #
+  # So node_modules is excluded wholesale and the two things that are read at
+  # runtime are put back.  Order matters: the later pattern wins.
+  - "!node_modules/**/*"
+
+  # Read as a FILE, not as a module: `daw:model-runtime` in
+  # src/main/ipc/fileHandlers.ts joins node_modules/onnxruntime-web/dist/<name>
+  # and hands the bytes to the model worker, which has the runtime's
+  # JavaScript bundled in (dist/renderer/model.worker.js) and takes the
+  # binary through `env.wasm.wasmBinary` — so no path has to resolve and
+  # `wasmPaths` is irrelevant.  12.9 MB, and the only variant that is asked
+  # for.  A packaging run drives the channel and checks the size that comes
+  # back (scripts/app-smoke/flow-packaged.mjs).
   - node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm
+
+  # Required as a MODULE, because esbuild leaves it external — it reads the
+  # machine id by shelling out, and the licence binding calls it.  Anything
+  # added to EXTERNAL in esbuild.main.cjs needs a line like this one, or the
+  # app breaks in a packaged build only; asar-payload-selftest.ts fails when
+  # one is missing.
+  - node_modules/node-machine-id/**/*
 
 # ── ASAR layout ──────────────────────────────────────────────────────────────
 # Default asar:true is kept — the main process reads .worklet.js / .wasm via

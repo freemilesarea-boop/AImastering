@@ -16,6 +16,26 @@ const path    = require('path');
 
 const isDev = process.argv.includes('--dev');
 
+/**
+ * The only specifiers left out of the three bundles.
+ *
+ * Exported because electron-builder.yml excludes node_modules wholesale and
+ * has to put each of these back by hand — a specifier added here and not
+ * there breaks a packaged build only.  asar-payload-selftest.ts reads this
+ * list and the yml and fails when they disagree, so neither side is a
+ * transcription of the other.
+ *
+ * `electron` is the exception: the runtime provides it, it is not in the
+ * app's node_modules, and nothing needs to ship it.
+ */
+const EXTERNAL = ['electron', 'node-machine-id'];
+module.exports = { EXTERNAL };
+
+// Required for EXTERNAL alone when a test imports this file, so stop before
+// the builds.  A top-level `return` is legal in CommonJS — the module body is
+// a function — and keeps the three build calls below at their own indent.
+if (require.main !== module) return;
+
 // v3.4.5 — Auto-update gate baked at build time.
 // CI sets AUTO_UPDATE_ENABLED=true ONLY for tag pushes (production
 // installer that ships to a published GitHub Release).  Branch / workflow_
@@ -40,7 +60,7 @@ const shared = {
   target:    'node20',
   sourcemap: isDev ? 'inline' : false,
   minify:    !isDev,
-  external:  ['electron', 'node-machine-id'],
+  external:  EXTERNAL,
   define: {
     '__AUTO_UPDATE_ENABLED__':        JSON.stringify(AUTO_UPDATE_ENABLED),
     'process.env.LICENSE_API_URL':     JSON.stringify(LICENSE_API_URL),

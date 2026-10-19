@@ -141,6 +141,17 @@ if (page) {
 }
 
 try {
+  // No window at all is a RESULT, not a crash in the harness: a main process
+  // that dies before `createWindow` still answers CDP, so `page` comes back
+  // undefined and every step below used to die on `page.url` with a TypeError
+  // and no step name.  Measured that way once — the asar built without
+  // `node_modules/node-machine-id` logs `Cannot find module 'node-machine-id'`
+  // and opens nothing — so say which it is and stop.
+  expect(Boolean(page), 'the packaged app opened a window',
+    page ? 'one page attached' : 'CDP answered but there is no page — main died before createWindow; '
+      + 'see electron.log in the smoke directory');
+  if (!page) throw new Error('no page');
+
   expect(page.url().startsWith('file://'), 'the renderer is the packaged file:// bundle',
     `${page.url().slice(0, 56)}…`);
 
@@ -201,8 +212,14 @@ try {
   // `files:` adds that file; it does not subtract the rest, and the asar was
   // carrying all four runtime variants plus the package's TypeScript sources —
   // 137.8 MB of a 165.2 MB asar, for ONE file main reads.  Excluding the two
-  // packages and putting that file back took the content to 48.3 MB.  The size
-  // check is the ratchet: it is the user's download.
+  // packages and putting that file back took the content to 46.1 MB, and
+  // excluding the rest of node_modules — bundled into dist-electron at build
+  // time, never resolved as a module — took it to 18.4 MB, of which 13.5 MB is
+  // this one file.  The size check is the ratchet: it is the user's download.
+  //
+  // Two of those numbers were measured on an asar packaged over a `--dev` main
+  // bundle, so they carried 7.3 MB of inline sourcemap that a production build
+  // does not have.  The step below now refuses such a build outright.
   {
     const runtime = await page.evaluate(async () => {
       try {
@@ -248,12 +265,102 @@ try {
     );
 
     const bytes = fs.existsSync(asar) ? fs.statSync(asar).size : 0;
-    const CAP_MB = 70;
+    const CAP_MB = 25;
     expect(
       bytes > 0 && bytes < CAP_MB * 1e6,
       'and the asar still carries only the one copy of it',
       `app.asar is ${(bytes / 1e6).toFixed(1)} MB (cap ${CAP_MB} MB — it was 166 MB while the `
-      + 'whole runtime was in there; lower the cap if it shrinks again)',
+      + 'whole runtime was in there, and 46.7 MB while node_modules shipped whole; '
+      + 'lower the cap if it shrinks again)',
+    );
+
+    // ── Is this a production bundle at all ────────────────────────────────
+    //
+    // `node esbuild.main.cjs --dev` writes an INLINE sourcemap, which carries
+    // `sourcesContent` — every line of the main process in its original
+    // TypeScript.  `pnpm dist` runs `pnpm build` first and so cannot ship
+    // that, but `electron-builder` on its own packages whatever is in
+    // dist-electron, and reusing a dev bundle is exactly what a hurried
+    // packaging run does.  Measured: that is how the asar read 8.15 MB of
+    // dist-electron/main here, against 0.90 MB from a production build — so
+    // the number this smoke has been reporting carried 7.3 MB of source.
+    let mainBundle = '';
+    try { mainBundle = asarApi.extractFile(asar, 'dist-electron/main/index.js').toString('utf8'); }
+    catch { mainBundle = ''; }
+    //
+    // `sourcesContent` is not searched for directly: esbuild writes the map as
+    // a base64 data URI, so the word never appears in the bundle text and a
+    // test looking for it reports "no sourcemap" about a file that is 90%
+    // sourcemap.  Decode the URI and look inside it.
+    const inlineAt = mainBundle.indexOf('sourceMappingURL=data:');
+    let sourcesInside = mainBundle.includes('sourcesContent');
+    if (!sourcesInside && inlineAt !== -1) {
+      const at = mainBundle.indexOf('base64,', inlineAt);
+      try {
+        sourcesInside = at !== -1
+          && Buffer.from(mainBundle.slice(at + 7).trim(), 'base64').toString('utf8').includes('"sourcesContent"');
+      } catch { sourcesInside = false; }
+    }
+    const mapped = mainBundle.includes('sourceMappingURL');
+    expect(
+      mainBundle.length > 100_000 && !mapped && !sourcesInside,
+      'and the main bundle in it is a production build, not a dev one with the sources inside',
+      mainBundle === ''
+        ? 'could not read dist-electron/main/index.js out of the asar'
+        : `dist-electron/main/index.js is ${(mainBundle.length / 1e6).toFixed(2)} MB and carries `
+          + (sourcesInside
+            ? 'an inline sourcemap WITH sourcesContent — the main process TypeScript is in the installer'
+            : mapped ? 'a sourcemap reference' : 'no sourcemap'),
+    );
+
+    // ── And which node_modules are in there at all ────────────────────────
+    //
+    // The cap above is a ceiling; this is the rule.  electron-builder adds
+    // every production dependency on its own, so the yml excludes
+    // node_modules wholesale and puts back the two things that are reached at
+    // runtime: the file `daw:model-runtime` reads, and the one specifier
+    // esbuild leaves external.  Everything else — @anthropic-ai/sdk,
+    // protobufjs, the four @supabase packages, conf, ajv-formats,
+    // electron-updater — is bundled into dist-electron at build time and was
+    // 21.4 MB of dead weight.
+    //
+    // asar-payload-selftest.ts holds the two config files to each other in
+    // the suite.  This asks the artefact, which is the only place the answer
+    // is not a reading of a pattern.
+    //
+    // Walked off the header rather than `listPackage`, which also returns the
+    // directory entries: a scoped package would then read as both `@scope` and
+    // `@scope/name`, and the bare scope would look like an extra package.
+    const nodeModules = new Map();
+    try {
+      const { header } = asarApi.getRawHeader(asar);
+      const walk = (node, segments) => {
+        if (node.files) {
+          for (const [name, child] of Object.entries(node.files)) walk(child, segments.concat(name));
+          return;
+        }
+        if (segments[0] !== 'node_modules') return;
+        const pkg = segments[1]?.startsWith('@')
+          ? segments.slice(1, 3).join('/')
+          : segments[1];
+        if (!pkg) return;
+        nodeModules.set(pkg, (nodeModules.get(pkg) ?? 0) + (node.size ?? 0));
+      };
+      walk(header, []);
+    } catch { nodeModules.clear(); }
+    const ALLOWED = ['node-machine-id', 'onnxruntime-web'];
+    const packages = [...nodeModules.keys()].sort();
+    const extra = packages.filter((pkg) => !ALLOWED.includes(pkg));
+    const sized = (pkg) => `${pkg} ${((nodeModules.get(pkg) ?? 0) / 1e6).toFixed(2)} MB`;
+    expect(
+      packages.length > 0 && extra.length === 0,
+      'and node_modules in the asar is only what is reached at runtime',
+      packages.length === 0
+        ? 'the asar holds no node_modules at all — the model runtime cannot be read'
+        : extra.length === 0
+          ? `only ${packages.map(sized).join(', ')}`
+          : `also carries ${extra.length} more: ${extra.slice(0, 6).map(sized).join(', ')}`
+            + (extra.length > 6 ? ', …' : ''),
     );
   }
 
@@ -369,6 +476,14 @@ try {
       : rendererErrors.slice(0, 6).map((e) => `[${e.kind}] ${e.text.slice(0, 130)}`).join(' | ')
         + (rendererErrors.length > 6 ? ` … and ${rendererErrors.length - 6} more` : ''),
   );
+} catch (e) {
+  // A throw is still a measurement.  Without this the tally never printed and
+  // the run ended on a stack trace, which is how a broken step read as a
+  // harness bug rather than as a failing check.
+  if (String(e?.message ?? e) !== 'no page') {
+    expect(false, 'the flow ran to the end',
+      String(e?.stack ?? e).split('\n').slice(0, 3).join(' · '));
+  }
 } finally {
   await b.close();
 }
