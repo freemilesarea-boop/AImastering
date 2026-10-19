@@ -61,7 +61,28 @@ files:
   # So the earlier note's "check that `wasmPaths` points at wherever this
   # lands" is moot — nothing points anywhere.  What DOES still need a real
   # packaging run: that `daw:model-runtime` finds this file inside the asar.
-  # It tries app.getAppPath() first and logs which candidate won.
+  # It tries app.getAppPath() first and logs which candidate won.  That run
+  # has now happened — flow-packaged.mjs drives the channel and checks the
+  # size of what came back.
+  #
+  # AND THE NARROWING ONLY APPLIED TO THE NOTE, NOT TO THE BUILD.  Naming one
+  # file here adds that file; it does not subtract the rest, because
+  # electron-builder puts every production dependency in the asar on its own.
+  # Measured on the packaged tree, before these two exclusions:
+  #
+  #     asar content total                     165.2 MB
+  #       node_modules/onnxruntime-web/dist    134.4 MB   ← all four variants
+  #       node_modules/onnxruntime-web/lib       3.0 MB   ← TypeScript sources
+  #       onnxruntime-web + -common total       137.8 MB
+  #
+  # for ONE 12.9 MB file that main reads by path.  Nothing requires either
+  # package at runtime: `model-worker-entry.ts` imports `onnxruntime-web/wasm`
+  # and vite folds it into dist/renderer/model.worker.js (85 KB) at build
+  # time, and esbuild leaves only `electron` and `node-machine-id` external in
+  # the main bundle.  So the packages are excluded and the one file is put
+  # back — order matters here, the later pattern wins.
+  - "!node_modules/onnxruntime-web/**/*"
+  - "!node_modules/onnxruntime-common/**/*"
   - node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm
 
 # ── ASAR layout ──────────────────────────────────────────────────────────────

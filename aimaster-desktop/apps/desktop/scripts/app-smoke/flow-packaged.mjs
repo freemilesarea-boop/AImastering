@@ -25,6 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
+import asarApi from '@electron/asar';
 
 const PORT = process.argv[2] ?? '9444';
 const WORK = process.argv[3] ?? '/tmp/loui-pkg-smoke';
@@ -188,6 +189,73 @@ try {
   const lufs = an.ok ? (an.r?.loudness?.integratedLufs ?? an.r?.integratedLufs) : null;
   expect(an.ok && typeof lufs === 'number', 'the bundled Python engine analyses a file',
     an.ok ? `${lufs?.toFixed?.(2)} LUFS` : an.e.slice(0, 150));
+
+  // ── The separation runtime, inside the asar ───────────────────────────
+  // electron-builder.yml has said for a while that this is the one thing
+  // needing a real packaging run: `daw:model-runtime` reads the ONNX runtime's
+  // own .wasm out of the asar by path, trying `app.getAppPath()` first, and a
+  // 13 MB file resolved from the wrong place is exactly the kind of thing that
+  // works on one machine and not another.  This is that run.
+  //
+  // It also holds the narrowing that came out of it.  Naming one file in
+  // `files:` adds that file; it does not subtract the rest, and the asar was
+  // carrying all four runtime variants plus the package's TypeScript sources —
+  // 137.8 MB of a 165.2 MB asar, for ONE file main reads.  Excluding the two
+  // packages and putting that file back took the content to 48.3 MB.  The size
+  // check is the ratchet: it is the user's download.
+  {
+    const runtime = await page.evaluate(async () => {
+      try {
+        const r = await window.electronAPI.invoke('daw:model-runtime');
+        return { ok: true, from: r.from, size: r.size, bytes: r.bytes?.byteLength ?? r.bytes?.length ?? 0 };
+      } catch (e) { return { ok: false, e: String(e?.message ?? e) }; }
+    });
+    expect(
+      runtime.ok && runtime.size > 10e6 && runtime.bytes === runtime.size
+        && /app\.asar[\\/]node_modules[\\/]onnxruntime-web/.test(String(runtime.from)),
+      'the separation runtime is found inside the asar, by the path main tries first',
+      runtime.ok
+        ? `${(runtime.size / 1e6).toFixed(1)} MB from ${String(runtime.from).replace(RESOURCES, '<resources>')}`
+        : runtime.e.slice(0, 160),
+    );
+
+    // The reason excluding the package is safe, stated as a fact about the
+    // artifact rather than a belief about the build: the worker carries the
+    // runtime's own code, and asks for nothing by name at runtime.
+    //
+    // Two more things make that safe, both already true before this change
+    // and both found by trying to break this check: `model.worker.js` is a
+    // COMMITTED build output (src/renderer/public/) that vite copies
+    // verbatim, and `test:model-dispatch` runs `build-model-worker.mjs
+    // --check` so it cannot drift from the TypeScript — which is why editing
+    // the worker's source does not move this check, and why the suite is
+    // where that drift is caught.  And `model-session.loadRuntime()`, the one
+    // path that would need the package resolvable at runtime, has no caller:
+    // every `openModel` call injects the runtime (the worker its bundled one,
+    // the selftests a fake).
+    const asar = path.join(RESOURCES, 'app.asar');
+    let worker = '';
+    try { worker = asarApi.extractFile(asar, 'dist/renderer/model.worker.js').toString('utf8'); }
+    catch { worker = ''; }
+    expect(
+      worker.length > 50_000 && /wasmBinary|_OrtCreateSession/.test(worker)
+        && !/require\(['"]onnxruntime|import\(['"]onnxruntime/.test(worker),
+      'because the worker in the asar carries the runtime and asks for nothing by name',
+      worker
+        ? `model.worker.js is ${(worker.length / 1e3).toFixed(0)} KB with the runtime folded in, `
+          + 'and no bare onnxruntime import left in it'
+        : 'could not read dist/renderer/model.worker.js out of the asar',
+    );
+
+    const bytes = fs.existsSync(asar) ? fs.statSync(asar).size : 0;
+    const CAP_MB = 70;
+    expect(
+      bytes > 0 && bytes < CAP_MB * 1e6,
+      'and the asar still carries only the one copy of it',
+      `app.asar is ${(bytes / 1e6).toFixed(1)} MB (cap ${CAP_MB} MB — it was 166 MB while the `
+      + 'whole runtime was in there; lower the cap if it shrinks again)',
+    );
+  }
 
   // ── Whose ffmpeg was that? ────────────────────────────────────────────
   // The step above proves the engine analysed the file.  It does NOT prove it
