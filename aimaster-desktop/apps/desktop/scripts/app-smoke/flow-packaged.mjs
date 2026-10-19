@@ -187,10 +187,74 @@ try {
   if (!fs.existsSync(engineBin)) {
     bad('the shipped engine binary starts and reaches READY', `nothing at ${engineBin}`);
   } else {
-    const r = spawnSync(engineBin, [], { input: '', timeout: 120000, encoding: 'utf8', maxBuffer: 1 << 22 });
+    //
+    // It is asked `env_info` rather than started with empty stdin, because
+    // READY is not evidence that the engine works.  Everything the app shows
+    // that is not a loudness figure — band levels, stereo width, crest
+    // factor, duration — comes from numpy + soundfile, and when those cannot
+    // be imported `app/utils/audio_io.py` falls back and the engine KEEPS
+    // ANSWERING: `available: false`, every band at -120 dB, which the app
+    // reports as a damaged file.  Two PyInstaller specs shipped exactly that
+    // — one excluded `distutils` and lost the cffi graph, one pruned
+    // setuptools and took `secrets`, which numpy's compiled bit_generator
+    // imports from inside the extension.  Both built clean, both reached
+    // READY, both answered every request, and the `-18.45 LUFS` step below
+    // still passed because loudness comes from ffmpeg.
+    const probe = JSON.stringify({ id: 'smoke-env', method: 'env_info', params: {} });
+    const r = spawnSync(engineBin, [], {
+      input: `${probe}\n`, timeout: 120000, encoding: 'utf8', maxBuffer: 1 << 22,
+    });
     const txt = `${r.stdout ?? ''}\n${r.stderr ?? ''}`;
     expect(r.status === 0 && txt.includes('READY'), 'the shipped engine binary starts and reaches READY',
       r.status === 0 ? 'exit 0, READY' : `exit ${r.status}: ${txt.trim().split('\n').pop()}`);
+
+    //
+    // `replied` is tracked apart from `waveform` because the two failures are
+    // different repairs: no reply at all means the engine is broken, a reply
+    // with no `waveform` key means the binary predates the env_info field —
+    // which is how this step first ran red, against an engine built four
+    // minutes before the field existed.
+    let replied = false;
+    let waveform = null;
+    for (const line of String(r.stdout ?? '').split('\n')) {
+      if (!line.trim().startsWith('{')) continue;
+      try {
+        const msg = JSON.parse(line);
+        if (msg.id !== 'smoke-env') continue;
+        replied = true;
+        waveform = msg.result?.environment?.waveform ?? null;
+      } catch { /* a progress line, or a partial write */ }
+    }
+    expect(
+      waveform?.available === true && /^\d/.test(String(waveform?.numpy ?? ''))
+        && /^\d/.test(String(waveform?.soundfile ?? '')),
+      'and it can read a waveform, not just run ffmpeg',
+      !replied
+        ? 'the engine answered READY but gave no env_info reply — see its stderr'
+        : waveform === null
+          ? 'env_info replied without a `waveform` block — this engine binary was built before '
+            + 'the field existed; rebuild it from services/python-audio/engine.spec'
+          : waveform.available === true
+            ? `numpy ${waveform.numpy}, soundfile ${waveform.soundfile}`
+            : `waveform analysis unavailable: ${String(waveform.reason)} — every band would read -120 dB`,
+    );
+
+    // A ceiling, not a target.  `collect_all('numpy')` in engine.spec takes
+    // every submodule and every data file of the package, and what it dragged
+    // in was measured by reading the archive out of the built binary: numpy's
+    // test suite twice over (modules and .py data), setuptools with
+    // pkg_resources and distutils behind it, and — through setuptools'
+    // email/http/urllib — OpenSSL, in an engine that opens no socket.  37.95
+    // MB became 27.61 MB with none of it, and nothing else in the suite would
+    // notice it coming back.
+    const engineMb = fs.statSync(engineBin).size / 1e6;
+    const ENGINE_CAP_MB = 32;
+    expect(
+      engineMb < ENGINE_CAP_MB,
+      'and the engine binary carries no build-time tail',
+      `${engineMb.toFixed(2)} MB (cap ${ENGINE_CAP_MB} MB — it was 37.95 MB with numpy's tests, `
+      + 'setuptools and OpenSSL inside)',
+    );
   }
 
   const an = await page.evaluate(async (w) => {

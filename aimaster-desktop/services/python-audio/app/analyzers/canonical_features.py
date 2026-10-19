@@ -31,9 +31,10 @@ try:
     import numpy as np
     import soundfile as sf
     HAS_SF = True
-except ImportError:
+except ImportError as exc:
     HAS_SF = False
-    log("WARN", "soundfile/numpy not installed — feature extraction unavailable")
+    log("WARN", f"soundfile/numpy unavailable — feature extraction unavailable: "
+                f"{type(exc).__name__}: {exc}")
 
 try:
     from scipy import signal
