@@ -6,12 +6,14 @@ import fs from 'node:fs';
 import { v4 as uuidv4 } from 'uuid';import {
   PythonBridge,
   analyzeFile,
+  engineEnvInfo,
   masterFile,
   runQC,
   outputDirNotWritable,
   pythonProcessFailed,
 } from '@aimaster/audio-engine';
 import type {
+  EngineEnvInfo,
   MasteringOptions,
   LoudnessStats,
   PreviewRenderRequest,
@@ -89,6 +91,9 @@ function resolvePaths(): { pythonPath: string; scriptPath: string } {
 
   return { pythonPath, scriptPath };
 }
+
+/** `undefined` = not asked yet, `null` = asked and could not tell. */
+let engineStatus: EngineEnvInfo['environment'] | null | undefined;
 
 function getBridge(): PythonBridge {
   if (bridge) return bridge;
@@ -243,6 +248,37 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
     const reasonStr = typeof reason === 'string' ? reason : 'unknown';
     log.info('[audio:cancel] killing bridge', { reason: reasonStr });
     await killBridge();
+  });
+
+  // ── Can this engine read a waveform ─────────────────────────────────────
+  //
+  // `checkFFmpeg` has reported the encoder's health since the beginning and
+  // the engine had no equivalent, though it needed one more: a missing ffmpeg
+  // fails loudly at the first decode, while an engine whose numpy or
+  // soundfile cannot be imported GOES ON ANSWERING — `available: false`,
+  // every band at -120 dB, duration 0 — and the app shows that as a damaged
+  // file.  Two PyInstaller specs shipped exactly that; both reached READY and
+  // answered every request.  `env_info` has answered this question all along
+  // and was one of the six engine methods nothing in the app called.
+  //
+  // Lazy and cached: spawning the engine costs about four seconds, which does
+  // not belong in startup.  `null` means "could not ask", which is not a
+  // verdict — the renderer says nothing on null rather than warning wrongly.
+  ipc.handle('system:engine-status', async () => {
+    if (engineStatus !== undefined) return engineStatus;
+    try {
+      const info = await engineEnvInfo(getBridge());
+      engineStatus = info.environment ?? null;
+      const waveform = engineStatus?.waveform;
+      log.info('[engine-status]', { waveform });
+      if (waveform && waveform.available !== true) {
+        recordFailure('engine', 'env_info reports waveform analysis unavailable', { waveform });
+      }
+    } catch (err) {
+      log.error('[engine-status] env_info failed (app continues)', (err as Error).message);
+      engineStatus = null;
+    }
+    return engineStatus;
   });
 
   ipc.handle('audio:analyze', async (_e, filePath: unknown) => {

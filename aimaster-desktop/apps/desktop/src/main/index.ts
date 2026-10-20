@@ -292,7 +292,6 @@ app.whenReady().then(() => {
   }
 
   ipcMain.handle('system:ffmpeg-status', () => ffmpeg);
-
   // ── Worklet/WASM asset reader (packaged file:// + asar safe) ───────────
   // Chromium's fetch()/audioWorklet.addModule() of file:// resources inside
   // app.asar is unreliable/blocked.  The main process reads these assets via

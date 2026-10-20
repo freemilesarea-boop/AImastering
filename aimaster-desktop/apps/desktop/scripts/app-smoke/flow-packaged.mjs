@@ -247,6 +247,32 @@ try {
     // email/http/urllib — OpenSSL, in an engine that opens no socket.  37.95
     // MB became 27.61 MB with none of it, and nothing else in the suite would
     // notice it coming back.
+    // ── And can the APP ask the same question ─────────────────────────────
+    //
+    // The two steps above read the binary directly, which is the harness
+    // asking.  This is the app asking, over the channel a user's session
+    // actually uses: `system:engine-status` → `env_info` → the engine the
+    // main process spawned.  Until it existed, the app had no way to know its
+    // engine could not read a waveform — `env_info` was one of six methods
+    // `bridge.call()`'s type would not even accept.
+    const appSaysEngine = await page.evaluate(async () => {
+      try {
+        const r = await window.electronAPI.invoke('system:engine-status');
+        return { ok: true, waveform: r?.waveform ?? null };
+      } catch (e) { return { ok: false, e: String(e?.message ?? e) }; }
+    });
+    expect(
+      appSaysEngine.ok === true && appSaysEngine.waveform?.available === true
+        && /^\d/.test(String(appSaysEngine.waveform?.numpy ?? '')),
+      'and the app can ask the same thing over its own channel',
+      appSaysEngine.ok
+        ? (appSaysEngine.waveform
+            ? `numpy ${appSaysEngine.waveform.numpy}, soundfile ${appSaysEngine.waveform.soundfile}`
+              + `, available=${appSaysEngine.waveform.available}`
+            : 'the channel answered but carried no `waveform` — this main or engine predates the field')
+        : `system:engine-status threw: ${appSaysEngine.e}`,
+    );
+
     const engineMb = fs.statSync(engineBin).size / 1e6;
     const ENGINE_CAP_MB = 32;
     expect(

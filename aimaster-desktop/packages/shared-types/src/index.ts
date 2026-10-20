@@ -125,6 +125,31 @@ export interface AIDetectionResult {
 }
 
 /** One thing the engine noticed about a file, in words meant for the user. */
+/**
+ * What the engine says about itself — the slice the app reads.
+ *
+ * `waveform` is the one that matters and the one nothing could see: every
+ * number the app shows that is not a loudness figure (band levels, stereo
+ * width, crest factor, duration) comes from numpy + soundfile inside the
+ * engine, and when those cannot be imported `app/utils/audio_io.py` falls
+ * back and the engine KEEPS ANSWERING — `available: false`, every band at
+ * -120 dB, which the app reports as a damaged file.  Two PyInstaller specs
+ * shipped exactly that, both reached READY, and the only thing that noticed
+ * was a packaging smoke step added afterwards.  The app itself could not ask.
+ */
+export interface EngineEnvInfo {
+  environment?: {
+    waveform?: {
+      available: boolean;
+      numpy: string | null;
+      soundfile: string | null;
+      reason: string | null;
+    };
+    appVersion?: string;
+    ffmpeg?: string | null;
+  };
+}
+
 export interface EngineWarning {
   /** Machine-readable: NON_STANDARD_SAMPLE_RATE, MONO_INPUT, CLIPPING_DETECTED… */
   code: string;
@@ -754,6 +779,7 @@ export const IPC = {
   SETTINGS_OUTPUT_DIR: 'settings:choose-output-dir',
   // System
   FFMPEG_STATUS: 'system:ffmpeg-status',
+  ENGINE_STATUS: 'system:engine-status',
 } as const;
 
 export type IPCChannel = typeof IPC[keyof typeof IPC];
@@ -762,7 +788,32 @@ export type IPCChannel = typeof IPC[keyof typeof IPC];
 
 export interface RPCRequest {
   id: string;
-  method: 'analyze' | 'master' | 'qc_check';
+  /**
+   * The engine's dispatch table, all nine of it (app/main.py HANDLERS).
+   *
+   * This union named three for a long time, which is a stronger statement
+   * than it looks: `bridge.call()` takes `RPCRequest['method']`, so the other
+   * six were not merely uncalled — they were uncallable, and a compile error
+   * was the only thing anyone would have met trying.  Measured by driving all
+   * nine against the shipped binary: every one of them answers.
+   *
+   * `env_info` now has a caller (system:engine-status).  The reference
+   * pipeline — `master_with_reference`, `analyze_reference`,
+   * `list_reference_presets`, `recommend_reference_preset` — and
+   * `export_debug_bundle` still have none; they are listed because being
+   * reachable from the type system is the difference between "a feature that
+   * needs wiring" and "a feature nobody can wire without editing this line".
+   */
+  method:
+    | 'analyze'
+    | 'master'
+    | 'qc_check'
+    | 'env_info'
+    | 'master_with_reference'
+    | 'analyze_reference'
+    | 'list_reference_presets'
+    | 'recommend_reference_preset'
+    | 'export_debug_bundle';
   params: Record<string, unknown>;
 }
 

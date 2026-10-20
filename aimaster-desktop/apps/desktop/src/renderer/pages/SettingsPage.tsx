@@ -209,8 +209,12 @@ function InfoSection() {
     <Section title="정보">
       <Row label="버전">
         <span className="font-mono text-xs text-zinc-500">
-          {/* Vite injects VITE_APP_VERSION from package.json at build time */}
-          {import.meta.env.VITE_APP_VERSION ?? '1.0.0'}
+          {/* `__APP_VERSION__`, which vite.config.ts defines from
+              package.json. The comment here used to name an env variable that
+              nothing sets, so this row read "1.0.0" in every build, releases
+              included, while the same build's mastering report and render
+              provenance carried the real version from this constant. */}
+          {__APP_VERSION__}
         </span>
       </Row>
       <Row label="로그">

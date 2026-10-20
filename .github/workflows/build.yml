@@ -123,16 +123,71 @@ jobs:
         working-directory: aimaster-desktop
         run: pnpm -s lint
 
+      # ── The suites, which CI did not run ────────────────────────────────
+      #
+      # Until now this job ran `typecheck` and `lint` and nothing else: the 221
+      # selftests (4,756 assertions) and the 548 pytest tests had never once run
+      # in CI.  They ran only when someone ran them by hand, which is the same
+      # standing as not having them.
+      #
+      # One step covers both — `test:python-suite` inside the chain runs pytest
+      # and asserts its count and that nothing skipped itself, so the Python
+      # suite is a step of the desktop suite rather than a second job.  Measured
+      # on a 4-core machine: about 23 minutes, of which five selftests
+      # (stems 277s, instrument-patches 227s, separate 186s, reverb 106s,
+      # chord-audio 40s) are 62%.
+      #
+      # It needs the built engine (test:python-suite spawns it) and the ffmpeg
+      # pair, so it sits after both are in public/bin — i.e. here, not earlier.
+      - name: Test (221 selftests + the Python suite)
+        working-directory: aimaster-desktop/apps/desktop
+        run: pnpm -s test
+
       # v3.4.5 — bake AUTO_UPDATE_ENABLED into the main bundle.
       # Tag push (refs/tags/v*) → true → installer will check GitHub Releases.
       # Branch / workflow_dispatch artefact → false → updater stays silent.
       - name: Build Electron app (renderer + main)
         working-directory: aimaster-desktop/apps/desktop
         env:
+          # ── Build-time configuration, identical in all three jobs ──────────
+          #
+          # It was not identical.  Measured: LICENSE_API_URL / LICENSE_API_KEY /
+          # LICENSE_HMAC_SECRET / PADDLE_CHECKOUT_URL were injected in build-win
+          # only, so a single tagged release shipped Windows on RemoteValidator
+          # with a real HMAC secret and Linux + macOS on LocalValidator with the
+          # DEV secret — and the packaged-only assertLicenseSecretReady() gate
+          # stayed off on those two.  Nothing user-visible while
+          # LICENSE_ENFORCED is off, and three different licence behaviours the
+          # moment it is turned on.
+          #
+          # VITE_SUPABASE_* were injected nowhere, so getSupabase() returned
+          # null in every installer and the account / entitlement / device
+          # surface was inert although all five edge functions
+          # (aimaster-entitlement, -claim-license, -register-device,
+          # -list-devices, -revoke-device) are deployed and ACTIVE.
+          #
+          # ci-env-parity-selftest.ts holds the three blocks to each other.
           AUTO_UPDATE_ENABLED: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
           # Guided "three picks" flow — ON only for production release (tag)
           # builds; branch / workflow_dispatch artefacts stay OFF (legacy Home).
           VITE_LOUI_GUIDED_FLOW: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
+          # Empty when a secret is unset → the app degrades to its dev path
+          # (LocalValidator, or getSupabase() === null) so CI stays green.
+          LICENSE_API_URL:        ${{ secrets.LICENSE_API_URL }}
+          LICENSE_API_KEY:        ${{ secrets.LICENSE_API_KEY }}
+          LICENSE_HMAC_SECRET:    ${{ secrets.LICENSE_HMAC_SECRET }}
+          PADDLE_CHECKOUT_URL:    ${{ secrets.PADDLE_CHECKOUT_URL }}
+          VITE_SUPABASE_URL:      ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          # Feature flags.  Declared here so they can be turned on from repo
+          # variables without a code change; empty keeps today's behaviour —
+          # account auth and the entitlement gate off, the analyzer on its V1
+          # path, the realtime preview on (it is opt-OUT).  Whether to turn
+          # any of them on in releases is a product decision, not a build one.
+          VITE_LOUI_ACCOUNT_AUTH:     ${{ vars.LOUI_ACCOUNT_AUTH }}
+          VITE_LOUI_ENTITLEMENT_GATE: ${{ vars.LOUI_ENTITLEMENT_GATE }}
+          VITE_LOUI_WASM_ANALYZER:    ${{ vars.LOUI_WASM_ANALYZER }}
+          VITE_LOUI_REALTIME_PREVIEW: ${{ vars.LOUI_REALTIME_PREVIEW }}
         run: pnpm build
 
       # v3.4.3 — auto-update.  On tag push (refs/tags/v*) electron-builder
@@ -311,9 +366,45 @@ jobs:
       - name: Build Electron app
         working-directory: aimaster-desktop/apps/desktop
         env:
+          # ── Build-time configuration, identical in all three jobs ──────────
+          #
+          # It was not identical.  Measured: LICENSE_API_URL / LICENSE_API_KEY /
+          # LICENSE_HMAC_SECRET / PADDLE_CHECKOUT_URL were injected in build-win
+          # only, so a single tagged release shipped Windows on RemoteValidator
+          # with a real HMAC secret and Linux + macOS on LocalValidator with the
+          # DEV secret — and the packaged-only assertLicenseSecretReady() gate
+          # stayed off on those two.  Nothing user-visible while
+          # LICENSE_ENFORCED is off, and three different licence behaviours the
+          # moment it is turned on.
+          #
+          # VITE_SUPABASE_* were injected nowhere, so getSupabase() returned
+          # null in every installer and the account / entitlement / device
+          # surface was inert although all five edge functions
+          # (aimaster-entitlement, -claim-license, -register-device,
+          # -list-devices, -revoke-device) are deployed and ACTIVE.
+          #
+          # ci-env-parity-selftest.ts holds the three blocks to each other.
           AUTO_UPDATE_ENABLED: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
-          # Guided flow — ON only for production release (tag) builds.
+          # Guided "three picks" flow — ON only for production release (tag)
+          # builds; branch / workflow_dispatch artefacts stay OFF (legacy Home).
           VITE_LOUI_GUIDED_FLOW: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
+          # Empty when a secret is unset → the app degrades to its dev path
+          # (LocalValidator, or getSupabase() === null) so CI stays green.
+          LICENSE_API_URL:        ${{ secrets.LICENSE_API_URL }}
+          LICENSE_API_KEY:        ${{ secrets.LICENSE_API_KEY }}
+          LICENSE_HMAC_SECRET:    ${{ secrets.LICENSE_HMAC_SECRET }}
+          PADDLE_CHECKOUT_URL:    ${{ secrets.PADDLE_CHECKOUT_URL }}
+          VITE_SUPABASE_URL:      ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          # Feature flags.  Declared here so they can be turned on from repo
+          # variables without a code change; empty keeps today's behaviour —
+          # account auth and the entitlement gate off, the analyzer on its V1
+          # path, the realtime preview on (it is opt-OUT).  Whether to turn
+          # any of them on in releases is a product decision, not a build one.
+          VITE_LOUI_ACCOUNT_AUTH:     ${{ vars.LOUI_ACCOUNT_AUTH }}
+          VITE_LOUI_ENTITLEMENT_GATE: ${{ vars.LOUI_ENTITLEMENT_GATE }}
+          VITE_LOUI_WASM_ANALYZER:    ${{ vars.LOUI_WASM_ANALYZER }}
+          VITE_LOUI_REALTIME_PREVIEW: ${{ vars.LOUI_REALTIME_PREVIEW }}
         run: pnpm build
 
       # ── Sanity: verify the artefacts electron-builder will package exist ──
@@ -558,17 +649,45 @@ jobs:
       # v3.4.5 — see Linux job comment.
       - name: Build Electron app
         env:
+          # ── Build-time configuration, identical in all three jobs ──────────
+          #
+          # It was not identical.  Measured: LICENSE_API_URL / LICENSE_API_KEY /
+          # LICENSE_HMAC_SECRET / PADDLE_CHECKOUT_URL were injected in build-win
+          # only, so a single tagged release shipped Windows on RemoteValidator
+          # with a real HMAC secret and Linux + macOS on LocalValidator with the
+          # DEV secret — and the packaged-only assertLicenseSecretReady() gate
+          # stayed off on those two.  Nothing user-visible while
+          # LICENSE_ENFORCED is off, and three different licence behaviours the
+          # moment it is turned on.
+          #
+          # VITE_SUPABASE_* were injected nowhere, so getSupabase() returned
+          # null in every installer and the account / entitlement / device
+          # surface was inert although all five edge functions
+          # (aimaster-entitlement, -claim-license, -register-device,
+          # -list-devices, -revoke-device) are deployed and ACTIVE.
+          #
+          # ci-env-parity-selftest.ts holds the three blocks to each other.
           AUTO_UPDATE_ENABLED: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
-          # Guided flow — ON only for production release (tag) builds.
+          # Guided "three picks" flow — ON only for production release (tag)
+          # builds; branch / workflow_dispatch artefacts stay OFF (legacy Home).
           VITE_LOUI_GUIDED_FLOW: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
-          # License/billing config baked into the bundle (esbuild + vite).
-          # Empty when the secret is unset → app falls back to dev mode
-          # (LocalValidator) so CI stays green; set the secrets to ship a
-          # protected production installer.
-          LICENSE_API_URL:      ${{ secrets.LICENSE_API_URL }}
-          LICENSE_API_KEY:      ${{ secrets.LICENSE_API_KEY }}
-          LICENSE_HMAC_SECRET:  ${{ secrets.LICENSE_HMAC_SECRET }}
-          PADDLE_CHECKOUT_URL:  ${{ secrets.PADDLE_CHECKOUT_URL }}
+          # Empty when a secret is unset → the app degrades to its dev path
+          # (LocalValidator, or getSupabase() === null) so CI stays green.
+          LICENSE_API_URL:        ${{ secrets.LICENSE_API_URL }}
+          LICENSE_API_KEY:        ${{ secrets.LICENSE_API_KEY }}
+          LICENSE_HMAC_SECRET:    ${{ secrets.LICENSE_HMAC_SECRET }}
+          PADDLE_CHECKOUT_URL:    ${{ secrets.PADDLE_CHECKOUT_URL }}
+          VITE_SUPABASE_URL:      ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          # Feature flags.  Declared here so they can be turned on from repo
+          # variables without a code change; empty keeps today's behaviour —
+          # account auth and the entitlement gate off, the analyzer on its V1
+          # path, the realtime preview on (it is opt-OUT).  Whether to turn
+          # any of them on in releases is a product decision, not a build one.
+          VITE_LOUI_ACCOUNT_AUTH:     ${{ vars.LOUI_ACCOUNT_AUTH }}
+          VITE_LOUI_ENTITLEMENT_GATE: ${{ vars.LOUI_ENTITLEMENT_GATE }}
+          VITE_LOUI_WASM_ANALYZER:    ${{ vars.LOUI_WASM_ANALYZER }}
+          VITE_LOUI_REALTIME_PREVIEW: ${{ vars.LOUI_REALTIME_PREVIEW }}
         run: |
           cd D:\w\aimaster-desktop\apps\desktop
           pnpm build

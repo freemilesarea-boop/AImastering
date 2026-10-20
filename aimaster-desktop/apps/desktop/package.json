@@ -260,7 +260,9 @@
     "test:track-removal": "tsx scripts/track-removal-selftest.ts",
     "test:missing-files": "tsx scripts/missing-files-selftest.ts",
     "test:true-peak": "tsx scripts/true-peak-selftest.ts",
-    "test:preview-ceiling": "tsx scripts/preview-ceiling-selftest.ts"
+    "test:preview-ceiling": "tsx scripts/preview-ceiling-selftest.ts",
+    "test:ci-env-parity": "tsx scripts/ci-env-parity-selftest.ts",
+    "test:engine-notice": "tsx scripts/engine-notice-selftest.ts"
   },
   "dependencies": {
     "@aimaster/audio-engine": "workspace:*",

@@ -867,6 +867,66 @@ try {
   // packaged flow measured it: with this wait removed and errors injected
   // into the page, a `pageerror` from a setTimeout never arrived and the step
   // read `clean`.
+  // ── The Home a release actually ships ─────────────────────────────────
+  //
+  // `VITE_LOUI_GUIDED_FLOW` is set by CI on tag builds only, and it swaps the
+  // whole front of the app: App.tsx renders <GuidedHome /> instead of
+  // <HomePage />, and MasteringPage and ResultPage take guided branches.  No
+  // smoke run ever set it — not this one, not the packaged one — so every step
+  // above exercised the legacy Home while every release shipped the other one.
+  //
+  // Asserted through the flag module and the DOM, not through one string of
+  // copy: `isGuidedFlowEnabled()` must flip, the render must change, and the
+  // guided front must actually appear.  `window.__LOUI_GUIDED_FLOW__` is the
+  // runtime half of the same flag, which is what makes this testable at all.
+  {
+    const GUIDED_MARKERS = ['트랙을 올리면', '오디오 파일 올리기', '어디서나 무난한 표준'];
+
+    const readHome = async (markers) => page.evaluate(async (needles) => {
+      const app = await import('/stores/appStore.ts');
+      app.useAppStore.getState().setPage('home');
+      await new Promise((r) => setTimeout(r, 500));
+      const flag = await import('/audio/guided-flow-flag.ts');
+      const root = document.getElementById('root');
+      const text = root ? (root.textContent ?? '') : '';
+      return {
+        flagOn: flag.isGuidedFlowEnabled(),
+        nodes: root ? root.querySelectorAll('*').length : -1,
+        guided: needles.some((n) => text.includes(n)),
+      };
+    }, markers);
+
+    const before = await readHome(GUIDED_MARKERS);
+    expect(
+      before.flagOn === false && before.guided === false,
+      'the 31 steps above ran on the legacy Home, as every smoke run has',
+      `flag=${before.flagOn}, guided markers=${before.guided}, ${before.nodes} nodes`,
+    );
+
+    await page.addInitScript(() => { window.__LOUI_GUIDED_FLOW__ = true; });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(1500);
+    const after = await readHome(GUIDED_MARKERS);
+
+    expect(
+      after.flagOn === true,
+      'and with the release flag on, the app agrees it is on',
+      `isGuidedFlowEnabled()=${after.flagOn}`,
+    );
+    expect(
+      after.guided === true && after.nodes > 0,
+      'and the guided Home is what renders then — the UI a tagged build ships',
+      after.guided
+        ? `${after.nodes} nodes, guided front present`
+        : `${after.nodes} nodes and none of ${GUIDED_MARKERS.join(' / ')} — GuidedHome did not mount`,
+    );
+    expect(
+      after.nodes !== before.nodes,
+      'and it is a different render, not the same page with a flag set',
+      `${before.nodes} nodes legacy → ${after.nodes} nodes guided`,
+    );
+  }
+
   await page.waitForTimeout(500);
   expect(
     rendererErrors.length === 0,

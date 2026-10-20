@@ -53,6 +53,8 @@ const INVOKE_CHANNELS = [
   'settings:get', 'settings:set', 'settings:choose-output-dir',
   // System
   'system:ffmpeg-status',
+  // Whether the engine can read a waveform, not just run ffmpeg.
+  'system:engine-status',
   // Worklet/WASM asset reader (packaged file:// + asar safe)
   'loui:read-worklet-asset',
   // Support bundle (v3.6 QA)
