@@ -44,7 +44,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { PythonBridge } from '@aimaster/audio-engine';
-import { pythonBin, pythonBinSource, applyShippedFfmpegEnv } from './lib/python-bin.js';
+import { pythonBin, pythonBinSource } from './lib/python-bin.js';
+import { applyShippedFfmpegEnv } from './lib/shipped-binaries.js';
 
 let passed = 0;
 let failed = 0;

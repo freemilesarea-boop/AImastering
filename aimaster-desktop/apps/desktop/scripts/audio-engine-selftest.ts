@@ -39,10 +39,10 @@
 export {};
 
 import { spawn, spawnSync } from 'node:child_process';
-import { createRequire } from 'node:module';
 import { mkdtempSync, writeFileSync, rmSync, readFileSync, chmodSync, mkdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { shippedFfmpeg, shippedFfprobe } from './lib/shipped-binaries.js';
 import {
   classifyFFmpegError,
   resolveFFmpegPath,
@@ -65,7 +65,7 @@ function check(name: string, ok: boolean, detail: string): void {
   else { failed++; console.error(`[FAIL] ${name} — ${detail}`); }
 }
 
-const FFMPEG = createRequire(import.meta.url)('ffmpeg-static') as string;
+const FFMPEG = shippedFfmpeg() ?? 'ffmpeg';
 const WORK = mkdtempSync(path.join(os.tmpdir(), 'aimaster-engine-'));
 
 /** One line of ffmpeg's version, so the measurements name what produced them. */
@@ -110,11 +110,14 @@ async function classifyRun(args: string[], filePath = '', name = 'ffmpeg'): Prom
   }
 }
 
-/** ffprobe beside the pinned ffmpeg, else the system one. */
-const FFPROBE = (() => {
-  const beside = path.join(path.dirname(FFMPEG), 'ffprobe');
-  return spawnSync(beside, ['-version']).status === 0 ? beside : 'ffprobe';
-})();
+/** The ffprobe this repository ships.
+ *
+ * This used to look for one BESIDE the pinned ffmpeg and fall back to the
+ * system name.  `ffmpeg-static` ships only ffmpeg, so the look never found
+ * anything and the fallback was always taken — invisible on a machine with
+ * ffprobe on PATH, and on a CI runner it turned this file's one real-ffprobe
+ * check into `spawn ffprobe ENOENT`. */
+const FFPROBE = shippedFfprobe() ?? 'ffprobe';
 
 const REAL    = path.join(WORK, 'real.wav');
 const SILENT  = path.join(WORK, 'silent.wav');
