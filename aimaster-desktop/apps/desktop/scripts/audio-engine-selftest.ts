@@ -42,7 +42,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync, readFileSync, chmodSync, mkdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { shippedFfmpeg, shippedFfprobe } from './lib/shipped-binaries.js';
+import { shippedFfmpeg, shippedFfprobe, applyShippedFfmpegEnv } from './lib/shipped-binaries.js';
 import {
   classifyFFmpegError,
   resolveFFmpegPath,
@@ -64,6 +64,30 @@ function check(name: string, ok: boolean, detail: string): void {
   if (ok) { passed++; console.log(`[PASS] ${name} — ${detail}`); }
   else { failed++; console.error(`[FAIL] ${name} — ${detail}`); }
 }
+
+/**
+ * Point the resolver at the pair this repository ships, before anything calls
+ * it.
+ *
+ * `checkFFmpeg()`, `measureLoudnessPass1()` and `runFFprobe()` are exercised
+ * below with no options, which is the resolver's UNCONFIGURED path: it looks
+ * in the well-known install dirs and, finding nothing, returns a bare
+ * `ffmpeg` for `spawn` to look up on PATH.  Every developer machine has one
+ * there and no CI runner does — this project ships its ffmpeg rather than
+ * installing it — so those checks came back `available=false,
+ * version=undefined` and the next spawn killed the run with
+ * `FFmpegSpawnError: spawn ffmpeg ENOENT`.  That is the test reporting the
+ * runner, not the code.
+ *
+ * `AIMASTER_FFMPEG` / `AIMASTER_FFPROBE` is the resolver's own documented
+ * answer to "use this one" (step 2 of four), and it is what
+ * `services/python-audio/tests/conftest.py` sets for the Python side.  It
+ * does NOT weaken the five resolution checks below: each one sets the
+ * variable it is about and restores it, the packaged checks are step 1 and
+ * still win over it, and the unconfigured check clears both to keep its
+ * name true.
+ */
+const SHIPPED = applyShippedFfmpegEnv();
 
 const FFMPEG = shippedFfmpeg() ?? 'ffmpeg';
 const WORK = mkdtempSync(path.join(os.tmpdir(), 'aimaster-engine-'));
@@ -331,11 +355,18 @@ async function main(): Promise<void> {
 
   // ── Binary resolution ────────────────────────────────────────────────────
   {
+    // Genuinely unconfigured: the override set at the top of this file is
+    // lifted for the one check whose name claims nothing is configured.
+    const saved = { ffmpeg: process.env['AIMASTER_FFMPEG'], ffprobe: process.env['AIMASTER_FFPROBE'] };
+    delete process.env['AIMASTER_FFMPEG'];
+    delete process.env['AIMASTER_FFPROBE'];
     const both = resolveFFmpegBinaries();
+    const alsoBare = both.ffmpeg === resolveFFmpegPath() && both.ffprobe === resolveFFprobePath();
+    if (saved.ffmpeg !== undefined) process.env['AIMASTER_FFMPEG'] = saved.ffmpeg;
+    if (saved.ffprobe !== undefined) process.env['AIMASTER_FFPROBE'] = saved.ffprobe;
     check(
       'with nothing configured, both binaries resolve to something',
-      both.ffmpeg.length > 0 && both.ffprobe.length > 0
-        && both.ffmpeg === resolveFFmpegPath() && both.ffprobe === resolveFFprobePath(),
+      both.ffmpeg.length > 0 && both.ffprobe.length > 0 && alsoBare,
       `ffmpeg=${both.ffmpeg}, ffprobe=${both.ffprobe}`,
     );
   }
@@ -416,6 +447,15 @@ async function main(): Promise<void> {
     );
   }
   {
+    // Says out loud which binaries the rest of this file measured, and fails
+    // on a checkout that ships neither — the condition under which the
+    // unconfigured checks below would be measuring the machine instead.
+    check(
+      'the ffmpeg and ffprobe this repository ships are the ones under test',
+      SHIPPED.ffmpeg !== null && SHIPPED.ffprobe !== null,
+      `ffmpeg=${String(SHIPPED.ffmpeg)}, ffprobe=${String(SHIPPED.ffprobe)}`,
+    );
+
     const ok = checkFFmpeg();
     check(
       'the startup check reads a real version out of a working ffmpeg',

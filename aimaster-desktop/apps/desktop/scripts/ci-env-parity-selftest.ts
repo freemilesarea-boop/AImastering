@@ -148,9 +148,9 @@ for (const name of [...viteVars].sort()) {
 
 console.log('\n── and the suites run ──────────────────────────────────────');
 
-// `typecheck` and `lint` ran here for a long time and the 221 selftests and
-// 548 pytest tests did not run at all.  A test suite nobody runs has the
-// standing of not existing, so this asks the workflow whether it still runs.
+// `typecheck` and `lint` ran here for a long time and the 223 selftests did
+// not run at all.  A test suite nobody runs has the standing of not existing,
+// so this asks the workflow whether it still runs.
 const linuxSteps = jobs['build-linux']?.steps ?? [];
 const runsSuite = linuxSteps.some((s) => typeof s.run === 'string' && /\bpnpm (-s )?test\b/.test(s.run));
 check(

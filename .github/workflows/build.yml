@@ -123,23 +123,28 @@ jobs:
         working-directory: aimaster-desktop
         run: pnpm -s lint
 
-      # ── The suites, which CI did not run ────────────────────────────────
+      # ── The suite, which CI did not run ─────────────────────────────────
       #
-      # Until now this job ran `typecheck` and `lint` and nothing else: the 221
-      # selftests (4,756 assertions) and the 548 pytest tests had never once run
-      # in CI.  They ran only when someone ran them by hand, which is the same
-      # standing as not having them.
+      # Until now this job ran `typecheck` and `lint` and nothing else: the 223
+      # selftests (4,725 assertions) had never once run in CI.  They ran only
+      # when someone ran them by hand, which is the same standing as not
+      # having them.
       #
-      # One step covers both — `test:python-suite` inside the chain runs pytest
-      # and asserts its count and that nothing skipped itself, so the Python
-      # suite is a step of the desktop suite rather than a second job.  Measured
-      # on a 4-core machine: about 23 minutes, of which five selftests
-      # (stems 277s, instrument-patches 227s, separate 186s, reverb 106s,
-      # chord-audio 40s) are 62%.
+      # What this does NOT do is run the whole Python suite.  `test:python-suite`
+      # inside the chain asserts that pytest still COLLECTS its 551 tests and
+      # that none of them skips itself, and it runs the 30
+      # commercial-reference tests; the fourteen minutes of DSP tests stay
+      # opt-in (`cd services/python-audio && python3 -m pytest -q`) and are run
+      # by no job here.  Saying otherwise in this step's name is what the
+      # previous version of this comment did.
+      #
+      # Measured on this repository's 4-core container: 1,363 s (22.7 min), of
+      # which five selftests (instrument-patches 245s, stems 223s,
+      # separate 208s, reverb 117s, chord-audio 43s) are 61%.
       #
       # It needs the built engine (test:python-suite spawns it) and the ffmpeg
       # pair, so it sits after both are in public/bin — i.e. here, not earlier.
-      - name: Test (221 selftests + the Python suite)
+      - name: Test (223 selftests, including the Python engine's collection)
         working-directory: aimaster-desktop/apps/desktop
         run: pnpm -s test
 
