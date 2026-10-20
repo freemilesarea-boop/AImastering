@@ -44,7 +44,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { PythonBridge } from '@aimaster/audio-engine';
-import { pythonBin, pythonBinSource } from './lib/python-bin.js';
+import { pythonBin, pythonBinSource, applyShippedFfmpegEnv } from './lib/python-bin.js';
 
 let passed = 0;
 let failed = 0;
@@ -356,6 +356,12 @@ async function main(): Promise<void> {
   // handler's own line prevents, and the reason this mirrors it rather than
   // inventing its own launch.
   process.env['PYTHONPATH'] = SERVICE;
+  // And the ffmpeg pair, for the same reason the PYTHONPATH line exists: this
+  // mirrors how the app launches the engine instead of inventing its own
+  // launch.  Without it the engine resolves ffprobe from PATH, which on a CI
+  // runner is empty — four checks came back
+  // "'ffprobe'을 찾을 수 없습니다" instead of a key list.
+  applyShippedFfmpegEnv();
   const realEngine = new PythonBridge({
     pythonPath: pythonBin(), scriptPath: path.join(SERVICE, 'app', 'main.py'),
   });
