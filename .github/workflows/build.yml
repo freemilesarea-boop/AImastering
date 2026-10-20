@@ -71,17 +71,33 @@ jobs:
         run: |
           set -e
           mkdir -p ../../apps/desktop/public/bin
+          # Built from engine.spec, not from a flag list.
+          #
+          # These three jobs each carried their own copy of the recipe and the
+          # committed spec was none of them, so everything the spec says was
+          # absent from every shipped engine.  Measured on this runner's
+          # toolchain: the flag list produces 37.70 MB, engine.spec produces
+          # 27.62 MB — the spec drops numpy's test suite (modules and the .py
+          # files collect_all carries as data), setuptools with pkg_resources
+          # and distutils behind it, and OpenSSL, which arrived through
+          # setuptools' email/http/urllib in a process that opens no socket.
+          # It also names `cffi` and `secrets`, which numpy's compiled
+          # bit_generator imports from inside the extension where no static
+          # analysis sees them; without them `import numpy` raises and the
+          # engine still answers READY and every request OK with every band at
+          # -120 dB.  See app/utils/env_info.py's _waveform_support, and the
+          # packaged smoke step that reads it.
+          #
+          # --onefile / --name / --hidden-import / --collect-all /
+          # --exclude-module all live in the spec now.  --specpath is gone: it
+          # only applies when PyInstaller GENERATES a spec, which was the sign
+          # that the committed one was never read.
           .venv/bin/pyinstaller \
-            --clean --noconfirm --onefile --name engine \
+            --clean --noconfirm \
             --log-level INFO \
             --distpath ../../apps/desktop/public/bin \
             --workpath /tmp/pyinstaller-build \
-            --specpath /tmp/pyinstaller-spec \
-            --hidden-import soundfile --hidden-import numpy \
-            --collect-all soundfile --collect-all numpy \
-            --exclude-module tkinter --exclude-module pytest --exclude-module matplotlib \
-            --exclude-module pkg_resources --exclude-module setuptools \
-            app/main.py
+            engine.spec
           chmod +x ../../apps/desktop/public/bin/engine
           ls -la ../../apps/desktop/public/bin/
 
@@ -229,22 +245,13 @@ jobs:
         run: |
           set -e
           mkdir -p ../../apps/desktop/public/bin
+          # engine.spec is the recipe — see the comment in build-linux.
           .venv/bin/pyinstaller \
-            --clean --noconfirm --onefile --name engine \
+            --clean --noconfirm \
             --log-level INFO \
             --distpath ../../apps/desktop/public/bin \
             --workpath /tmp/pyinstaller-build \
-            --specpath /tmp/pyinstaller-spec \
-            --hidden-import soundfile \
-            --hidden-import numpy \
-            --collect-all soundfile \
-            --collect-all numpy \
-            --exclude-module tkinter \
-            --exclude-module pytest \
-            --exclude-module matplotlib \
-            --exclude-module pkg_resources \
-            --exclude-module setuptools \
-            app/main.py
+            engine.spec
           chmod +x ../../apps/desktop/public/bin/engine
           ls -la ../../apps/desktop/public/bin/
 
@@ -471,25 +478,15 @@ jobs:
         run: |
           cd D:\w\aimaster-desktop\services\python-audio
           New-Item -ItemType Directory -Force -Path "..\..\apps\desktop\public\bin" | Out-Null
-          # workpath/specpath must be on same drive (D:\)
+          # workpath must be on the same drive (D:\)
           $tmpBuild = Join-Path $env:RUNNER_TEMP "pyinstaller-build"
-          $tmpSpec  = Join-Path $env:RUNNER_TEMP "pyinstaller-spec"
+          # engine.spec is the recipe — see the comment in build-linux.
           .venv\Scripts\pyinstaller `
-            --clean --noconfirm --onefile --name engine `
+            --clean --noconfirm `
             --log-level INFO `
             "--distpath=..\..\apps\desktop\public\bin" `
             "--workpath=$tmpBuild" `
-            "--specpath=$tmpSpec" `
-            --hidden-import soundfile `
-            --hidden-import numpy `
-            --collect-all soundfile `
-            --collect-all numpy `
-            --exclude-module tkinter `
-            --exclude-module pytest `
-            --exclude-module matplotlib `
-            --exclude-module pkg_resources `
-            --exclude-module setuptools `
-            app\main.py
+            engine.spec
           Get-ChildItem ..\..\apps\desktop\public\bin\
 
       - name: Clean pnpm store + node_modules (no stale electron-builder peers)

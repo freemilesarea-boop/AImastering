@@ -417,8 +417,18 @@ check('and every selftest on disk is reachable from `pnpm test`', () => {
   const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as {
     scripts: Record<string, string>;
   };
-  const chain = pkg.scripts['test'] ?? '';
-  const inChain = new Set([...chain.matchAll(/pnpm (test:[a-z0-9-]+)/g)].map((m) => m[1]!));
+  // The chain used to be 221 `pnpm test:x &&` links and this read the names
+  // straight out of it.  It is now one call to a runner that takes its order
+  // from scripts/suite-order.json — a step costs ~370 ms instead of ~1100 —
+  // so the list lives there.  The assert below is what keeps this check from
+  // silently measuring the wrong thing again: change how the suite is driven
+  // and this fails until it is pointed at the new source.
+  const driver = pkg.scripts['test'] ?? '';
+  assert(/node scripts\/run-selftests\.mjs/.test(driver),
+    '`pnpm test` no longer ends in run-selftests.mjs — point this check at '
+    + `whatever drives the suite now (it says: ${driver.slice(-70)})`);
+  const order = JSON.parse(readFileSync('scripts/suite-order.json', 'utf8')) as string[];
+  const inChain = new Set(order.map((n) => `test:${n}`));
 
   // file → the package scripts that run it
   const runs = new Map<string, string[]>();
@@ -437,7 +447,7 @@ check('and every selftest on disk is reachable from `pnpm test`', () => {
 
   assert(stranded.length === 0,
     `${stranded.length} selftest(s) never run in \`pnpm test\`:\n    ${stranded.join('\n    ')}`
-    + '\n  Register each one and add it to the `test` chain.');
+    + '\n  Register each one as a `test:` script and add it to scripts/suite-order.json.');
 });
 
 check('and no two scripts share a name', () => {
