@@ -167,10 +167,20 @@ jobs:
           # -list-devices, -revoke-device) are deployed and ACTIVE.
           #
           # ci-env-parity-selftest.ts holds the three blocks to each other.
-          AUTO_UPDATE_ENABLED: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
-          # Guided "three picks" flow — ON only for production release (tag)
-          # builds; branch / workflow_dispatch artefacts stay OFF (legacy Home).
-          VITE_LOUI_GUIDED_FLOW: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
+          # "Is this a release", not "is this a tag ref".
+          #
+          # Both of these used to read `startsWith(github.ref, 'refs/tags/v')`,
+          # which is one of the two ways this workflow makes a release: the
+          # other is workflow_dispatch with `release_tag`, which release-draft
+          # has always accepted and which creates the tag server-side.  Taken
+          # that way, a dispatched release built installers with auto-update
+          # off and the LEGACY Home — not the UI a release ships — while
+          # calling itself a release.  The condition below is the same one
+          # release-draft gates on.
+          AUTO_UPDATE_ENABLED: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '')) && 'true' || 'false' }}
+          # Guided "three picks" flow — ON for release builds; a plain branch
+          # push or a dispatch with no release_tag stays OFF (legacy Home).
+          VITE_LOUI_GUIDED_FLOW: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '')) && 'true' || 'false' }}
           # Empty when a secret is unset → the app degrades to its dev path
           # (LocalValidator, or getSupabase() === null) so CI stays green.
           LICENSE_API_URL:        ${{ secrets.LICENSE_API_URL }}
@@ -197,6 +207,10 @@ jobs:
       - name: Compute publish flag
         id: pub
         run: |
+          # `never` on a dispatched release is deliberate: release-draft
+          # downloads the artefacts and attaches them itself (including the
+          # latest-*.yml update metadata), so electron-builder publishing on
+          # top would race it for the same release.
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             echo "flag=always" >> "$GITHUB_OUTPUT"
           else
@@ -384,10 +398,20 @@ jobs:
           # -list-devices, -revoke-device) are deployed and ACTIVE.
           #
           # ci-env-parity-selftest.ts holds the three blocks to each other.
-          AUTO_UPDATE_ENABLED: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
-          # Guided "three picks" flow — ON only for production release (tag)
-          # builds; branch / workflow_dispatch artefacts stay OFF (legacy Home).
-          VITE_LOUI_GUIDED_FLOW: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
+          # "Is this a release", not "is this a tag ref".
+          #
+          # Both of these used to read `startsWith(github.ref, 'refs/tags/v')`,
+          # which is one of the two ways this workflow makes a release: the
+          # other is workflow_dispatch with `release_tag`, which release-draft
+          # has always accepted and which creates the tag server-side.  Taken
+          # that way, a dispatched release built installers with auto-update
+          # off and the LEGACY Home — not the UI a release ships — while
+          # calling itself a release.  The condition below is the same one
+          # release-draft gates on.
+          AUTO_UPDATE_ENABLED: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '')) && 'true' || 'false' }}
+          # Guided "three picks" flow — ON for release builds; a plain branch
+          # push or a dispatch with no release_tag stays OFF (legacy Home).
+          VITE_LOUI_GUIDED_FLOW: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '')) && 'true' || 'false' }}
           # Empty when a secret is unset → the app degrades to its dev path
           # (LocalValidator, or getSupabase() === null) so CI stays green.
           LICENSE_API_URL:        ${{ secrets.LICENSE_API_URL }}
@@ -427,6 +451,10 @@ jobs:
       - name: Compute publish flag
         id: pub
         run: |
+          # `never` on a dispatched release is deliberate: release-draft
+          # downloads the artefacts and attaches them itself (including the
+          # latest-*.yml update metadata), so electron-builder publishing on
+          # top would race it for the same release.
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             echo "flag=always" >> "$GITHUB_OUTPUT"
           else
@@ -667,10 +695,20 @@ jobs:
           # -list-devices, -revoke-device) are deployed and ACTIVE.
           #
           # ci-env-parity-selftest.ts holds the three blocks to each other.
-          AUTO_UPDATE_ENABLED: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
-          # Guided "three picks" flow — ON only for production release (tag)
-          # builds; branch / workflow_dispatch artefacts stay OFF (legacy Home).
-          VITE_LOUI_GUIDED_FLOW: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
+          # "Is this a release", not "is this a tag ref".
+          #
+          # Both of these used to read `startsWith(github.ref, 'refs/tags/v')`,
+          # which is one of the two ways this workflow makes a release: the
+          # other is workflow_dispatch with `release_tag`, which release-draft
+          # has always accepted and which creates the tag server-side.  Taken
+          # that way, a dispatched release built installers with auto-update
+          # off and the LEGACY Home — not the UI a release ships — while
+          # calling itself a release.  The condition below is the same one
+          # release-draft gates on.
+          AUTO_UPDATE_ENABLED: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '')) && 'true' || 'false' }}
+          # Guided "three picks" flow — ON for release builds; a plain branch
+          # push or a dispatch with no release_tag stays OFF (legacy Home).
+          VITE_LOUI_GUIDED_FLOW: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '')) && 'true' || 'false' }}
           # Empty when a secret is unset → the app degrades to its dev path
           # (LocalValidator, or getSupabase() === null) so CI stays green.
           LICENSE_API_URL:        ${{ secrets.LICENSE_API_URL }}
