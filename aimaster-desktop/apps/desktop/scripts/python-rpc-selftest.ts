@@ -44,6 +44,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { PythonBridge } from '@aimaster/audio-engine';
+import { pythonBin, pythonBinSource } from './lib/python-bin.js';
 
 let passed = 0;
 let failed = 0;
@@ -321,14 +322,14 @@ async function main(): Promise<void> {
   }
 
   // ── The contract, against the real engine ──────────────────────────────
-  const havePython = spawnSync('python3', ['-c', 'import numpy, soundfile'],
+  const havePython = spawnSync(pythonBin(), ['-c', 'import numpy, soundfile'],
     { cwd: SERVICE, encoding: 'utf8', timeout: 60_000 }).status === 0;
   check(
     'the Python engine can be started from here',
     havePython,
     havePython
       ? 'numpy and soundfile are installed'
-      : 'missing — python3 -m pip install -r services/python-audio/requirements.txt',
+      : `missing — ${pythonBin()} -m pip install -r services/python-audio/requirements.txt` + ` (interpreter from ${pythonBinSource()})`,
   );
   if (!havePython) {
     rmSync(WORK, { recursive: true, force: true });
@@ -356,7 +357,7 @@ async function main(): Promise<void> {
   // inventing its own launch.
   process.env['PYTHONPATH'] = SERVICE;
   const realEngine = new PythonBridge({
-    pythonPath: 'python3', scriptPath: path.join(SERVICE, 'app', 'main.py'),
+    pythonPath: pythonBin(), scriptPath: path.join(SERVICE, 'app', 'main.py'),
   });
   realEngine.spawn();
   const types = readFileSync('../../packages/shared-types/src/index.ts', 'utf8');

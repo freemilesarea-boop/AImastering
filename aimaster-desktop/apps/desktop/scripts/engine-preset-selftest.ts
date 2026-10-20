@@ -42,6 +42,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { validateEnginePreset } from '@aimaster/shared-types/engine';
 import { ENGINE_MODULE_ORDER } from '@aimaster/shared-types/engine';
+import { pythonBin } from './lib/python-bin.js';
 
 let passed = 0;
 let failed = 0;
@@ -290,7 +291,7 @@ sys.stdout.write(json.dumps(out))
 `;
   // `-I` so nothing is imported from the CWD or a user site-packages: the
   // cases file sits in a temp directory and the validator must be the repo's.
-  const r = spawnSync('python3', ['-I', '-c', program], { encoding: 'utf8', timeout: 120_000 });
+  const r = spawnSync(pythonBin(), ['-I', '-c', program], { encoding: 'utf8', timeout: 120_000 });
   rmSync(dir, { recursive: true, force: true });
   if (r.error || r.status !== 0) {
     return {

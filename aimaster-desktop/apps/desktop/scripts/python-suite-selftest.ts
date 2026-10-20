@@ -39,6 +39,7 @@ import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { pythonBin } from './lib/python-bin.js';
 
 let passed = 0;
 let failed = 0;
@@ -48,7 +49,7 @@ function check(name: string, ok: boolean, detail: string): void {
 }
 
 const SERVICE = path.resolve('../../services/python-audio');
-const INSTALL = 'python3 -m pip install -r services/python-audio/requirements.txt';
+const INSTALL = `${pythonBin()} -m pip install -r services/python-audio/requirements.txt`;
 
 /** The pinned ffmpeg the TS suite already depends on. */
 const FFMPEG = createRequire(import.meta.url)('ffmpeg-static') as string;
@@ -60,7 +61,7 @@ SpawnSyncReturns<string> {
   for (const [k, v] of Object.entries(env)) {
     if (v === undefined) delete base[k]; else base[k] = v;
   }
-  return spawnSync('python3', ['-m', 'pytest', '--no-header', '-p', 'no:cacheprovider', ...args], {
+  return spawnSync(pythonBin(), ['-m', 'pytest', '--no-header', '-p', 'no:cacheprovider', ...args], {
     cwd: SERVICE, encoding: 'utf8', timeout: 300_000, env: base,
   });
 }
@@ -89,7 +90,7 @@ function main(): void {
   console.log('\n=== The Python engine suite: is all of it still there? ===\n');
 
   {
-    const r = spawnSync('python3', ['-c',
+    const r = spawnSync(pythonBin(), ['-c',
       'import pytest, numpy, soundfile; print(pytest.__version__, numpy.__version__, soundfile.__version__)'],
       { cwd: SERVICE, encoding: 'utf8', timeout: 60_000 });
     const ok = r.status === 0;
