@@ -10,6 +10,7 @@ recorded rather than assumed.
 Synthetic corpora in tmp_path only. The real commercial corpus is never touched.
 """
 from __future__ import annotations
+from tests.conftest import ffmpeg_bin
 
 import json
 import os
@@ -46,7 +47,7 @@ def _make_tone(path: Path, *, freq: int, sr: int = 44100, seconds: float = 1.0,
                channels: int = 2) -> None:
     """One short synthetic tone. Distinct freq => distinct content hash."""
     subprocess.run(
-        ["ffmpeg", "-y", "-f", "lavfi",
+        [ffmpeg_bin(), "-y", "-f", "lavfi",
          "-i", f"sine=frequency={freq}:duration={seconds}",
          "-ar", str(sr), "-ac", str(channels), "-acodec", "pcm_s24le",
          str(path)],
