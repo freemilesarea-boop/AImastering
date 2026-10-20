@@ -908,7 +908,18 @@ class CanonicalFeatureExtractor:
             spec_diff = np.diff(spectrogram, axis=0)
             # Half-wave rectified (positive changes only = onset detection)
             spec_diff_hw = np.maximum(0, spec_diff)
-            flux = np.sum(spec_diff_hw, axis=1)
+            # Per-bin, so that dividing by the per-bin mean magnitude below
+            # leaves a dimensionless ratio.  It was `np.sum`, i.e. a sum over
+            # all ~1025 rfft bins divided by the mean of ONE bin, so the
+            # result carried a factor of n_bins: measured 448.33 on pink noise
+            # plus a 110 Hz tone, for a quantity the rule table compares
+            # against 0.4 (`conflict_engine.TRANS_001`, with 0.25 as its
+            # default) and that the TRANSIENT profile carries as a feature
+            # called "normalized".  The flux condition was therefore true for
+            # every input.  No commercial target exists for this feature
+            # (target_registry has none for TRANSIENT), so nothing was
+            # calibrated against the old scale.
+            flux = np.mean(spec_diff_hw, axis=1)
 
             # Normalize by mean magnitude
             mean_mag = np.mean(spectrogram) + eps
