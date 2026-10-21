@@ -17,6 +17,22 @@
 // with: if you think an acoustic guitar's body boom is at 120 Hz rather than
 // 200, that is a claim about a number in a table.
 //
+//   보컬        A close-mic'd lead, which is three problems at once and one
+//               of them is not about frequency.  The fundamental sits at
+//               100–250 Hz for most singers and the proximity effect piles
+//               more underneath it, so the high-pass is at 85 — high enough
+//               to lose the rumble and the plosive, low enough to leave a
+//               male chest voice intact.  Intelligibility is 2–4 kHz and it
+//               is the band to ADD in; the band to watch is 6–9 kHz, where
+//               sibilance lives, which is why the de-esser on this source is
+//               the deepest in the file.  The dynamic range of a sung
+//               performance is wider than anything else here — a whisper and
+//               a belt in the same line — so the compression is the heaviest
+//               of the melodic sources and the attack has to be fast enough
+//               to catch a consonant (6 ms) without eating it.  And it stays
+//               in the CENTRE: width on a lead vocal is how a mix loses its
+//               singer on a phone speaker.
+//
 //   드럼 루프    A finished stereo kit, not one drum.  So the transient is the
 //               whole point and anything with a fast attack eats it: attacks
 //               stay slow (10–30 ms) and releases fast, which is the opposite
@@ -92,14 +108,21 @@ import { spaceIndex } from './reverb-spaces.js';
 const S = spaceIndex;
 
 export type InstrumentId =
-  | 'drumloop' | 'bass' | 'egtr' | 'agtr' | 'piano' | 'strings' | 'synth';
+  | 'vocal' | 'drumloop' | 'bass' | 'egtr' | 'agtr' | 'piano' | 'strings' | 'synth';
 
-/** The order the seven appear in every device's menu. */
+/**
+ * The order the eight appear in every device's menu.
+ *
+ * 보컬 first, and it was absent entirely until it was added: a menu of seven
+ * sources in an app whose first mixing category is the vocal, where the one
+ * thing almost every session has was the one thing with no starting point.
+ */
 export const INSTRUMENT_ORDER: readonly InstrumentId[] = [
-  'drumloop', 'bass', 'egtr', 'agtr', 'piano', 'strings', 'synth',
+  'vocal', 'drumloop', 'bass', 'egtr', 'agtr', 'piano', 'strings', 'synth',
 ];
 
 export const INSTRUMENT_LABEL: Record<InstrumentId, string> = {
+  vocal:    '보컬',
   drumloop: '드럼 루프',
   bass:     '베이스',
   egtr:     '일렉 기타',
@@ -188,6 +211,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   // ══ EQ ═════════════════════════════════════════════════════════════════════
 
   ...inst('eq3', {
+    vocal:    { note: '밴드가 셋뿐이면 보컬에서는 명료도를 씁니다 — 2.8 kHz 를 올려 가사를 앞으로',
+                params: { hpfHz: 90, lowDb: -2, midDb: 1.5, midHz: 2800, highDb: 2.5 } },
     drumloop: { note: '킥이 50 Hz 에 있으니 하이패스는 그 아래로. 2.5 kHz 스냅을 올립니다',
                 params: { hpfHz: 35, lowDb: 2, midDb: 2, midHz: 2500, highDb: 2.5 } },
     bass:     { note: '30 Hz 만 걷어냅니다. 800 Hz 를 올려야 폰에서 음이 들립니다',
@@ -205,6 +230,10 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('eq8', {
+    vocal:    { note: '400 Hz 박스를 덜고 2.8 kHz 명료도를 올립니다. 6.5 kHz 는 디에서 앞에서 미리 눌러둡니다',
+                params: { hpfHz: 85, lowDb: -2, lowHz: 200, b1Db: -3, b1Hz: 400, b1Q: 1.2,
+                          b2Db: 1.5, b2Hz: 2800, b2Q: 0.8, b3Db: -2.5, b3Hz: 6500, b3Q: 1.6,
+                          highDb: 2.5, highHz: 11000, lpfHz: 20000 } },
     drumloop: { note: '60 Hz 킥, 250 Hz 박스 컷, 3.5 kHz 스냅, 11 kHz 심벌 공기',
                 params: { hpfHz: 32, lowDb: 2.5, lowHz: 60, b1Db: -3, b1Hz: 250, b1Q: 1.2,
                           b2Db: 1, b2Hz: 900, b2Q: 0.8, b3Db: 3, b3Hz: 3500, b3Q: 0.9,
@@ -236,6 +265,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('tilt', {
+    vocal:    { note: '300 Hz 를 축으로 위를 올립니다 — 몸통을 줄이고 명료도를 올리는 한 손잡이',
+                params: { tiltDb: 1.5, pivotHz: 300 } },
     drumloop: { note: '1.2 kHz 를 축으로 살짝 밝게. 루프 전체 성격을 한 손잡이로 바꿉니다',
                 params: { tiltDb: 2, pivotHz: 1200 } },
     bass:     { note: '아래로 기울입니다. 베이스에서 고역은 대개 방해입니다',
@@ -253,6 +284,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('mseq', {
+    vocal:    { note: '리드 보컬은 가운데 것입니다. 사이드 저역을 크게 깎아 가운데를 비웁니다',
+                params: { midLowDb: -1.5, midHighDb: 1.5, sideLowDb: -6, sideHighDb: 1 } },
     drumloop: { note: '가운데 저역은 킥, 옆 고역은 오버헤드. 그 둘만 올립니다',
                 params: { midLowDb: 2, midHighDb: 0, sideLowDb: -4, sideHighDb: 3 } },
     bass:     { note: '옆을 전부 내립니다. 베이스의 스테레오 저역은 모노에서 사라집니다',
@@ -270,6 +303,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('dyneq', {
+    vocal:    { note: '낮은 음을 세게 부를 때만 350 Hz 가 부풉니다. 그때만 내립니다',
+                params: { freqHz: 350, q: 1.8, thresholdDb: -26, rangeDb: -5 } },
     drumloop: { note: '350 Hz 가 세게 칠 때만 눌러줍니다. 루프의 박스 울림',
                 params: { freqHz: 350, q: 1.4, thresholdDb: -22, rangeDb: -5 } },
     bass:     { note: '90 Hz 저음 노트만 튀는 걸 잡습니다. 고정 EQ 로는 못 하는 일입니다',
@@ -287,6 +322,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('exciter', {
+    vocal:    { note: '9 kHz 를 만들어 냅니다. 테이프 시대의 보컬 광택이 여기서 나옵니다',
+                params: { amount: 0.3, freqHz: 9000, mix: 0.22 } },
     drumloop: { note: '6 kHz 에 살짝. 심벌이 이미 밝으니 많이 넣으면 지저분해집니다',
                 params: { amount: 0.3, freqHz: 6000, mix: 0.25 } },
     bass:     { note: '2 kHz 하모닉스를 만들어 작은 스피커에서 들리게 합니다. 베이스에서 제일 쓸모 있는 장치',
@@ -306,6 +343,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   // ══ Dynamics ═══════════════════════════════════════════════════════════════
 
   ...inst('comp', {
+    vocal:    { note: '속삭임과 벨팅이 한 줄에 있습니다. 자음을 잡을 만큼 빠르게(6 ms), 먹지 않을 만큼만',
+                params: { thresholdDb: -20, ratio: 4, kneeDb: 6, attackMs: 6, releaseMs: 90, makeupDb: 5 } },
     drumloop: { note: '어택 25 ms — 그보다 빠르면 스틱 소리를 먹습니다. 릴리스는 다음 박 전에 풀리게',
                 params: { thresholdDb: -18, ratio: 4, kneeDb: 4, attackMs: 25, releaseMs: 90, makeupDb: 4 } },
     bass:     { note: '느린 어택으로 픽을 살리고 긴 릴리스로 서스테인을 고릅니다. 세게 걸어도 되는 악기',
@@ -323,6 +362,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('ducker', {
+    vocal:    { note: '보통은 보컬이 키가 되어 다른 트랙을 누릅니다. 보컬 자신을 누를 때는 얕게',
+                params: { thresholdDb: -28, ratio: 2.5, attackMs: 15, releaseMs: 300, makeupDb: 0 } },
     drumloop: { note: '루프 자체를 덕킹할 일은 드뭅니다. 보컬에 살짝 자리를 내주는 정도',
                 params: { thresholdDb: -26, ratio: 3, attackMs: 15, releaseMs: 180, makeupDb: 0 } },
     bass:     { note: '킥에 눌리게 하는 고전적 용법. 릴리스를 템포에 맞추세요',
@@ -340,6 +381,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('limiter', {
+    vocal:    { note: '컴프 뒤에 남은 한두 개의 피크만. 보컬에 리미터는 안전장치입니다',
+                params: { ceilingDb: -1, lookaheadMs: 3, releaseMs: 80 } },
     drumloop: { note: '룩어헤드를 길게 — 드럼 피크는 리미터가 미리 봐야 잡힙니다',
                 params: { ceilingDb: -1, lookaheadMs: 5, releaseMs: 60 } },
     bass:     { note: '릴리스를 길게. 짧으면 저음에서 펌핑이 들립니다',
@@ -357,6 +400,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('gate', {
+    vocal:    { note: '숨소리를 지우면 사람이 아니게 됩니다. 12 dB 만 내립니다',
+                params: { thresholdDb: -48, rangeDb: 12, attackMs: 9, releaseMs: 250 } },
     drumloop: { note: '루프는 붙어 있는 소리라 얕게만. 레인지를 깊게 주면 리듬이 끊깁니다',
                 params: { thresholdDb: -40, rangeDb: 12, attackMs: 9, releaseMs: 120 } },
     bass:     { note: '연주 사이 앰프 험만 잡습니다. 릴리스를 길게 해야 음이 안 잘립니다',
@@ -374,6 +419,9 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('mbcomp', {
+    vocal:    { note: '치찰음 대역만 더 세게. 4 kHz 위를 따로 누르는 것이 보컬에서 멀티밴드를 쓰는 이유입니다',
+                params: { lowXHz: 200, highXHz: 4000, lowThrDb: -20, lowRatio: 2.5, midThrDb: -18, midRatio: 3,
+                          hiThrDb: -20, hiRatio: 3.5, makeupDb: 3 } },
     drumloop: { note: '저역만 세게 — 킥을 고르고 심벌은 거의 두 손 들고 놔둡니다',
                 params: { lowXHz: 140, highXHz: 3500, lowThrDb: -24, lowRatio: 4,
                           midThrDb: -18, midRatio: 2.5, hiThrDb: -14, hiRatio: 2, makeupDb: 3 } },
@@ -398,6 +446,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('clipper', {
+    vocal:    { note: '자음 끝의 뾰족한 몇 샘플만 둥글립니다. 들리면 너무 많이 넣은 것입니다',
+                params: { driveDb: 1.2, ceilingDb: -1, hardness: 0.25 } },
     drumloop: { note: '가장 단단하게 — 드럼 피크를 깎아 리미터 부담을 덜어줍니다',
                 params: { driveDb: 4.5, ceilingDb: -1, hardness: 0.8 } },
     bass:     { note: '부드럽게 — 베이스를 하드 클립하면 저역이 지저분해집니다',
@@ -415,6 +465,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('mbwidth', {
+    vocal:    { note: '몸통은 모노, 공기만 넓게. 리드 보컬을 넓히면 폰 스피커에서 가수가 사라집니다',
+                params: { lowXHz: 200, highXHz: 5000, lowWidth: 0, midWidth: 1, hiWidth: 1.2 } },
     drumloop: { note: '킥은 가운데, 오버헤드는 넓게 — 한 스테레오 루프에서 둘을 나눕니다',
                 params: { lowXHz: 200, highXHz: 3000, lowWidth: 0, midWidth: 1, hiWidth: 1.5 } },
     bass:     { note: '베이스는 전부 가운데입니다. 이 장치로 할 일은 그것을 확인하는 것뿐',
@@ -432,6 +484,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('upward', {
+    vocal:    { note: '작은 자음을 올립니다. 아래에서 올리는 쪽이 위를 누르는 것보다 가사에 낫습니다',
+                params: { thresholdDb: -34, ratio: 2.2, depthDb: 6, floorDb: -55, attackMs: 100, releaseMs: 700 } },
     drumloop: { note: '고스트 노트를 들어올립니다. 어택을 늦춰 메인 히트는 건드리지 않게',
                 params: { thresholdDb: -30, ratio: 2.4, depthDb: 6, floorDb: -58,
                           attackMs: 60, releaseMs: 200 } },
@@ -456,6 +510,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('transient', {
+    vocal:    { note: '파열음의 머리를 살짝 깎고 꼬리를 남깁니다. 보컬에서는 어택을 키우는 장치가 아닙니다',
+                params: { attack: -0.15, sustain: 0.1, mix: 0.6 } },
     drumloop: { note: '어택을 올리고 서스테인을 줄이면 루프가 방에서 나옵니다',
                 params: { attack: 0.45, sustain: -0.3, mix: 1 } },
     bass:     { note: '서스테인을 올려 길이를 만듭니다. 어택은 건드리지 않습니다',
@@ -473,6 +529,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('deesser', {
+    vocal:    { note: '이 장치가 존재하는 이유가 보컬입니다. 7 kHz, 이 파일에서 가장 깊게',
+                params: { freqHz: 7000, thresholdDb: -28, amount: 0.5 } },
     drumloop: { note: '하이햇이 쏠 때. 8 kHz 에서 가볍게',
                 params: { freqHz: 8000, thresholdDb: -22, amount: 0.3 } },
     bass:     { note: '베이스에 디에서는 거의 필요 없습니다. 픽 노이즈용 최소값',
@@ -492,6 +550,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   // ══ Saturation ═════════════════════════════════════════════════════════════
 
   ...inst('saturation', {
+    vocal:    { note: '드라이브는 낮게, 믹스는 높게 — 배음을 더하되 자음은 원본을 남깁니다',
+                params: { driveDb: 4, mix: 0.3, bias: 0 } },
     drumloop: { note: '병렬로 살짝. 루프에 직렬 새츄레이션을 세게 걸면 트랜지언트가 죽습니다',
                 params: { driveDb: 6, mix: 0.35, bias: 0 } },
     bass:     { note: '가장 중요한 장치입니다. 하모닉스가 있어야 폰 스피커에서 베이스가 들립니다',
@@ -509,6 +569,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('tube', {
+    vocal:    { note: '10 kHz 로 튜브 광택만. 드라이브를 올리면 자음이 지저분해집니다',
+                params: { drive: 0.25, bias: 0.1, toneHz: 10000, mix: 40, outDb: -0.5 } },
     drumloop: { note: '드라이브는 낮게, 톤은 열어둡니다. 루프의 고역을 죽이지 않기 위해',
                 params: { drive: 0.3, bias: 0.12, toneHz: 11000, mix: 45, outDb: -1 } },
     bass:     { note: '바이어스를 올려 짝수 배음을 만듭니다. 베이스가 두꺼워지는 이유가 이것',
@@ -526,6 +588,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('bitcrush', {
+    vocal:    { note: '보컬에 비트크러시는 효과입니다 — 11 비트, 낮은 믹스로 전화기 느낌만',
+                params: { bits: 11, mix: 25 } },
     drumloop: { note: '12비트 — 샘플러 느낌만 냅니다. 낮추면 루프가 부서집니다',
                 params: { bits: 12, mix: 45 } },
     bass:     { note: '베이스를 크러시하면 저역이 먼저 사라집니다. 15비트로 흔적만',
@@ -545,6 +609,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   // ══ Modulation ═════════════════════════════════════════════════════════════
 
   ...inst('chorus', {
+    vocal:    { note: '더블링의 흉내입니다. 깊게 걸면 1980년대가 되고 가사는 흐려집니다',
+                params: { rateHz: 0.35, depthMs: 1.8, delayMs: 22, mix: 14 } },
     drumloop: { note: '루프 전체에 코러스는 위상을 흔듭니다. 아주 얕게만',
                 params: { rateHz: 0.4, depthMs: 1.5, delayMs: 14, mix: 15 } },
     bass:     { note: '저역이 흔들리면 모노에서 사라집니다. 깊이를 최소로',
@@ -562,6 +628,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('harmonizer', {
+    vocal:    { note: '한 옥타브 위를 아주 작게 — 들리면 안 되고, 꺼보면 비어야 합니다',
+                params: { v1St: 12, v1Db: -20, v2Db: -60, spread: 0.55, windowMs: 30, mix: 0.14 } },
     drumloop: { note: '드럼에는 옥타브 아래를 아주 조금 — 하모나이저는 트랜지언트에서 '
                       + '스플라이스가 가장 잘 들리므로, 킥의 몸통만 두껍게 하고 빠집니다',
                 params: { v1St: -12, v1Db: -16, v2Db: -60, spread: 0.2, windowMs: 130, mix: 0.12 } },
@@ -580,6 +648,9 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
                 params: { v1St: 7, v1Db: -3, v2St: 12, v2Db: -5, spread: 0.8, windowMs: 85, mix: 0.5 } },
   }),
   ...inst('linphase', {
+    vocal:    { note: '위상이 돌지 않는 EQ. 더블 트랙과 겹칠 때 보컬에서 이것이 중요해집니다',
+                params: { length: 2, lowDb: 0.5, lowHz: 120, b1Db: -2, b1Hz: 400, b1Q: 1.4,
+                          b2Db: 2, b2Hz: 3000, b2Q: 0.9, highDb: 2 } },
     drumloop: { note: '드럼에는 빠름 길이로. 프리링잉은 트랜지언트 앞에 붙는 것이라 '
                       + '드럼에서 가장 잘 들리고, 짧을수록 그 물결이 짧습니다',
                 params: { length: 0, lowDb: 2, lowHz: 70, b1Db: -3, b1Hz: 400, b1Q: 1.6,
@@ -607,6 +678,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
                           b2Db: 2, b2Hz: 5000, b2Q: 0.8, highDb: 2.5, highHz: 11000 } },
   }),
   ...inst('tape', {
+    vocal:    { note: '테이프 보컬은 거의 전적으로 범프와 아주 약한 드라이브입니다',
+                params: { speed: 1, drive: 2.5, bias: 0.5, bump: 1.5, wow: 0.02, flutter: 0.04, crosstalk: 0.1 } },
     drumloop: { note: '드럼에 15 ips — 테이프가 드럼을 눌러주는 건 상단부터라, '
                       + '심벌이 먼저 잡히고 킥은 범프로 부풀어 오릅니다',
                 params: { speed: 1, drive: 7, bias: 0.45, bump: 5, wow: 0.12, flutter: 0.18, crosstalk: 0.3 } },
@@ -629,6 +702,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
                 params: { speed: 0, drive: 11, bias: 0.25, bump: 6, wow: 0.5, flutter: 0.45, hiss: 0.35, crosstalk: 0.55 } },
   }),
   ...inst('amp', {
+    vocal:    { note: '보컬을 앰프로 보내는 건 효과입니다. 작은 캡, 낮은 게인, 마이크를 멀리',
+                params: { gain: 35, stages: 1, master: 40, sag: 40, cab: 2, mic: 50, mid: 0 } },
     drumloop: { note: '드럼을 앰프에 넣는 건 왜곡이지 앰프 소리가 아닙니다 — 캐비닛을 끄고 한 단만',
                 params: { gain: 40, stages: 1, master: 30, sag: 20, cab: 3, mic: 50, level: -4 } },
     bass:     { note: '베이스 앰프는 기타 앰프가 아닙니다 — 캐비닛을 끄고 저역을 살립니다. '
@@ -647,6 +722,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('rotary', {
+    vocal:    { note: '로터리 보컬은 존 레논입니다. 도플러는 줄이고 믹스는 중간에',
+                params: { rateHz: 4.8, doppler: 70, throb: 45, xoverHz: 800, drive: 15, mix: 60 } },
     drumloop: { note: '드럼을 회전시키면 그루브가 흔들립니다 — 절반만 섞고 도플러는 최소로',
                 params: { rateHz: 3.2, doppler: 30, throb: 45, xoverHz: 1200, drive: 10, mix: 35 } },
     bass:     { note: '베이스는 드럼 로터만 쓰게 크로스오버를 올리고, 도플러는 거의 끕니다 — '
@@ -665,6 +742,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('flanger', {
+    vocal:    { note: '느리게, 얕게. 보컬 플랜저는 구절 하나에만 쓰는 장치입니다',
+                params: { rateHz: 0.1, depthMs: 1.2, delayMs: 5, feedback: 0.2, mix: 15 } },
     drumloop: { note: '루프 전체 플랜징. 피드백을 낮게 잡아야 리듬이 남습니다',
                 params: { rateHz: 0.2, depthMs: 1.5, delayMs: 2, feedback: 0.3, mix: 30 } },
     bass:     { note: '피드백 거의 없이. 저역 플랜저는 위상 문제 그 자체입니다',
@@ -682,6 +761,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('phaser', {
+    vocal:    { note: '1.2 kHz 중심이면 가사를 덜 먹습니다',
+                params: { rateHz: 0.25, depth: 0.5, centreHz: 1200, feedback: 0.25, mix: 22 } },
     drumloop: { note: '하이햇에 움직임만 줍니다. 중심 주파수를 높게',
                 params: { rateHz: 0.5, depth: 0.5, centreHz: 2200, feedback: 0.25, mix: 28 } },
     bass:     { note: '중심을 높게 잡아 저역을 피합니다. 펑크 베이스의 그 소리',
@@ -699,6 +780,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('tremolo', {
+    vocal:    { note: '보컬 트레몰로는 깊이가 생명입니다 — 0.3 을 넘기면 노래가 아니라 효과가 됩니다',
+                params: { rateHz: 5.5, depth: 0.3, shape: 1 } },
     drumloop: { note: '박에 맞춘 게이팅. 깊이를 크게 주면 리듬 장치가 됩니다',
                 params: { rateHz: 8, depth: 0.7, shape: 0.9 } },
     bass:     { note: '느리고 얕게. 베이스 트레몰로는 레벨이 흔들리는 것으로 들립니다',
@@ -716,6 +799,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('autopan', {
+    vocal:    { note: '리드 보컬은 움직이지 않습니다 — 이 설정은 애드리브와 더블 트랙용입니다',
+                params: { rateHz: 0.09, depth: 0.28 } },
     drumloop: { note: '루프를 패닝하면 킥이 움직입니다. 아주 얕게만',
                 params: { rateHz: 0.3, depth: 0.2 } },
     bass:     { note: '베이스는 움직이면 안 됩니다. 사실상 끈 값',
@@ -735,6 +820,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   // ══ Delay ══════════════════════════════════════════════════════════════════
 
   ...inst('delay', {
+    vocal:    { note: '8분 점음표(120 BPM 에서 375 ms). 문장 끝만 밀고 가사는 건드리지 않습니다',
+                params: { timeMs: 375, feedback: 0.22, mix: 0.14 } },
     drumloop: { note: '8분음표 슬랩. 피드백을 낮게 해야 그루브가 안 흐려집니다',
                 params: { timeMs: 250, feedback: 0.18, mix: 0.16 } },
     bass:     { note: '베이스에 딜레이는 저역을 겹칩니다. 짧고 거의 안 들리게',
@@ -752,6 +839,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('pingpong', {
+    vocal:    { note: '좌우로 던져 가운데를 비웁니다. 리드가 설 자리는 가운데입니다',
+                params: { timeMs: 350, feedback: 0.3, toneHz: 6500, mix: 18 } },
     drumloop: { note: '탑라인만 좌우로 튀게. 톤을 닫아 킥이 따라가지 않게 합니다',
                 params: { timeMs: 250, feedback: 0.25, toneHz: 4000, mix: 18 } },
     bass:     { note: '핑퐁은 베이스에 쓰지 않는 게 맞습니다. 흔적만 남긴 값',
@@ -769,6 +858,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('tapedelay', {
+    vocal:    { note: '반복이 어두워져야 가사와 겹치지 않습니다 — 톤 3.2 kHz',
+                params: { timeMs: 400, feedback: 0.28, toneHz: 3200, wowMs: 0.5, drive: 0.22, mix: 16 } },
     drumloop: { note: '와우를 낮게 — 테이프 흔들림이 드럼에서는 박자가 밀린 것처럼 들립니다',
                 params: { timeMs: 250, feedback: 0.2, toneHz: 4000, wowMs: 0.2, drive: 0.2, mix: 15 } },
     bass:     { note: '거의 안 씁니다. 드라이브만 조금 빌려 쓰는 값',
@@ -788,6 +879,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   // ══ Reverb ═════════════════════════════════════════════════════════════════
 
   ...inst('reverb', {
+    vocal:    { note: '보컬 리버브는 길이보다 프리딜레이입니다 — 35 ms 가 가사와 울림을 떼어 놓습니다',
+                params: { decaySec: 1.8, mix: 0.22, preDelayMs: 35 } },
     drumloop: { note: '짧은 방. 드럼 리버브는 길면 그루브를 지웁니다',
                 params: { decaySec: 0.9, mix: 0.14, preDelayMs: 10 } },
     bass:     { note: '베이스에 리버브는 저역을 흐립니다. 거의 드라이',
@@ -805,6 +898,9 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('spacereverb', {
+    vocal:    { note: '작은 방 하나. 저역을 250 Hz 에서 잘라야 울림이 가사를 덮지 않습니다',
+                params: { space: 6, sizePct: 100, decayPct: 95, preDelayMs: 25, dampingPct: 90, erDb: 0, tailDb: 0,
+                          lowCutHz: 250, highCutHz: 11000, widthPct: 110, mixPct: 20 } },
     drumloop: { note: '드럼 룸. 짧고 어둡게, 초기 반사 위주로 — 꼬리는 눌러둡니다',
                 params: { space: S('room-drum'), sizePct: 90, decayPct: 65, preDelayMs: 8,
                           dampingPct: 130, erDb: 2, tailDb: -6, lowCutHz: 180,
@@ -836,6 +932,9 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('plate', {
+    vocal:    { note: '보컬에 가장 많이 쓰인 리버브입니다. 300 Hz 로우컷이 판 리버브를 맑게 유지합니다',
+                params: { decaySec: 1.9, preDelayMs: 22, dampHz: 7500, diffusion: 0.82, lowCutHz: 300,
+                          highCutHz: 12000, widthPct: 115, mixPct: 20 } },
     drumloop: { note: '짧은 플레이트. 스네어에 몸을 붙이는 고전적 방법입니다',
                 params: { decaySec: 1.2, preDelayMs: 8, dampHz: 6000, diffusion: 0.8,
                           lowCutHz: 250, highCutHz: 11000, widthPct: 105, mixPct: 14 } },
@@ -860,6 +959,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('spring', {
+    vocal:    { note: '스프링은 보컬의 리버브가 아닙니다. 쓰더라도 겨우 들릴 만큼만',
+                params: { decaySec: 1.2, toneHz: 1200, dampHz: 3000, boing: 0.2, mixPct: 8 } },
     drumloop: { note: '짧게. 스프링의 보잉이 드럼에서는 스프링이 튕기는 소리로 들킵니다',
                 params: { decaySec: 0.9, toneHz: 1800, dampHz: 5000, boing: 0.3, mixPct: 12 } },
     bass:     { note: '스프링은 베이스와 상극입니다. 톤을 높여 저역을 피한 최소값',
@@ -877,6 +978,9 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('shimmer', {
+    vocal:    { note: '꼬리에 옥타브가 떠오릅니다. 발라드 마지막 음에 쓰는 장치입니다',
+                params: { space: 10, decayPct: 150, shimmer: 0.25, loopMs: 200, preDelayMs: 40, lowCutHz: 300,
+                          highCutHz: 11000, widthPct: 115, mixPct: 18 } },
     drumloop: { note: '드럼에 시머는 거의 안 씁니다. 심벌 꼬리에만 아주 옅게',
                 params: { space: S('amb-wide'), decayPct: 90, shimmer: 0.2, loopMs: 140,
                           preDelayMs: 20, lowCutHz: 400, highCutHz: 10000,
@@ -910,6 +1014,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   // ══ Imaging ════════════════════════════════════════════════════════════════
 
   ...inst('widener', {
+    vocal:    { note: '리드는 가운데입니다. 280 Hz 아래를 모노로 묶고 폭은 거의 건드리지 않습니다',
+                params: { width: 1.1, lowMonoHz: 280 } },
     drumloop: { note: '오버헤드를 벌리되 킥은 가운데 묶습니다',
                 params: { width: 1.25, lowMonoHz: 140 } },
     bass:     { note: '폭 1.0 — 베이스는 넓히지 않습니다. 모노 지점을 높게 잡습니다',
@@ -927,6 +1033,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('monomaker', {
+    vocal:    { note: '180 Hz 아래를 모노로. 베이스만큼 높일 필요는 없고, 폭은 그대로 둡니다',
+                params: { freqHz: 180, widthPct: 102 } },
     drumloop: { note: '킥 대역을 모노로. 오버헤드는 그대로 둡니다',
                 params: { freqHz: 130, widthPct: 115 } },
     bass:     { note: '300 Hz 아래 전부 모노. 베이스에서 이건 취향이 아니라 규칙입니다',
@@ -944,6 +1052,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('haas', {
+    vocal:    { note: '리드 보컬에 하스는 위험합니다. 모노로 합쳐지면 목소리가 얇아집니다',
+                params: { delayMs: 12, amount: 0.15 } },
     drumloop: { note: '루프에 하스는 위상을 망칩니다. 아주 짧게, 아주 약하게',
                 params: { delayMs: 6, amount: 0.2 } },
     bass:     { note: '베이스에는 쓰지 않습니다. 흔적만 남긴 값',
@@ -963,6 +1073,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   // ══ Restore · Pitch ════════════════════════════════════════════════════════
 
   ...inst('denoise', {
+    vocal:    { note: '구절 사이의 룸톤만. 많이 걸면 숨소리가 수중음이 됩니다',
+                params: { thresholdDb: -56, amount: 0.4, releaseMs: 220 } },
     drumloop: { note: '루프에는 잔향이 노이즈처럼 보입니다. 아주 약하게',
                 params: { thresholdDb: -58, amount: 0.2, releaseMs: 80 } },
     bass:     { note: '앰프 히스를 낮은 문턱에서. 릴리스를 길게 해야 저음이 안 잘립니다',
@@ -980,6 +1092,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('hum', {
+    vocal:    { note: '마이크는 조명과 전원을 가장 잘 줍습니다 — 배음을 높게 보고 Q 는 좁게',
+                params: { baseHz: 60, harmonics: 7, q: 52 } },
     drumloop: { note: '루프에 험이 있는 경우는 드뭅니다. 기본 배음만',
                 params: { baseHz: 60, harmonics: 3, q: 28 } },
     bass:     { note: '베이스 앰프 험. 저역 배음이 실제로 겹치므로 Q 를 좁게',
@@ -997,6 +1111,8 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
   }),
 
   ...inst('pitchcorrect', {
+    vocal:    { note: '이 장치의 본래 자리입니다. 현대 팝은 들리기 직전까지 — 발라드라면 0.3 아래로',
+                params: { amount: 0.65, formant: 0 } },
     drumloop: { note: '드럼에 피치 보정은 의미가 없습니다. 사실상 끈 값',
                 params: { amount: 0.05, formant: 0 } },
     bass:     { note: '베이스 인토네이션을 약하게 잡습니다. 세게 걸면 음이 계단처럼 됩니다',

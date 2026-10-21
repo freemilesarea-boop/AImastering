@@ -5,7 +5,7 @@
  * Seven instruments × 36 devices is 252 parameter maps, and nobody reads 252
  * parameter maps.  What happens instead is that one gets pasted from its
  * neighbour and never corrected, so the 베이스 compressor and the 피아노
- * compressor turn out to be the same device and the menu is claiming seven
+ * compressor turn out to be the same device and the menu is claiming eight
  * answers while holding four.
  *
  * So the checks are not "does it load".  They are:
@@ -58,7 +58,7 @@ const devicesWithPresets = [...new Set(INSTRUMENT_PRESETS.map((p) => p.pluginId)
 
 // ── Coverage ────────────────────────────────────────────────────────────────
 
-check('every device an instrument can change has all seven', () => {
+check('every device an instrument can change has all eight', () => {
   for (const pluginId of devicesWithPresets) {
     for (const id of INSTRUMENT_ORDER) {
       assert(P(pluginId, id), `${pluginId} has no ${INSTRUMENT_LABEL[id]}`);
@@ -286,6 +286,47 @@ check('saturation is loudest where the header says it matters most', () => {
   assert(drive('strings') <= 3, 'strings should get the least saturation');
 });
 
+check('the vocal profile says what the header says it says', () => {
+  // The paragraph added with 보컬 makes five claims about numbers.  They are
+  // the reason the preset exists, so they are asserted rather than trusted.
+  //
+  //   "the de-esser on this source is the deepest in the file"
+  for (const id of INSTRUMENT_ORDER) {
+    if (id === 'vocal') continue;
+    assert(V('deesser', 'vocal', 'amount') > V('deesser', id, 'amount'),
+      `de-esser on 보컬 (${V('deesser', 'vocal', 'amount')}) is not deeper than ${INSTRUMENT_LABEL[id]}`);
+  }
+  //   "the compression is the heaviest of the melodic sources"
+  for (const soft of ['piano', 'agtr', 'strings'] as InstrumentId[]) {
+    assert(V('comp', 'vocal', 'ratio') > V('comp', soft, 'ratio'),
+      `보컬 (${V('comp', 'vocal', 'ratio')}:1) is not compressed harder than ${INSTRUMENT_LABEL[soft]}`);
+  }
+  //   "fast enough to catch a consonant (6 ms) without eating it"
+  assert(V('comp', 'vocal', 'attackMs') <= 8,
+    `보컬 attack ${V('comp', 'vocal', 'attackMs')} ms is too slow for a consonant`);
+  //   "the high-pass is at 85 — high enough to lose the rumble and the
+  //   plosive, low enough to leave a male chest voice intact"
+  for (const eq of ['eq3', 'eq8']) {
+    const hpf = V(eq, 'vocal', 'hpfHz');
+    assert(hpf >= 80 && hpf <= 100, `${eq}: 보컬 hpf ${hpf} Hz is outside 80–100`);
+    assert(hpf > V(eq, 'bass', 'hpfHz'), `${eq}: 보컬 hpf is not above the bass`);
+  }
+  //   "it stays in the CENTRE"
+  for (const id of INSTRUMENT_ORDER) {
+    if (id === 'vocal' || id === 'bass') continue;
+    assert(V('widener', 'vocal', 'width') <= V('widener', id, 'width'),
+      `보컬 width ${V('widener', 'vocal', 'width')} is wider than ${INSTRUMENT_LABEL[id]}`);
+  }
+  //   and the breath survives: a vocal gate that closes hard is a vocal that
+  //   stops breathing between lines.
+  assert(V('gate', 'vocal', 'rangeDb') <= 20,
+    `a vocal gated by ${V('gate', 'vocal', 'rangeDb')} dB loses its breaths`);
+  //   reverb is kept off the lyric by pre-delay rather than by being short
+  assert(V('reverb', 'vocal', 'preDelayMs') > V('reverb', 'drumloop', 'preDelayMs')
+    && V('reverb', 'vocal', 'preDelayMs') > V('reverb', 'agtr', 'preDelayMs'),
+    'the vocal pre-delay is not what keeps the lyric clear');
+});
+
 check('the gate is shallow on a loop and deep on a high-gain guitar', () => {
   const range = (id: InstrumentId) => V('gate', id, 'rangeDb');
   assert(range('egtr') > range('drumloop'),
@@ -296,10 +337,11 @@ check('the gate is shallow on a loop and deep on a high-gain guitar', () => {
 
 // ── The menu ────────────────────────────────────────────────────────────────
 
-check('the chip row gets all seven, in the declared order', () => {
+check('the chip row gets all eight, in the declared order', () => {
   for (const pluginId of devicesWithPresets) {
     const { instrument } = partitionInstrument(allPresetGroups(pluginId));
-    assert(instrument.length === 7, `${pluginId}: chip row has ${instrument.length}`);
+    assert(instrument.length === INSTRUMENT_ORDER.length,
+      `${pluginId}: chip row has ${instrument.length} of ${INSTRUMENT_ORDER.length}`);
     instrument.forEach((p, i) => {
       assert(p.name === INSTRUMENT_LABEL[INSTRUMENT_ORDER[i]!],
         `${pluginId}: chip ${i} is ${p.name}`);
@@ -307,7 +349,7 @@ check('the chip row gets all seven, in the declared order', () => {
   }
 });
 
-check('the dropdown does not list the same seven again', () => {
+check('the dropdown does not list the same eight again', () => {
   for (const pluginId of devicesWithPresets) {
     const { rest } = partitionInstrument(allPresetGroups(pluginId));
     assert(!rest.some((g) => g.group === INSTRUMENT_GROUP),
@@ -322,7 +364,7 @@ check('the five devices without instrument presets get no chip row', () => {
   }
 });
 
-console.log('\n=== Instrument presets — seven sources, every device ===');
+console.log('\n=== Instrument presets — eight sources, every device ===');
 for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ' — ' + r.detail : ''}`);
 const bad = results.filter((r) => !r.pass).length;
 console.log(`\n${results.length - bad}/${results.length} passed${bad ? `, ${bad} FAILED` : ''}`);

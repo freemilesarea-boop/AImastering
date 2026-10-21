@@ -302,8 +302,8 @@ console.log('\n=== 악기별 기본 체인 ===\n');
   );
   const profiled = INSTRUMENT_CHAINS.filter((c) => c.profile !== null);
   check(
-    'six of the twelve map onto an instrument the app already knows',
-    profiled.length === 6
+    'seven of the twelve map onto an instrument the app already knows',
+    profiled.length === 7
       && profiled.every((c) => c.profile !== null && INSTRUMENT_LABEL[c.profile] !== undefined),
     profiled.map((c) => `${c.id}→${c.profile === null ? '' : INSTRUMENT_LABEL[c.profile]}`).join(', '),
   );
@@ -311,8 +311,8 @@ console.log('\n=== 악기별 기본 체인 ===\n');
   // is not one of them, in an app whose first category is 보컬.
   const unprofiled = INSTRUMENT_CHAINS.filter((c) => c.profile === null).map((c) => c.id);
   check(
-    'and the six with no instrument profile are the ones the app has none for',
-    unprofiled.join(',') === 'vocal,backing,percussion,brass,woodwinds,fx',
+    'and the five with no instrument profile are the ones the app has none for',
+    unprofiled.join(',') === 'backing,percussion,brass,woodwinds,fx',
     `no profile: ${unprofiled.join(', ')}`,
   );
 }

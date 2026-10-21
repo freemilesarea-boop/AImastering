@@ -126,7 +126,7 @@ jobs:
       # ── The suite, which CI did not run ─────────────────────────────────
       #
       # Until now this job ran `typecheck` and `lint` and nothing else: the 225
-      # selftests (4,770 assertions) had never once run in CI.  They ran only
+      # selftests (4,771 assertions) had never once run in CI.  They ran only
       # when someone ran them by hand, which is the same standing as not
       # having them.
       #

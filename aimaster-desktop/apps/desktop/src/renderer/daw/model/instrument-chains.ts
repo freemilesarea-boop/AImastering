@@ -96,11 +96,12 @@ export interface InstrumentChain {
    * or null when the app has none for it.
    *
    * Six of the twelve have one.  The six that do not — 보컬, 백킹 보컬,
-   * 퍼커션, 브라스, 목관, FX — carry their own numbers below, because the
-   * instrument menu on every device offers seven instruments and a VOCAL is
-   * not one of them.  Writing seven invented columns into that file to close
-   * the gap is what its own header says it will not do, so the gap is named
-   * here instead of hidden.
+   * 퍼커션, 브라스, 목관, FX — carry their own numbers below.
+   *
+   * 보컬 used to be among them: the instrument menu on every device offered
+   * seven sources and a VOCAL was not one of them, in an app whose first
+   * mixing category is the vocal.  That column exists now — 43 devices, each
+   * with its reason — so this chain takes it like the other five.
    */
   profile: InstrumentId | null;
   /** What the track is, in the app's language. */
@@ -119,23 +120,17 @@ export interface InstrumentChain {
 export const INSTRUMENT_CHAINS: readonly InstrumentChain[] = [
   {
     id: 'vocal',
-    profile: null,
+    profile: 'vocal',
     label: '보컬',
     english: 'Vocals',
     hint: '리드 보컬 — 가장 앞에 서는 소리',
     devices: [
-      { pluginId: 'eq8', why: '울림과 저역 잡음을 먼저 덜어냅니다',
-        params: { hpfHz: 90, b1Hz: 300, b1Db: -2.5, b1Q: 1.2, b3Hz: 6000, b3Db: 1.5, b3Q: 0.8 } },
-      { pluginId: 'comp', why: '큰 곳과 작은 곳의 차이를 좁혀 가사가 묻히지 않게 합니다',
-        params: { thresholdDb: -18, ratio: 3, kneeDb: 8, attackMs: 8, releaseMs: 120, makeupDb: 3 } },
-      { pluginId: 'deesser', why: '치찰음(ㅅ, ㅊ)만 골라 눌러줍니다',
-        params: { freqHz: 6500, thresholdDb: -26, amount: 0.5 } },
-      { pluginId: 'tube', why: '아주 옅은 배음으로 목소리를 앞으로 당깁니다',
-        params: { drive: 0.18, bias: 0.12, toneHz: 9000, mix: 35, outDb: 0 } },
-      { pluginId: 'delay', why: '문장 끝을 살짝 밀어 공간을 만듭니다',
-        params: { timeMs: 380, feedback: 0.22, mix: 0.12 } },
-      { pluginId: 'plate', why: '보컬에 가장 많이 쓰는 판 리버브',
-        params: { decaySec: 1.8, preDelayMs: 20, lowCutHz: 300, highCutHz: 12000, widthPct: 110, mixPct: 16 } },
+      { pluginId: 'eq8', why: '울림과 저역 잡음을 먼저 덜어냅니다' },
+      { pluginId: 'comp', why: '큰 곳과 작은 곳의 차이를 좁혀 가사가 묻히지 않게 합니다' },
+      { pluginId: 'deesser', why: '치찰음(ㅅ, ㅊ)만 골라 눌러줍니다' },
+      { pluginId: 'tube', why: '아주 옅은 배음으로 목소리를 앞으로 당깁니다' },
+      { pluginId: 'delay', why: '문장 끝을 살짝 밀어 공간을 만듭니다' },
+      { pluginId: 'plate', why: '보컬에 가장 많이 쓰는 판 리버브' },
     ],
   },
   {
