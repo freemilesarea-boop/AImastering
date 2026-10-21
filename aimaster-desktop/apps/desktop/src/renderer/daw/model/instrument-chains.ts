@@ -60,6 +60,9 @@
 // loads every chain through `loadRack` — the same path a saved rack takes —
 // and refuses if any device is dropped or any value is changed on the way in.
 
+import {
+  INSTRUMENT_LABEL, INSTRUMENT_PRESETS, type InstrumentId,
+} from '../engine/plugin-presets-instrument.js';
 import type { RackPreset } from './rack-preset.js';
 
 export type InstrumentChainId =
@@ -70,11 +73,36 @@ export interface ChainDevice {
   pluginId: string;
   /** One line, for the person who has not met this device before. */
   why: string;
-  params: Record<string, number>;
+  /**
+   * Settings for this device — ONLY where the app has no instrument preset
+   * for it.
+   *
+   * `plugin-presets-instrument.ts` already answers "what does a bass
+   * compressor want", with a paragraph of reasoning per instrument and 301
+   * presets over 43 devices.  A chain that typed its own numbers for the
+   * same pair would be a second answer to the same question, one click away
+   * from the first: load the bass chain, open the compressor, pick 베이스
+   * from its own menu, and every number would change.  So where a preset
+   * exists the chain takes it and carries nothing of its own, and a selftest
+   * refuses a device that carries both.
+   */
+  params?: Record<string, number>;
 }
 
 export interface InstrumentChain {
   id: InstrumentChainId;
+  /**
+   * The instrument profile this chain's devices take their settings from,
+   * or null when the app has none for it.
+   *
+   * Six of the twelve have one.  The six that do not — 보컬, 백킹 보컬,
+   * 퍼커션, 브라스, 목관, FX — carry their own numbers below, because the
+   * instrument menu on every device offers seven instruments and a VOCAL is
+   * not one of them.  Writing seven invented columns into that file to close
+   * the gap is what its own header says it will not do, so the gap is named
+   * here instead of hidden.
+   */
+  profile: InstrumentId | null;
   /** What the track is, in the app's language. */
   label: string;
   /** The English name, because that is what the plugin folders say. */
@@ -91,6 +119,7 @@ export interface InstrumentChain {
 export const INSTRUMENT_CHAINS: readonly InstrumentChain[] = [
   {
     id: 'vocal',
+    profile: null,
     label: '보컬',
     english: 'Vocals',
     hint: '리드 보컬 — 가장 앞에 서는 소리',
@@ -111,6 +140,7 @@ export const INSTRUMENT_CHAINS: readonly InstrumentChain[] = [
   },
   {
     id: 'backing',
+    profile: null,
     label: '백킹 보컬',
     english: 'Backing Vocal',
     hint: '코러스 · 더블 — 리드 뒤에 넓게 까는 소리',
@@ -129,24 +159,21 @@ export const INSTRUMENT_CHAINS: readonly InstrumentChain[] = [
   },
   {
     id: 'drums',
+    profile: 'drumloop',
     label: '드럼',
     english: 'Drums',
     hint: '킷 전체 · 드럼 버스',
     devices: [
-      { pluginId: 'transient', why: '때리는 순간을 먼저 세웁니다 — 압축보다 앞',
-        params: { attack: 0.3, sustain: -0.1, mix: 1 } },
-      { pluginId: 'eq8', why: '초저역을 자르고 둔한 중저역을 덜어냅니다',
-        params: { hpfHz: 35, b1Hz: 350, b1Db: -2.5, b1Q: 1.4, highHz: 9000, highDb: 1.5 } },
-      { pluginId: 'comp', why: '킷을 하나로 묶습니다 — 어택을 늦게 둬야 때림이 남습니다',
-        params: { thresholdDb: -14, ratio: 4, kneeDb: 6, attackMs: 15, releaseMs: 90, makeupDb: 3 } },
-      { pluginId: 'saturation', why: '배음을 더해 작은 스피커에서도 들리게 합니다',
-        params: { driveDb: 4, mix: 0.25, bias: 0 } },
-      { pluginId: 'reverb', why: '짧은 방 하나로 킷을 같은 공간에 놓습니다',
-        params: { decaySec: 1.1, preDelayMs: 10, mix: 0.12 } },
+      { pluginId: 'transient', why: '때리는 순간을 먼저 세웁니다 — 압축보다 앞' },
+      { pluginId: 'eq8', why: '초저역을 자르고 둔한 중저역을 덜어냅니다' },
+      { pluginId: 'comp', why: '킷을 하나로 묶습니다 — 어택을 늦게 둬야 때림이 남습니다' },
+      { pluginId: 'saturation', why: '배음을 더해 작은 스피커에서도 들리게 합니다' },
+      { pluginId: 'reverb', why: '짧은 방 하나로 킷을 같은 공간에 놓습니다' },
     ],
   },
   {
     id: 'percussion',
+    profile: null,
     label: '퍼커션',
     english: 'Percussion',
     hint: '셰이커 · 탬버린 · 콩가',
@@ -163,71 +190,59 @@ export const INSTRUMENT_CHAINS: readonly InstrumentChain[] = [
   },
   {
     id: 'bass',
+    profile: 'bass',
     label: '베이스',
     english: 'Bass',
     hint: '일렉 베이스 · 신스 베이스',
     devices: [
-      { pluginId: 'eq8', why: '킥이 설 자리를 비우고 탁한 중저역을 덜어냅니다',
-        params: { hpfHz: 32, b1Hz: 250, b1Db: -2.5, b1Q: 1.2, b2Hz: 800, b2Db: 1.5, b2Q: 0.9 } },
-      { pluginId: 'comp', why: '음마다 다른 크기를 고르게 — 베이스에서 가장 중요한 한 가지',
-        params: { thresholdDb: -20, ratio: 4, kneeDb: 8, attackMs: 20, releaseMs: 110, makeupDb: 4 } },
-      { pluginId: 'tube', why: '배음을 만들어 작은 스피커에서도 음정이 들리게 합니다',
-        params: { drive: 0.22, bias: 0.15, toneHz: 6000, mix: 40, outDb: 0 } },
-      { pluginId: 'monomaker', why: '저역은 가운데에 — 넓은 저역은 재생 장치마다 다르게 들립니다',
-        params: { freqHz: 140, widthPct: 100 } },
+      { pluginId: 'eq8', why: '킥이 설 자리를 비우고 탁한 중저역을 덜어냅니다' },
+      { pluginId: 'comp', why: '음마다 다른 크기를 고르게 — 베이스에서 가장 중요한 한 가지' },
+      { pluginId: 'tube', why: '배음을 만들어 작은 스피커에서도 음정이 들리게 합니다' },
+      { pluginId: 'monomaker', why: '저역은 가운데에 — 넓은 저역은 재생 장치마다 다르게 들립니다' },
     ],
   },
   {
     id: 'guitar',
+    profile: 'egtr',
     label: '기타',
     english: 'Guitar',
     hint: '일렉 · DI — 앰프가 맨 앞',
     devices: [
-      { pluginId: 'amp', why: 'DI 를 먼저 앰프에 통과시킵니다 — 모든 처리는 그다음',
-        params: { gain: 45, stages: 2, bass: 0, mid: 1, treble: 2, stack: 0, presence: 3,
-                  master: 40, sag: 35, cab: 1, mic: 45, level: 0 } },
-      { pluginId: 'eq8', why: '보컬 자리를 비우고 저역 울림을 덜어냅니다',
-        params: { hpfHz: 90, b2Hz: 2500, b2Db: -2, b2Q: 1.2 } },
-      { pluginId: 'comp', why: '코드와 단음의 크기 차이를 좁힙니다',
-        params: { thresholdDb: -18, ratio: 3, kneeDb: 6, attackMs: 12, releaseMs: 120, makeupDb: 2 } },
-      { pluginId: 'delay', why: '한 번만 반복시켜 폭을 만듭니다',
-        params: { timeMs: 320, feedback: 0.18, mix: 0.1 } },
-      { pluginId: 'reverb', why: '앰프가 놓인 방',
-        params: { decaySec: 1.4, preDelayMs: 12, mix: 0.12 } },
+      { pluginId: 'amp', why: 'DI 를 먼저 앰프에 통과시킵니다 — 모든 처리는 그다음' },
+      { pluginId: 'eq8', why: '보컬 자리를 비우고 저역 울림을 덜어냅니다' },
+      { pluginId: 'comp', why: '코드와 단음의 크기 차이를 좁힙니다' },
+      { pluginId: 'delay', why: '한 번만 반복시켜 폭을 만듭니다' },
+      { pluginId: 'reverb', why: '앰프가 놓인 방' },
     ],
   },
   {
     id: 'keyboard',
+    profile: 'piano',
     label: '키보드',
     english: 'Keyboard',
     hint: '피아노 · 일렉피아노 · 오르간',
     devices: [
-      { pluginId: 'eq8', why: '연주 소음과 저역 울림을 덜어냅니다',
-        params: { hpfHz: 60, b1Hz: 300, b1Db: -2, b1Q: 1.2, highHz: 10000, highDb: 1.5 } },
-      { pluginId: 'comp', why: '세게 친 음만 살짝 눌러 터치를 남깁니다',
-        params: { thresholdDb: -20, ratio: 2.5, kneeDb: 10, attackMs: 20, releaseMs: 180, makeupDb: 2 } },
-      { pluginId: 'chorus', why: '일렉피아노와 오르간이 늘 쓰는 흔들림',
-        params: { rateHz: 0.5, depthMs: 3.5, delayMs: 18, mix: 18 } },
-      { pluginId: 'plate', why: '건반에 가장 잘 맞는 판 리버브',
-        params: { decaySec: 1.6, preDelayMs: 15, lowCutHz: 250, highCutHz: 12000, widthPct: 110, mixPct: 16 } },
+      { pluginId: 'eq8', why: '연주 소음과 저역 울림을 덜어냅니다' },
+      { pluginId: 'comp', why: '세게 친 음만 살짝 눌러 터치를 남깁니다' },
+      { pluginId: 'chorus', why: '일렉피아노와 오르간이 늘 쓰는 흔들림' },
+      { pluginId: 'plate', why: '건반에 가장 잘 맞는 판 리버브' },
     ],
   },
   {
     id: 'strings',
+    profile: 'strings',
     label: '스트링',
     english: 'Strings',
     hint: '현악 — 세게 누르지 않는 것이 규칙',
     devices: [
-      { pluginId: 'eq8', why: '2–5 kHz 의 거친 부분을 살짝 덜고 목관이 설 자리를 만듭니다',
-        params: { hpfHz: 70, b2Hz: 2500, b2Db: -2, b2Q: 1, b3Hz: 9000, b3Db: 1.5, b3Q: 0.8 } },
-      { pluginId: 'comp', why: '현악은 1.5–2.5:1 — 더 누르면 활이 사라집니다',
-        params: { thresholdDb: -24, ratio: 2, kneeDb: 12, attackMs: 30, releaseMs: 250, makeupDb: 2 } },
-      { pluginId: 'reverb', why: '현악은 큰 홀로 — 목관보다 깊게',
-        params: { decaySec: 2.6, preDelayMs: 25, mix: 0.22 } },
+      { pluginId: 'eq8', why: '2–5 kHz 의 거친 부분을 살짝 덜고 목관이 설 자리를 만듭니다' },
+      { pluginId: 'comp', why: '현악은 1.5–2.5:1 — 더 누르면 활이 사라집니다' },
+      { pluginId: 'reverb', why: '현악은 큰 홀로 — 목관보다 깊게' },
     ],
   },
   {
     id: 'brass',
+    profile: null,
     label: '브라스',
     english: 'Brass',
     hint: '금관 — 세게 누르면 기계처럼 들립니다',
@@ -244,6 +259,7 @@ export const INSTRUMENT_CHAINS: readonly InstrumentChain[] = [
   },
   {
     id: 'woodwinds',
+    profile: null,
     label: '목관',
     english: 'Woodwinds',
     hint: '플루트 · 클라리넷 · 오보에',
@@ -258,26 +274,22 @@ export const INSTRUMENT_CHAINS: readonly InstrumentChain[] = [
   },
   {
     id: 'synth',
+    profile: 'synth',
     label: '신스',
     english: 'Synth',
     hint: '패드 · 리드 · 플럭',
     devices: [
-      { pluginId: 'eq8', why: '베이스와 겹치는 저역을 먼저 비웁니다',
-        params: { hpfHz: 45, b1Hz: 300, b1Db: -2, b1Q: 1.2 } },
-      { pluginId: 'comp', why: '길게 끌리는 소리를 고르게',
-        params: { thresholdDb: -18, ratio: 3, kneeDb: 8, attackMs: 15, releaseMs: 150, makeupDb: 2 } },
-      { pluginId: 'saturation', why: '디지털 음색에 배음을 더합니다',
-        params: { driveDb: 3, mix: 0.2, bias: 0 } },
-      { pluginId: 'widener', why: '좌우로 벌립니다 — 저역은 가운데에 둔 채로',
-        params: { width: 1.3, lowMonoHz: 150 } },
-      { pluginId: 'pingpong', why: '좌우로 튕기는 반복',
-        params: { timeMs: 350, feedback: 0.35, toneHz: 6000, mix: 20 } },
-      { pluginId: 'reverb', why: '마지막에 공간',
-        params: { decaySec: 1.8, preDelayMs: 15, mix: 0.14 } },
+      { pluginId: 'eq8', why: '베이스와 겹치는 저역을 먼저 비웁니다' },
+      { pluginId: 'comp', why: '길게 끌리는 소리를 고르게' },
+      { pluginId: 'saturation', why: '디지털 음색에 배음을 더합니다' },
+      { pluginId: 'widener', why: '좌우로 벌립니다 — 저역은 가운데에 둔 채로' },
+      { pluginId: 'pingpong', why: '좌우로 튕기는 반복' },
+      { pluginId: 'reverb', why: '마지막에 공간' },
     ],
   },
   {
     id: 'fx',
+    profile: null,
     label: 'FX',
     english: 'FX',
     hint: '효과음 · 라이저 · 임팩트',
@@ -293,6 +305,32 @@ export const INSTRUMENT_CHAINS: readonly InstrumentChain[] = [
     ],
   },
 ];
+
+/**
+ * The settings a device in a chain actually loads with.
+ *
+ * The instrument preset wins wherever there is one — it is the app's
+ * existing, argued answer for that (instrument, device) pair, and having the
+ * chain hold a second copy is how the two come to disagree.  What the chain
+ * carries is only what no preset covers.
+ */
+export function chainDeviceParams(
+  chain: InstrumentChain, device: ChainDevice,
+): Record<string, number> {
+  if (chain.profile !== null) {
+    const preset = INSTRUMENT_PRESETS.find(
+      (p) => p.pluginId === device.pluginId && p.id === `inst-${device.pluginId}-${chain.profile}`);
+    if (preset) return { ...preset.params };
+  }
+  return { ...(device.params ?? {}) };
+}
+
+/** What the chain's settings come from, for a line of UI. */
+export function chainSource(chain: InstrumentChain): string {
+  return chain.profile === null
+    ? '이 체인의 설정'
+    : `${INSTRUMENT_LABEL[chain.profile]} 악기 프리셋`;
+}
 
 export function findInstrumentChain(id: string): InstrumentChain | undefined {
   return INSTRUMENT_CHAINS.find((c) => c.id === id);
@@ -319,7 +357,7 @@ export function rackFromChain(chain: InstrumentChain): RackPreset {
       pluginId: device.pluginId,
       label: '',
       bypass: false,
-      params: { ...device.params },
+      params: chainDeviceParams(chain, device),
     })),
   };
 }

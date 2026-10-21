@@ -25,8 +25,11 @@ export {};
 import { readFileSync } from 'node:fs';
 
 import {
-  INSTRUMENT_CHAINS, findInstrumentChain, rackFromChain,
+  INSTRUMENT_CHAINS, chainDeviceParams, findInstrumentChain, rackFromChain,
 } from '../src/renderer/daw/model/instrument-chains.js';
+import {
+  INSTRUMENT_LABEL, INSTRUMENT_PRESETS,
+} from '../src/renderer/daw/engine/plugin-presets-instrument.js';
 import { loadRack } from '../src/renderer/daw/model/rack-preset.js';
 import { sanitiseParams } from '../src/renderer/daw/engine/user-presets.js';
 import { findPlugin } from '../src/renderer/daw/engine/plugins.js';
@@ -112,7 +115,8 @@ console.log('\n=== 악기별 기본 체인 ===\n');
       const descriptor = findPlugin(device.pluginId);
       if (!descriptor) continue;
       const known = new Set(descriptor.params.map((p) => p.id));
-      for (const [id, value] of Object.entries(device.params)) {
+      const settings = chainDeviceParams(chain, device);
+      for (const [id, value] of Object.entries(settings)) {
         if (!known.has(id)) { wrong.push(`${chain.id}/${device.pluginId}: no param "${id}"`); continue; }
         const def = descriptor.params.find((p) => p.id === id);
         if (def && (value < def.min || value > def.max)) {
@@ -120,8 +124,8 @@ console.log('\n=== 악기별 기본 체인 ===\n');
         }
       }
       // The engine's own gate, which is what actually runs on load.
-      const cleaned = sanitiseParams(device.pluginId, device.params).params;
-      for (const [id, value] of Object.entries(device.params)) {
+      const cleaned = sanitiseParams(device.pluginId, settings).params;
+      for (const [id, value] of Object.entries(settings)) {
         if (cleaned[id] !== value) {
           wrong.push(`${chain.id}/${device.pluginId}.${id}: wrote ${value}, engine kept ${String(cleaned[id])}`);
         }
@@ -129,7 +133,7 @@ console.log('\n=== 악기별 기본 체인 ===\n');
     }
   }
   const values = INSTRUMENT_CHAINS.reduce(
-    (n, c) => n + c.devices.reduce((m, d) => m + Object.keys(d.params).length, 0), 0);
+    (n, c) => n + c.devices.reduce((m, d) => m + Object.keys(chainDeviceParams(c, d)).length, 0), 0);
   check(
     'every parameter exists on its device and survives the engine unchanged',
     wrong.length === 0,
@@ -151,7 +155,7 @@ console.log('\n=== 악기별 기본 체인 ===\n');
   for (const chain of INSTRUMENT_CHAINS) {
     for (const device of chain.devices) {
       const rule = SILENT[device.pluginId];
-      if (rule && (device.params[rule.param] ?? rule.off) === rule.off) {
+      if (rule && (chainDeviceParams(chain, device)[rule.param] ?? rule.off) === rule.off) {
         asleep.push(`${chain.id}/${device.pluginId}.${rule.param}`);
       }
     }
@@ -236,7 +240,7 @@ console.log('\n=== 악기별 기본 체인 ===\n');
     for (const insert of loaded) {
       const device = chain.devices[insert.slot];
       if (!device) { bad.push(`${chain.id}: slot ${insert.slot} has no device`); continue; }
-      for (const [id, value] of Object.entries(device.params)) {
+      for (const [id, value] of Object.entries(chainDeviceParams(chain, device))) {
         if (insert.params[id] !== value) {
           bad.push(`${chain.id}/${device.pluginId}.${id}: ${String(insert.params[id])} ≠ ${value}`);
         }
@@ -249,6 +253,67 @@ console.log('\n=== 악기별 기본 체인 ===\n');
     bad.length === 0
       ? `${INSTRUMENT_CHAINS.length} chains loaded, slots packed from A`
       : bad.slice(0, 3).join(' · '),
+  );
+}
+
+// ── One answer per question ──────────────────────────────────────────────
+//
+// `plugin-presets-instrument.ts` holds 301 presets over 43 devices for seven
+// instruments, each with a written reason.  A chain that typed its own
+// numbers for a pair that file already answers would be a second answer one
+// click away: load the 베이스 chain, open the compressor, pick 베이스 from
+// its own menu, and every number changes.  (It did: the chain said ratio 4 /
+// attack 20 ms / release 110, the preset says 6 / 35 / 260, and the tube said
+// drive 0.22 mix 40 against the preset's 0.55 and 75.)
+{
+  const both: string[] = [];
+  const neither: string[] = [];
+  let fromPreset = 0;
+  let ownNumbers = 0;
+  for (const chain of INSTRUMENT_CHAINS) {
+    for (const device of chain.devices) {
+      const preset = chain.profile === null ? undefined : INSTRUMENT_PRESETS.find(
+        (p) => p.pluginId === device.pluginId && p.id === `inst-${device.pluginId}-${chain.profile}`);
+      if (preset) {
+        fromPreset++;
+        if (device.params !== undefined) both.push(`${chain.id}/${device.pluginId}`);
+        // and what it loads with IS the preset, parameter for parameter
+        const resolved = chainDeviceParams(chain, device);
+        const same = Object.keys(preset.params).length === Object.keys(resolved).length
+          && Object.entries(preset.params).every(([k, v]) => resolved[k] === v);
+        if (!same) both.push(`${chain.id}/${device.pluginId} resolves to something else`);
+      } else {
+        ownNumbers++;
+        if (device.params === undefined) neither.push(`${chain.id}/${device.pluginId}`);
+      }
+    }
+  }
+  check(
+    'a device the instrument presets already answer carries no second answer',
+    both.length === 0,
+    both.length === 0
+      ? `${fromPreset} devices take the preset, ${ownNumbers} carry their own`
+      : both.slice(0, 4).join(' · '),
+  );
+  check(
+    'and a device they do not answer carries settings of its own',
+    neither.length === 0,
+    neither.length === 0 ? 'no device loads at its factory defaults' : neither.join(' · '),
+  );
+  const profiled = INSTRUMENT_CHAINS.filter((c) => c.profile !== null);
+  check(
+    'six of the twelve map onto an instrument the app already knows',
+    profiled.length === 6
+      && profiled.every((c) => c.profile !== null && INSTRUMENT_LABEL[c.profile] !== undefined),
+    profiled.map((c) => `${c.id}→${c.profile === null ? '' : INSTRUMENT_LABEL[c.profile]}`).join(', '),
+  );
+  // Named, not silent: the device menus offer seven instruments and a VOCAL
+  // is not one of them, in an app whose first category is 보컬.
+  const unprofiled = INSTRUMENT_CHAINS.filter((c) => c.profile === null).map((c) => c.id);
+  check(
+    'and the six with no instrument profile are the ones the app has none for',
+    unprofiled.join(',') === 'vocal,backing,percussion,brass,woodwinds,fx',
+    `no profile: ${unprofiled.join(', ')}`,
   );
 }
 

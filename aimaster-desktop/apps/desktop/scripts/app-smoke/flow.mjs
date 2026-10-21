@@ -1104,7 +1104,9 @@ try {
           wrong.push(`slot ${i}: ${got[i]?.pluginId ?? '(empty)'} ≠ ${device.pluginId}`);
           return;
         }
-        for (const [id, value] of Object.entries(device.params)) {
+        // Resolved the way the app resolves it: a device the instrument
+        // presets answer takes its settings from there, not from the chain.
+        for (const [id, value] of Object.entries(chains.chainDeviceParams(wanted, device))) {
           if (got[i].params[id] !== value) wrong.push(`${device.pluginId}.${id}`);
         }
       });

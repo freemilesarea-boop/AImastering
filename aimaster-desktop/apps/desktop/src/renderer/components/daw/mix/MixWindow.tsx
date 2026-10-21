@@ -21,7 +21,7 @@ import {
 } from '../../../daw/model/mixer-math.js';
 import { describePath, computeDelayCompensation, insertLatencySamples, wouldFeedback } from '../../../daw/model/routing.js';
 import {
-  INSTRUMENT_CHAINS, findInstrumentChain, rackFromChain,
+  INSTRUMENT_CHAINS, chainSource, findInstrumentChain, rackFromChain,
 } from '../../../daw/model/instrument-chains.js';
 import { loadRack } from '../../../daw/model/rack-preset.js';
 import { PLUGINS, defaultParams, pluginLatencySamples } from '../../../daw/engine/plugins.js';
@@ -375,7 +375,8 @@ function ChannelStrip({
               });
               for (const problem of problems.slice(0, 3)) onNotify(problem, 'warning');
               onNotify(`${chain.label} 기본 체인 — ${chain.devices
-                .map((d) => pluginName(d.pluginId)).join(' → ')}`);
+                .map((d) => pluginName(d.pluginId)).join(' → ')}`
+                + ` · 설정은 ${chainSource(chain)}`);
             }}
             className="w-full h-5 rounded text-[9px] px-1 border bg-zinc-900 border-zinc-700 text-zinc-300"
           >

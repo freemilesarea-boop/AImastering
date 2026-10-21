@@ -29,7 +29,7 @@ import {
 import { useAppStore } from '../../../stores/appStore.js';
 import { premium } from '../../../theme/premium.js';
 import {
-  INSTRUMENT_CHAINS, rackFromChain, type InstrumentChain,
+  INSTRUMENT_CHAINS, chainSource, rackFromChain, type InstrumentChain,
 } from '../../../daw/model/instrument-chains.js';
 import type { TrackId } from '../../../daw/model/types.js';
 
@@ -182,7 +182,8 @@ export default function InsertRack({ trackId, anchorY }: { trackId: TrackId; anc
     // Names the devices it just put there, in order: the chain is the lesson,
     // and a toast that says only "loaded" teaches nothing.
     notify(`${chain.label} 기본 체인 — ${chain.devices
-      .map((d) => findPlugin(d.pluginId)?.name ?? d.pluginId).join(' → ')}`);
+      .map((d) => findPlugin(d.pluginId)?.name ?? d.pluginId).join(' → ')}`
+      + ` · 설정은 ${chainSource(chain)}`);
     setPicking(null);
   };
 
@@ -281,7 +282,9 @@ export default function InsertRack({ trackId, anchorY }: { trackId: TrackId; anc
             <button
               key={chain.id}
               onClick={() => loadInstrumentChain(chain)}
-              title={`${chain.english} — ${chain.hint}\n${chain.devices
+              title={`${chain.english} — ${chain.hint}`
+                + `\n설정 출처: ${chainSource(chain)}\n`
+                + `${chain.devices
                 .map((d, i) => `${i + 1}. ${findPlugin(d.pluginId)?.name ?? d.pluginId} — ${d.why}`)
                 .join('\n')}`}
               className="h-5 rounded text-[9.5px] truncate px-1"
