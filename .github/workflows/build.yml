@@ -126,7 +126,7 @@ jobs:
       # ── The suite, which CI did not run ─────────────────────────────────
       #
       # Until now this job ran `typecheck` and `lint` and nothing else: the 224
-      # selftests (4,745 assertions) had never once run in CI.  They ran only
+      # selftests (4,751 assertions) had never once run in CI.  They ran only
       # when someone ran them by hand, which is the same standing as not
       # having them.
       #
@@ -138,9 +138,9 @@ jobs:
       # by no job here.  Saying otherwise in this step's name is what the
       # previous version of this comment did.
       #
-      # Measured on this repository's 4-core container: 1,154 s (19.2 min), of
-      # which five selftests (instrument-patches 199s, stems 186s,
-      # separate 173s, reverb 97s, chord-audio 35s) are 60%.  The same step
+      # Measured on this repository's 4-core container: 1,170 s (19.5 min), of
+      # which five selftests (instrument-patches 209s, stems 187s,
+      # separate 176s, reverb 98s, chord-audio 37s) are 60%.  The same step
       # took 22 min 07 s on the CI runner itself (run 861).
       #
       # It needs the built engine (test:python-suite spawns it) and the ffmpeg

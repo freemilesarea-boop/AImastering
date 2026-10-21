@@ -83,7 +83,7 @@ import { trackDelayMs } from '../../../daw/model/track-delay.js';
 import { describeDelay } from '../../../daw/edit/track-delay-ops.js';
 import {
   TRACK_COLORS, clampTrackHeight, renameTrack, setTrackColor,
-  setTrackHeight, setHeights, heightToFit,
+  setTrackHeight, setHeights, heightToFit, FIT_VISIBLE_ROWS,
 } from '../../../daw/model/track-header.js';
 import { deleteTracks } from '../../../ui/delete-tracks.js';
 
@@ -578,7 +578,7 @@ export default function EditWindow() {
   return (
     <div className="relative flex-1 flex flex-col overflow-hidden bg-[#101018] text-zinc-200">
       {/* ── Toolbar ─────────────────────────────────────────────────────── */}
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-zinc-800 bg-[#15151d] flex-wrap">
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-zinc-800 bg-[#15151d] flex-nowrap overflow-x-auto [&>*]:shrink-0">
         <button
           onClick={() => setShowUniverse((v) => !v)}
           title="유니버스 — 곡 전체를 한 띠에 놓고, 지금 보고 있는 창을 끌어서 이동합니다"
@@ -610,10 +610,13 @@ export default function EditWindow() {
           onClick={() => {
             const automationPx = displayRows
               .filter((r) => r.kind === 'lane').length * AUTOMATION_LANE_HEIGHT;
-            const px = heightToFit(rows.length, rowPort.height, globalPx + automationPx);
+            // Up to twenty on screen; a bigger session keeps a legible
+            // lane and scrolls for the rest.
+            const px = heightToFit(
+              Math.min(rows.length, FIT_VISIBLE_ROWS), rowPort.height, globalPx + automationPx);
             apply((st) => setHeights(st, rows.map((t) => t.id), px));
           }}
-          title="세로 맞춤 — 트랙 높이를 창에 맞춰 한 번에 조절합니다 (되돌리기 한 번으로 복구)"
+          title="세로 맞춤 — 트랙 높이를 창에 맞춰 한 번에 조절합니다. 최대 20개까지 한 화면에 들어가고, 그보다 많으면 나머지는 스크롤입니다 (되돌리기 한 번으로 복구)"
           className={'px-2 py-1 rounded text-[10px] font-mono tracking-wide border'
             + ' bg-zinc-900 border-zinc-700 text-zinc-500 hover:text-zinc-300'}
         >FIT</button>

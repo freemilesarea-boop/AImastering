@@ -468,7 +468,7 @@ export default function DawPage() {
       <EngineWarningBar />
 
       {/* Transport / session chrome */}
-      <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-zinc-800 bg-[#15151d] flex-wrap">
+      <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-zinc-800 bg-[#15151d] flex-nowrap overflow-x-auto [&>*]:shrink-0">
         <div className="flex rounded-md overflow-hidden border border-zinc-700 mr-1">
           {/* One list, from view-window.ts.  The labels used to be spelled out
               here in a thirteen-arm ternary and the bodies repeated the same

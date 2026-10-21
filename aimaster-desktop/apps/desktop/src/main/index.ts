@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, protocol, screen } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import { Readable } from 'node:stream';
@@ -62,9 +62,26 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 function createWindow(): void {
+  // How big the window opens.
+  //
+  // It opened 1100 × 740 — the size a utility opens at, not a DAW.  The Edit
+  // window spends about 218 px on chrome (title bar, two toolbars, the ruler
+  // and the horizontal scroll), so 740 px of window leaves ~497 px of track
+  // scroller: seventeen lanes at the 28 px floor, and the twentieth is out of
+  // reach however small the lanes get.  820 px of window is where twenty fit
+  // (560 px of lanes + the chrome), and a desktop that has the room should
+  // not have to be told twice.
+  //
+  // Clamped to the display's WORK AREA, not its size: a maximised-looking
+  // window that sits under the dock is worse than a smaller one, and a
+  // 1366 × 768 laptop must still get a window that fits on it.
+  const work = screen.getPrimaryDisplay().workAreaSize;
+  const width = Math.max(1100, Math.min(1600, work.width - 80));
+  const height = Math.max(740, Math.min(1000, work.height - 60));
+
   mainWindow = new BrowserWindow({
-    width: 1100,
-    height: 740,
+    width,
+    height,
     minWidth: 900,
     minHeight: 620,
     titleBarStyle: 'hiddenInset',

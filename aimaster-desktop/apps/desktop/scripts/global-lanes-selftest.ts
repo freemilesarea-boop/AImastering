@@ -34,7 +34,7 @@ import {
   globalLanesWithMaterial, type GlobalLaneId,
 } from '../src/renderer/daw/model/global-lanes.js';
 import {
-  DEFAULT_TRACK_HEIGHT, MAX_TRACK_HEIGHT, MIN_TRACK_HEIGHT, heightToFit,
+  DEFAULT_TRACK_HEIGHT, FIT_VISIBLE_ROWS, MAX_TRACK_HEIGHT, MIN_TRACK_HEIGHT, heightToFit,
 } from '../src/renderer/daw/model/track-header.js';
 import { createSession } from '../src/renderer/daw/model/session-ops.js';
 import { makeChord } from '../src/renderer/daw/model/chords.js';
@@ -216,6 +216,78 @@ function lanesThatFit(scrollerPx: number, globalPx: number, trackHeightPx: numbe
   );
 }
 
+// ── Twenty lanes, and the height that makes room for them ───────────────
+//
+// Measured with twenty stems imported, before and after the toolbars were
+// told to scroll sideways instead of wrapping downwards:
+//
+//                 chrome above   scroller      FIT shows
+//   1920×1080      217 → 188    838 → 867     21 → 21 lanes
+//   1440×900       240 → 193    635 → 682     21 → 21
+//   1280×800       284 → 193    491 → 582     17 → 20
+//   1100×715       284 → 193    406 → 497     14 → 17
+//
+// The chrome used to GROW as the window narrowed — three toolbars wrapping
+// onto a second and third line, 96 px of it at 1280 — which is why the
+// smallest windows were the ones that could show the fewest tracks.
+{
+  const FLOOR_PX = FIT_VISIBLE_ROWS * MIN_TRACK_HEIGHT;
+  check(
+    'twenty lanes at the floor need 560 px of scroller',
+    FIT_VISIBLE_ROWS === 20 && FLOOR_PX === 560,
+    `${FIT_VISIBLE_ROWS} × ${MIN_TRACK_HEIGHT} px = ${FLOOR_PX} px`,
+  );
+  check(
+    'and the 1280×800 scroller the toolbars gave back holds them',
+    heightToFit(FIT_VISIBLE_ROWS, 582, 0) >= MIN_TRACK_HEIGHT
+      && heightToFit(FIT_VISIBLE_ROWS, 582, 0) * FIT_VISIBLE_ROWS <= 582,
+    `582 px → ${heightToFit(FIT_VISIBLE_ROWS, 582, 0)} px a lane`,
+  );
+  check(
+    'where the old 491 px one did not',
+    heightToFit(FIT_VISIBLE_ROWS, 491, 0) * FIT_VISIBLE_ROWS > 491,
+    `491 px → ${heightToFit(FIT_VISIBLE_ROWS, 491, 0)} px a lane, ${
+      heightToFit(FIT_VISIBLE_ROWS, 491, 0) * FIT_VISIBLE_ROWS} px of lanes`,
+  );
+  const edit = read('src/renderer/components/daw/edit/EditWindow.tsx');
+  check(
+    'FIT asks for at most twenty, so a bigger session keeps a legible lane',
+    /Math\.min\(rows\.length, FIT_VISIBLE_ROWS\)/.test(edit),
+    'thirty tracks fit twenty and scroll for the rest',
+  );
+}
+
+// ── The toolbars take their width out sideways ──────────────────────────
+{
+  const BANDS: ReadonlyArray<[string, string]> = [
+    ['src/renderer/pages/DawPage.tsx', 'bg-[#15151d]'],
+    ['src/renderer/components/daw/record/RecordStrip.tsx', 'bg-[#101017]'],
+    ['src/renderer/components/daw/edit/EditWindow.tsx', 'bg-[#15151d]'],
+  ];
+  const wrapping = BANDS.filter(([file, mark]) => {
+    const line = read(file).split('\n').find(
+      (l) => l.includes(mark) && l.includes('border-b border-zinc-800'));
+    return line === undefined
+      || line.includes('flex-wrap')
+      || !line.includes('overflow-x-auto')
+      || !line.includes('[&>*]:shrink-0');
+  });
+  check(
+    'none of the three toolbars grows a second line when the window narrows',
+    wrapping.length === 0,
+    wrapping.length === 0
+      ? BANDS.map(([f]) => f.split('/').pop()).join(', ')
+      : `still wrapping: ${wrapping.map(([f]) => f).join(', ')}`,
+  );
+  const main = read('src/main/index.ts');
+  check(
+    'and the window opens on what the display actually has',
+    /screen\.getPrimaryDisplay\(\)\.workAreaSize/.test(main)
+      && /Math\.min\(1000, work\.height - 60\)/.test(main),
+    '1100 × 740 left seventeen lanes reachable at best',
+  );
+}
+
 // ── The window is still built from both columns at once ──────────────────
 {
   const edit = read('src/renderer/components/daw/edit/EditWindow.tsx');
@@ -242,7 +314,7 @@ function lanesThatFit(scrollerPx: number, globalPx: number, trackHeightPx: numbe
   );
   check(
     'FIT asks for the height rather than naming one',
-    /heightToFit\(rows\.length, rowPort\.height, globalPx \+ automationPx\)/.test(edit),
+    /rowPort\.height, globalPx \+ automationPx\)/.test(edit),
     'the button computes from what the scroller measured',
   );
 }

@@ -978,6 +978,89 @@ try {
         : 'FIT button not found',
     );
 
+    // ── and twenty of them ──────────────────────────────────────────────
+    //
+    // Twenty is what FIT aims for: below 28 px a lane is a stripe, and
+    // twenty of those need 560 px of scroller.  Three toolbars used to wrap
+    // onto second and third lines as the window narrowed — 284 px of chrome
+    // at 1280 px wide against 188 at 1920 — so the narrow windows were the
+    // ones that could show the fewest tracks.  They scroll sideways now.
+    const twenty = await page.evaluate(async (paths) => {
+      const si = await import('/daw/edit/session-import.ts');
+      const daw = await import('/stores/dawStore.ts');
+      await si.importIntoSession(paths, [], 0);
+      await new Promise((r) => setTimeout(r, 2000));
+      [...document.querySelectorAll('button')]
+        .find((b) => (b.getAttribute('title') ?? '').startsWith('세로 맞춤'))?.click();
+      await new Promise((r) => setTimeout(r, 800));
+      const divs = [...document.querySelectorAll('div')];
+      const sc = divs.find((d) => typeof d.className === 'string'
+        && d.className.includes('overflow-y-auto') && d.className.includes('flex-1'));
+      const box = sc.getBoundingClientRect();
+      const lanes = [...sc.children[1].querySelectorAll('div.border-b.border-zinc-900 > canvas')]
+        .map((c) => c.getBoundingClientRect()).filter((r) => r.height > 0);
+      return {
+        rows: daw.useDawStore.getState().session.tracks.length,
+        whole: lanes.filter((r) => r.top >= box.top && r.bottom <= box.bottom).length,
+        laneH: lanes.length ? Math.round(lanes[0].height) : 0,
+        scroller: Math.round(box.height),
+        chromeAbove: Math.round(box.top),
+      };
+    }, stems.concat(stems).slice(0, 12));
+
+    expect(
+      twenty.rows === 21,
+      'twelve more stems make a twenty-track session',
+      `${twenty.rows} rows with the master`,
+    );
+    expect(
+      twenty.whole >= 20,
+      'and FIT puts twenty of them on screen at once',
+      `${twenty.whole} whole lanes at ${twenty.laneH} px in a ${twenty.scroller} px scroller`,
+    );
+    expect(
+      twenty.chromeAbove <= 200,
+      'with the chrome above the tracks holding at one line each',
+      `${twenty.chromeAbove} px above the scroller`,
+    );
+
+    // The size that used to be worst.  At 1280 px wide the three toolbars
+    // wrapped onto second and third lines — 284 px of chrome against 188 at
+    // 1920 — and only seventeen lanes could be reached however small they
+    // got.  Measured here rather than at 1920, because at 1920 nothing
+    // wrapped and the check would pass with the wrapping put back.
+    await cdp.send('Emulation.setDeviceMetricsOverride',
+      { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+    await page.waitForTimeout(600);
+    const narrow = await page.evaluate(async () => {
+      [...document.querySelectorAll('button')]
+        .find((b) => (b.getAttribute('title') ?? '').startsWith('세로 맞춤'))?.click();
+      await new Promise((r) => setTimeout(r, 800));
+      const divs = [...document.querySelectorAll('div')];
+      const sc = divs.find((d) => typeof d.className === 'string'
+        && d.className.includes('overflow-y-auto') && d.className.includes('flex-1'));
+      const box = sc.getBoundingClientRect();
+      const lanes = [...sc.children[1].querySelectorAll('div.border-b.border-zinc-900 > canvas')]
+        .map((c) => c.getBoundingClientRect()).filter((r) => r.height > 0);
+      return {
+        chromeAbove: Math.round(box.top),
+        scroller: Math.round(box.height),
+        whole: lanes.filter((r) => r.top >= box.top && r.bottom <= box.bottom).length,
+        laneH: lanes.length ? Math.round(lanes[0].height) : 0,
+      };
+    });
+
+    expect(
+      narrow.chromeAbove <= 200,
+      'a 1280 px wide window spends no more chrome than a 1920 one',
+      `${narrow.chromeAbove} px above the scroller, ${narrow.scroller} px of scroller`,
+    );
+    expect(
+      narrow.whole >= 20,
+      'and twenty tracks still fit in it',
+      `${narrow.whole} whole lanes at ${narrow.laneH} px`,
+    );
+
     await cdp.send('Emulation.clearDeviceMetricsOverride');
   }
 

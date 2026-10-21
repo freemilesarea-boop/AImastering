@@ -154,6 +154,18 @@ export function setHeights(
 }
 
 /**
+ * How many lanes FIT aims to put on screen at once.
+ *
+ * Twenty, because below about 28 px a lane stops being a waveform and
+ * becomes a stripe — `MIN_TRACK_HEIGHT` is where that line was drawn — and
+ * twenty of those need 560 px of scroller, which is what a window 820 px
+ * tall has after the Edit window's chrome.  A session with more than twenty
+ * tracks does not shrink past it: the first twenty fill the window at a
+ * height you can still read, and the rest are a scroll away.
+ */
+export const FIT_VISIBLE_ROWS = 20;
+
+/**
  * The height that makes `rows` track lanes fit in `availablePx`.
  *
  * The other half of the seven-track report.  Giving the global lanes' 190 px
