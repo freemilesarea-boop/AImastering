@@ -252,6 +252,7 @@
     "test:send-pdc": "tsx scripts/send-pdc-selftest.ts",
     "test:bypass-freeze": "tsx scripts/bypass-freeze-selftest.ts",
     "test:view-window": "tsx scripts/view-window-selftest.ts",
+    "test:global-lanes": "tsx scripts/global-lanes-selftest.ts",
     "test:snapshot-panel": "tsx scripts/snapshot-panel-selftest.ts",
     "test:text-prompt": "tsx scripts/text-prompt-selftest.ts",
     "test:window-layout": "tsx scripts/window-layout-selftest.ts",

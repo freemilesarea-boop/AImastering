@@ -869,6 +869,118 @@ try {
   // read `clean`.
   // ── The Home a release actually ships ─────────────────────────────────
   //
+  // ── Eight tracks, and how many of them the window shows ────────────────
+  //
+  // The report: "7개 이상의 트랙을 올리면 7개부터는 UX 에서 짤려서 오디오 파형이
+  // 보이지 않는다".  It was not the waveform.  Four lanes above the tracks —
+  // sections, chords, picture, tempo — sit INSIDE the track scroller and took
+  // its first 190 px whether or not the session had anything to put in them,
+  // and 190 px is two lanes at 96.  Measured here at 1920×1080: six tracks
+  // fitted and the seventh was cut.
+  //
+  // So the window is forced to a real full-screen size — the Electron window
+  // this harness boots is 1100×715, which shows two and would have called the
+  // bug fixed at any point — eight stems are imported, and the lanes are
+  // counted against the scroller that actually holds them.
+  {
+    const cdp = await browser.contexts()[0].newCDPSession(page);
+    await cdp.send('Emulation.setDeviceMetricsOverride',
+      { width: 1920, height: 1080, deviceScaleFactor: 1, mobile: false });
+    await page.waitForTimeout(400);
+
+    const stems = Array.from({ length: 8 }, (_, i) =>
+      writeWav(path.join(WORK, 'media', `stem${i + 1}.wav`), 3 + i * 0.5, 0.2));
+
+    const seen = await page.evaluate(async (paths) => {
+      const app = await import('/stores/appStore.ts');
+      app.useAppStore.getState().setPage('daw');
+      await new Promise((r) => setTimeout(r, 700));
+      const daw = await import('/stores/dawStore.ts');
+      daw.useDawStore.getState().setWindow('edit');
+      // From a known session, not from whatever the last run left on disk:
+      // the app restores the previous session, and counting lanes in a
+      // session that already had nine of them is a check that passes for the
+      // wrong reason.
+      const ops = await import('/daw/model/session-ops.ts');
+      daw.useDawStore.getState().loadSession(ops.createSession('smoke-eight'));
+      await new Promise((r) => setTimeout(r, 300));
+      const si = await import('/daw/edit/session-import.ts');
+      const report = await si.importIntoSession(paths, [], 0);
+      await new Promise((r) => setTimeout(r, 1500));
+
+      const read = () => {
+        const divs = [...document.querySelectorAll('div')];
+        const sc = divs.find((d) => typeof d.className === 'string'
+          && d.className.includes('overflow-y-auto') && d.className.includes('flex-1'));
+        if (!sc) return null;
+        const box = sc.getBoundingClientRect();
+        // TRACK lanes only.  The global lanes draw canvases too, so counting
+        // every canvas in the column called the tempo lane a track — which is
+        // exactly the confusion this step exists to measure.
+        const lanes = [...sc.children[1].querySelectorAll(
+          'div.border-b.border-zinc-900 > canvas')]
+          .map((c) => c.getBoundingClientRect())
+          .filter((r) => r.height > 0);
+        // The two columns are two renderings of one list: every row that is
+        // built must start at the same y in both, or a header names a lane
+        // that is not beside it.
+        // In-flow children only.  The lane column also holds the playhead and
+        // the empty-session notice, both ABSOLUTE and neither a row — counting
+        // them made the two columns look one apart when they were not.
+        const inFlow = (el) => [...el.children]
+          .filter((c) => getComputedStyle(c).position !== 'absolute')
+          .map((c) => Math.round(c.getBoundingClientRect().top));
+        const heads = inFlow(sc.children[0]);
+        const rows = inFlow(sc.children[1]);
+        return {
+          scroller: Math.round(box.height),
+          scrollHeight: sc.scrollHeight,
+          fully: lanes.filter((r) => r.top >= box.top && r.bottom <= box.bottom).length,
+          aligned: heads.length === rows.length && heads.every((t, i) => t === rows[i]),
+          columns: `${heads.length} header rows / ${rows.length} lane rows`,
+        };
+      };
+
+      const before = read();
+      // FIT, by the button the user has — not by calling the store.
+      const fit = [...document.querySelectorAll('button')]
+        .find((b) => (b.getAttribute('title') ?? '').startsWith('세로 맞춤'));
+      fit?.click();
+      await new Promise((r) => setTimeout(r, 600));
+      const after = read();
+      return { tracks: report.audioTracks, failed: report.failed, before, after,
+               rows: daw.useDawStore.getState().session.tracks.length,
+               hasFit: Boolean(fit) };
+    }, stems);
+
+    expect(
+      seen.tracks === 8 && seen.failed.length === 0 && seen.rows === 9,
+      'eight stems import as eight tracks, in a session of nine rows',
+      `${seen.tracks} imported, ${seen.failed.length} refused, ${seen.rows} rows with the master`,
+    );
+    expect(
+      seen.before !== null && seen.before.fully >= 8,
+      'and at 1920×1080 the seventh and eighth are on screen, not below it',
+      seen.before
+        ? `${seen.before.fully} whole lanes in a ${seen.before.scroller} px scroller`
+        : 'no track scroller found',
+    );
+    expect(
+      seen.before !== null && seen.before.aligned,
+      'headers and lanes are still the same list, row for row',
+      seen.before ? seen.before.columns : '—',
+    );
+    expect(
+      seen.hasFit && seen.after !== null && seen.after.scrollHeight <= seen.after.scroller,
+      'and FIT puts every row inside the window, with nothing left to scroll',
+      seen.after
+        ? `${seen.after.fully} whole lanes, content ${seen.after.scrollHeight} px in ${seen.after.scroller} px`
+        : 'FIT button not found',
+    );
+
+    await cdp.send('Emulation.clearDeviceMetricsOverride');
+  }
+
   // `VITE_LOUI_GUIDED_FLOW` is set by CI on tag builds only, and it swaps the
   // whole front of the app: App.tsx renders <GuidedHome /> instead of
   // <HomePage />, and MasteringPage and ResultPage take guided branches.  No
