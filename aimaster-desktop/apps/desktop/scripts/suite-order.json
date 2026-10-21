@@ -32,6 +32,7 @@
   "strip-layout",
   "view-window",
   "global-lanes",
+  "instrument-chains",
   "snapshot-panel",
   "text-prompt",
   "window-layout",

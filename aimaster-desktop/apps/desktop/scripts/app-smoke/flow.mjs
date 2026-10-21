@@ -1064,6 +1064,75 @@ try {
     await cdp.send('Emulation.clearDeviceMetricsOverride');
   }
 
+  // ── 악기별 기본 체인, through the mixer strip ──────────────────────────
+  //
+  // The chains are data checked by `instrument-chains-selftest`; what this
+  // checks is the thing that data exists for — that picking "보컬" in the
+  // console puts six devices on the channel, in order, with the settings
+  // that were written rather than the defaults.  Through the strip's own
+  // <select>, because that is the control a beginner uses.
+  {
+    const chain = await page.evaluate(async () => {
+      const app = await import('/stores/appStore.ts');
+      app.useAppStore.getState().setPage('daw');
+      await new Promise((r) => setTimeout(r, 400));
+      const daw = await import('/stores/dawStore.ts');
+      const ops = await import('/daw/model/session-ops.ts');
+      const vox = ops.createTrack('Lead Vox', 'audio');
+      daw.useDawStore.getState().loadSession(ops.addTrack(ops.createSession('chains'), vox));
+      daw.useDawStore.getState().setWindow('mix');
+      await new Promise((r) => setTimeout(r, 900));
+
+      const pick = [...document.querySelectorAll('select')]
+        .find((el) => (el.getAttribute('title') ?? '').startsWith('악기를 고르면'));
+      if (!pick) return { error: '악기 체인 picker not in the mixer strip' };
+      // The option list is built on first interaction — a lazy <select>.
+      pick.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 200));
+      const options = [...pick.options].map((o) => o.value).filter(Boolean);
+      pick.value = 'vocal';
+      pick.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 600));
+
+      const chains = await import('/daw/model/instrument-chains.ts');
+      const wanted = chains.findInstrumentChain('vocal');
+      const track = ops.findTrack(daw.useDawStore.getState().session, vox.id);
+      const got = [...(track?.inserts ?? [])].sort((a, b) => a.slot - b.slot);
+      const wrong = [];
+      wanted.devices.forEach((device, i) => {
+        if (got[i]?.pluginId !== device.pluginId) {
+          wrong.push(`slot ${i}: ${got[i]?.pluginId ?? '(empty)'} ≠ ${device.pluginId}`);
+          return;
+        }
+        for (const [id, value] of Object.entries(device.params)) {
+          if (got[i].params[id] !== value) wrong.push(`${device.pluginId}.${id}`);
+        }
+      });
+      return {
+        options: options.length,
+        order: got.map((i) => i.pluginId),
+        wanted: wanted.devices.map((d) => d.pluginId),
+        wrong,
+      };
+    });
+
+    expect(
+      !chain.error && chain.options === 12,
+      'the mixer strip offers twelve instrument chains',
+      chain.error ?? `${chain.options} options`,
+    );
+    expect(
+      !chain.error && chain.order.join('>') === chain.wanted.join('>'),
+      'and picking 보컬 builds the vocal chain in order',
+      chain.error ?? `${chain.order.join(' → ')}`,
+    );
+    expect(
+      !chain.error && chain.wrong.length === 0,
+      'with the settings the chain carries, not the devices\' defaults',
+      chain.error ?? (chain.wrong.length === 0 ? 'every value as written' : chain.wrong.slice(0, 4).join(', ')),
+    );
+  }
+
   // `VITE_LOUI_GUIDED_FLOW` is set by CI on tag builds only, and it swaps the
   // whole front of the app: App.tsx renders <GuidedHome /> instead of
   // <HomePage />, and MasteringPage and ResultPage take guided branches.  No

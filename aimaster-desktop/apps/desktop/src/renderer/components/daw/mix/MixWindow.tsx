@@ -20,6 +20,10 @@ import {
   effectiveFaderDb, toggleMute, toggleSolo, toggleSoloSafe, vcaChainDb,
 } from '../../../daw/model/mixer-math.js';
 import { describePath, computeDelayCompensation, insertLatencySamples, wouldFeedback } from '../../../daw/model/routing.js';
+import {
+  INSTRUMENT_CHAINS, findInstrumentChain, rackFromChain,
+} from '../../../daw/model/instrument-chains.js';
+import { loadRack } from '../../../daw/model/rack-preset.js';
 import { PLUGINS, defaultParams, pluginLatencySamples } from '../../../daw/engine/plugins.js';
 import { dawRuntime } from '../../../daw/engine/daw-runtime.js';
 import type { LiveLoudnessMetrics } from '../../../audio/loudnessStream.js';
@@ -349,6 +353,38 @@ function ChannelStrip({
         expanded={insertsOpen}
         onToggle={() => setInsertsOpen((v) => !v)}
       >
+        {/* The other door into the same devices.
+            The slot pickers below list all fifty by name, which answers
+            "which compressor" and not "does this need one".  Picking the
+            instrument fills the chain that instrument always wants, in
+            order, at settings that do something — see
+            `daw/model/instrument-chains.ts`. */}
+        {!isMaster && !isVca && (
+          <LazySelect
+            value=""
+            label="악기 체인"
+            title="악기를 고르면 그 악기에 꼭 필요한 인서트가 순서대로 깔립니다 (기존 인서트는 교체)"
+            onChange={(e) => {
+              const chain = findInstrumentChain(e.target.value);
+              if (!chain) return;
+              const problems: string[] = [];
+              onApply((s) => {
+                const result = loadRack(s, track.id, rackFromChain(chain), 'replace');
+                problems.push(...result.problems);
+                return result.session;
+              });
+              for (const problem of problems.slice(0, 3)) onNotify(problem, 'warning');
+              onNotify(`${chain.label} 기본 체인 — ${chain.devices
+                .map((d) => pluginName(d.pluginId)).join(' → ')}`);
+            }}
+            className="w-full h-5 rounded text-[9px] px-1 border bg-zinc-900 border-zinc-700 text-zinc-300"
+          >
+            <option value="">악기 체인</option>
+            {INSTRUMENT_CHAINS.map((chain) => (
+              <option key={chain.id} value={chain.id}>{chain.label} · {chain.english}</option>
+            ))}
+          </LazySelect>
+        )}
         {slotsToShow(track.inserts.map((i) => i.slot), insertsOpen).map((slot) => {
           const insert = track.inserts.find((i) => i.slot === slot);
           return (

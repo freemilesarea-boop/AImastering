@@ -28,6 +28,9 @@ import {
 } from '../../../daw/engine/rack-store.js';
 import { useAppStore } from '../../../stores/appStore.js';
 import { premium } from '../../../theme/premium.js';
+import {
+  INSTRUMENT_CHAINS, rackFromChain, type InstrumentChain,
+} from '../../../daw/model/instrument-chains.js';
 import type { TrackId } from '../../../daw/model/types.js';
 
 const SLOT_COUNT = 10;
@@ -160,6 +163,29 @@ export default function InsertRack({ trackId, anchorY }: { trackId: TrackId; anc
       : `"${rack.name}" 로드 — ${describeRack(rack)}`);
   };
 
+  /**
+   * Put the whole starter chain for an instrument on this track.
+   *
+   * Through `loadRack`, which is the path a saved rack takes: the same
+   * sanitising, the same slot rules, and the same report of anything this
+   * build cannot provide.  Replace rather than merge — "give me the vocal
+   * chain" means the chain, not the chain on top of whatever was there.
+   */
+  const loadInstrumentChain = (chain: InstrumentChain): void => {
+    const preset = rackFromChain(chain);
+    setActiveRack(null);
+    apply((s) => {
+      const result = loadRack(s, trackId, preset, 'replace');
+      for (const problem of result.problems.slice(0, 3)) notify(problem, 'warning');
+      return result.session;
+    });
+    // Names the devices it just put there, in order: the chain is the lesson,
+    // and a toast that says only "loaded" teaches nothing.
+    notify(`${chain.label} 기본 체인 — ${chain.devices
+      .map((d) => findPlugin(d.pluginId)?.name ?? d.pluginId).join(' → ')}`);
+    setPicking(null);
+  };
+
   /** Update the loaded rack to whatever the chain is now. */
   const overwriteActiveRack = (): void => {
     const rack = racks.find((r) => r.id === activeRack);
@@ -235,6 +261,38 @@ export default function InsertRack({ trackId, anchorY }: { trackId: TrackId; anc
           className="h-5 w-5 text-[12px] leading-none"
           style={{ color: premium.text.muted }}
         >×</button>
+      </div>
+
+      {/* ── 악기별 기본 체인 ───────────────────────────────────────────
+          The categories below this are the plugin folder: EQ, Dynamics,
+          Reverb.  That is the right shelf for somebody who knows what they
+          are reaching for.  This is the other door — pick what the track IS
+          and the devices that track always wants arrive in order, set to
+          values that do something.  See `instrument-chains.ts` for where the
+          order comes from. */}
+      <div className="px-3 py-1.5 shrink-0"
+           style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+        <div className="flex items-baseline gap-1.5 mb-1">
+          <span className="text-[9px] tracking-wide" style={{ color: premium.text.faint }}>악기별 기본 체인</span>
+          <span className="text-[8.5px]" style={{ color: premium.text.muted }}>누르면 인서트가 교체됩니다</span>
+        </div>
+        <div className="grid grid-cols-2 gap-1">
+          {INSTRUMENT_CHAINS.map((chain) => (
+            <button
+              key={chain.id}
+              onClick={() => loadInstrumentChain(chain)}
+              title={`${chain.english} — ${chain.hint}\n${chain.devices
+                .map((d, i) => `${i + 1}. ${findPlugin(d.pluginId)?.name ?? d.pluginId} — ${d.why}`)
+                .join('\n')}`}
+              className="h-5 rounded text-[9.5px] truncate px-1"
+              style={{
+                border: '1px solid rgba(255,255,255,0.12)',
+                color: premium.text.primary,
+                fontFamily: premium.type.sans,
+              }}
+            >{chain.label}</button>
+          ))}
+        </div>
       </div>
 
       {/* The whole chain, under one name.  A device preset is one box; this is

@@ -187,14 +187,23 @@ check('the rack is not listed in every strip that is not being used', () => {
   // With the list built on the first mousedown instead: a strip is 63 nodes
   // closed and 113 while it is open, the window is 930 instead of 1580, and
   // the mount went from 75–94 ms to 58–63 ms at 48 tracks.
+  //
+  // 68 closed as of the instrument-chain picker, measured the same way: one
+  // more lazy select above the slots, which costs five nodes a strip closed
+  // and twelve options only while somebody is choosing.
   const source = readFileSync(
     new URL('../src/renderer/components/daw/mix/MixWindow.tsx', import.meta.url), 'utf8');
   assert(/function LazySelect\(/.test(source), 'MixWindow has no LazySelect');
   assert(/\{ready \? children : <option value=\{value\}>\{label\}<\/option>\}/.test(source),
     'LazySelect no longer holds one option while it is closed — a select whose '
     + 'value matches none of its options renders blank');
-  const lazy = /<LazySelect[\s\S]*?<\/LazySelect>/.exec(source)?.[0] ?? '';
-  assert(/PLUGINS\.map\(/.test(lazy),
+  // EVERY LazySelect, not the first one.  This used to read only the first
+  // block in the file and ask it for the plugin list; when a second lazy
+  // select was added ABOVE it — the instrument-chain picker, twelve options
+  // — the check failed on a file that was still correct.  What matters is
+  // that the list is inside SOME lazy select and nowhere outside one.
+  const lazies = source.match(/<LazySelect[\s\S]*?<\/LazySelect>/g) ?? [];
+  assert(lazies.some((block) => /PLUGINS\.map\(/.test(block)),
     'the rack\'s plugin list is not inside a LazySelect, so every strip draws all of it');
   const outside = source.replace(/<LazySelect[\s\S]*?<\/LazySelect>/g, '');
   assert(!/PLUGINS\.map\(/.test(outside),
