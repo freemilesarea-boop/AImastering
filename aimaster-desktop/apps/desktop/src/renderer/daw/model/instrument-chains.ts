@@ -92,16 +92,17 @@ export interface ChainDevice {
 export interface InstrumentChain {
   id: InstrumentChainId;
   /**
-   * The instrument profile this chain's devices take their settings from,
-   * or null when the app has none for it.
+   * The instrument profile this chain's devices take their settings from.
    *
-   * Six of the twelve have one.  The six that do not — 보컬, 백킹 보컬,
-   * 퍼커션, 브라스, 목관, FX — carry their own numbers below.
+   * All twelve have one now.  Seven did not when this file was written: the
+   * instrument menu on every device offered seven sources, and a VOCAL was
+   * not one of them in an app whose first mixing category is the vocal.
+   * 보컬 came first, then 백킹 보컬 · 퍼커션 · 브라스 · 목관 · FX — thirteen
+   * columns over 43 devices, each with its reason — so every chain now takes
+   * its settings from the same place a device's own 악기 menu does.
    *
-   * 보컬 used to be among them: the instrument menu on every device offered
-   * seven sources and a VOCAL was not one of them, in an app whose first
-   * mixing category is the vocal.  That column exists now — 43 devices, each
-   * with its reason — so this chain takes it like the other five.
+   * `null` remains possible, and a chain that uses it carries its own
+   * numbers; nothing does today.
    */
   profile: InstrumentId | null;
   /** What the track is, in the app's language. */
@@ -135,21 +136,16 @@ export const INSTRUMENT_CHAINS: readonly InstrumentChain[] = [
   },
   {
     id: 'backing',
-    profile: null,
+    profile: 'backing',
     label: '백킹 보컬',
     english: 'Backing Vocal',
     hint: '코러스 · 더블 — 리드 뒤에 넓게 까는 소리',
     devices: [
-      { pluginId: 'eq8', why: '리드가 설 자리를 비우려고 저역을 더 많이 덜어냅니다',
-        params: { hpfHz: 140, b1Hz: 400, b1Db: -3, b1Q: 1.2 } },
-      { pluginId: 'comp', why: '리드보다 더 눌러 뒤에 고르게 붙여 둡니다',
-        params: { thresholdDb: -20, ratio: 4, kneeDb: 6, attackMs: 10, releaseMs: 140, makeupDb: 4 } },
-      { pluginId: 'deesser', why: '여러 겹이 겹치면 치찰음도 겹칩니다',
-        params: { freqHz: 7000, thresholdDb: -28, amount: 0.55 } },
-      { pluginId: 'widener', why: '좌우로 벌려 리드의 가운데를 비웁니다',
-        params: { width: 1.35, lowMonoHz: 200 } },
-      { pluginId: 'plate', why: '리드보다 조금 더 젖게',
-        params: { decaySec: 2, preDelayMs: 10, lowCutHz: 350, highCutHz: 11000, widthPct: 120, mixPct: 24 } },
+      { pluginId: 'eq8', why: '리드가 설 자리를 비우려고 저역을 더 많이 덜어냅니다' },
+      { pluginId: 'comp', why: '리드보다 더 눌러 뒤에 고르게 붙여 둡니다' },
+      { pluginId: 'deesser', why: '여러 겹이 겹치면 치찰음도 겹칩니다' },
+      { pluginId: 'widener', why: '좌우로 벌려 리드의 가운데를 비웁니다' },
+      { pluginId: 'plate', why: '리드보다 조금 더 젖게' },
     ],
   },
   {
@@ -168,19 +164,15 @@ export const INSTRUMENT_CHAINS: readonly InstrumentChain[] = [
   },
   {
     id: 'percussion',
-    profile: null,
+    profile: 'perc',
     label: '퍼커션',
     english: 'Percussion',
     hint: '셰이커 · 탬버린 · 콩가',
     devices: [
-      { pluginId: 'eq8', why: '퍼커션에 저역은 필요 없습니다',
-        params: { hpfHz: 160, b3Hz: 8000, b3Db: 2, b3Q: 0.8 } },
-      { pluginId: 'transient', why: '손이 닿는 순간을 또렷하게',
-        params: { attack: 0.25, sustain: -0.15, mix: 1 } },
-      { pluginId: 'comp', why: '한 번씩 튀는 타격만 눌러줍니다',
-        params: { thresholdDb: -16, ratio: 3, kneeDb: 4, attackMs: 5, releaseMs: 80, makeupDb: 2 } },
-      { pluginId: 'reverb', why: '드럼과 같은 방에 놓습니다',
-        params: { decaySec: 0.9, preDelayMs: 8, mix: 0.14 } },
+      { pluginId: 'eq8', why: '퍼커션에 저역은 필요 없습니다' },
+      { pluginId: 'transient', why: '손이 닿는 순간을 또렷하게' },
+      { pluginId: 'comp', why: '한 번씩 튀는 타격만 눌러줍니다' },
+      { pluginId: 'reverb', why: '드럼과 같은 방에 놓습니다' },
     ],
   },
   {
@@ -237,34 +229,27 @@ export const INSTRUMENT_CHAINS: readonly InstrumentChain[] = [
   },
   {
     id: 'brass',
-    profile: null,
+    profile: 'brass',
     label: '브라스',
     english: 'Brass',
     hint: '금관 — 세게 누르면 기계처럼 들립니다',
     devices: [
-      { pluginId: 'eq8', why: '3 kHz 를 살짝 덜고 10 kHz 를 올려 날카로움만 뺍니다',
-        params: { hpfHz: 80, b2Hz: 3000, b2Db: -2.5, b2Q: 1.1, highHz: 10000, highDb: 2 } },
-      { pluginId: 'comp', why: '피크만 잡는 정도로 — 금관은 눌릴수록 납작해집니다',
-        params: { thresholdDb: -18, ratio: 3, kneeDb: 10, attackMs: 15, releaseMs: 150, makeupDb: 2 } },
-      { pluginId: 'tube', why: '놋쇠의 배음을 조금 더',
-        params: { drive: 0.15, bias: 0.12, toneHz: 7000, mix: 30, outDb: 0 } },
-      { pluginId: 'reverb', why: '현악과 같은 홀, 조금 더 가깝게',
-        params: { decaySec: 1.9, preDelayMs: 20, mix: 0.16 } },
+      { pluginId: 'eq8', why: '3 kHz 를 살짝 덜고 10 kHz 를 올려 날카로움만 뺍니다' },
+      { pluginId: 'comp', why: '피크만 잡는 정도로 — 금관은 눌릴수록 납작해집니다' },
+      { pluginId: 'tube', why: '놋쇠의 배음을 조금 더' },
+      { pluginId: 'reverb', why: '현악과 같은 홀, 조금 더 가깝게' },
     ],
   },
   {
     id: 'woodwinds',
-    profile: null,
+    profile: 'winds',
     label: '목관',
     english: 'Woodwinds',
     hint: '플루트 · 클라리넷 · 오보에',
     devices: [
-      { pluginId: 'eq8', why: '숨소리와 저역 울림을 덜어냅니다',
-        params: { hpfHz: 110, b1Hz: 350, b1Db: -2, b1Q: 1.2, b3Hz: 7000, b3Db: 1.5, b3Q: 0.9 } },
-      { pluginId: 'comp', why: '여리게 부는 구간을 들리게 하는 정도',
-        params: { thresholdDb: -22, ratio: 2.5, kneeDb: 10, attackMs: 25, releaseMs: 200, makeupDb: 2 } },
-      { pluginId: 'reverb', why: '목관은 작은 방 — 현악보다 가깝게',
-        params: { decaySec: 1.4, preDelayMs: 15, mix: 0.18 } },
+      { pluginId: 'eq8', why: '숨소리와 저역 울림을 덜어냅니다' },
+      { pluginId: 'comp', why: '여리게 부는 구간을 들리게 하는 정도' },
+      { pluginId: 'reverb', why: '목관은 작은 방 — 현악보다 가깝게' },
     ],
   },
   {
@@ -284,19 +269,15 @@ export const INSTRUMENT_CHAINS: readonly InstrumentChain[] = [
   },
   {
     id: 'fx',
-    profile: null,
+    profile: 'fx',
     label: 'FX',
     english: 'FX',
     hint: '효과음 · 라이저 · 임팩트',
     devices: [
-      { pluginId: 'eq8', why: '저역을 비워 리듬 파트와 부딪히지 않게 합니다',
-        params: { hpfHz: 120 } },
-      { pluginId: 'widener', why: '효과음은 넓을수록 효과음답습니다',
-        params: { width: 1.45, lowMonoHz: 250 } },
-      { pluginId: 'tapedelay', why: '테이프 반복 — 꼬리를 길게',
-        params: { timeMs: 450, feedback: 0.4, toneHz: 3500, wowMs: 0.6, drive: 0.25, mix: 30 } },
-      { pluginId: 'reverb', why: '가장 깊은 공간',
-        params: { decaySec: 3.2, preDelayMs: 30, mix: 0.3 } },
+      { pluginId: 'eq8', why: '저역을 비워 리듬 파트와 부딪히지 않게 합니다' },
+      { pluginId: 'widener', why: '효과음은 넓을수록 효과음답습니다' },
+      { pluginId: 'tapedelay', why: '테이프 반복 — 꼬리를 길게' },
+      { pluginId: 'reverb', why: '가장 깊은 공간' },
     ],
   },
 ];

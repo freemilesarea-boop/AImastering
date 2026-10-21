@@ -302,18 +302,23 @@ console.log('\n=== 악기별 기본 체인 ===\n');
   );
   const profiled = INSTRUMENT_CHAINS.filter((c) => c.profile !== null);
   check(
-    'seven of the twelve map onto an instrument the app already knows',
-    profiled.length === 7
-      && profiled.every((c) => c.profile !== null && INSTRUMENT_LABEL[c.profile] !== undefined),
+    'all twelve map onto an instrument the app knows, one profile each',
+    profiled.length === INSTRUMENT_CHAINS.length
+      && profiled.every((c) => c.profile !== null && INSTRUMENT_LABEL[c.profile] !== undefined)
+      && new Set(profiled.map((c) => c.profile)).size === profiled.length,
     profiled.map((c) => `${c.id}→${c.profile === null ? '' : INSTRUMENT_LABEL[c.profile]}`).join(', '),
   );
-  // Named, not silent: the device menus offer seven instruments and a VOCAL
-  // is not one of them, in an app whose first category is 보컬.
+  // This used to name the gap.  The device menus offered seven instruments
+  // and a VOCAL was not one of them; six of the twelve chains carried their
+  // own numbers because of it.  The gap is closed, so the check is now that
+  // nothing hand-types settings the instrument menu could have answered.
   const unprofiled = INSTRUMENT_CHAINS.filter((c) => c.profile === null).map((c) => c.id);
   check(
-    'and the five with no instrument profile are the ones the app has none for',
-    unprofiled.join(',') === 'backing,percussion,brass,woodwinds,fx',
-    `no profile: ${unprofiled.join(', ')}`,
+    'and no chain is left typing numbers the instrument menu already has',
+    unprofiled.length === 0 && ownNumbers === 0,
+    unprofiled.length === 0
+      ? `${fromPreset} of ${fromPreset + ownNumbers} devices take an instrument preset`
+      : `no profile: ${unprofiled.join(', ')}`,
   );
 }
 
