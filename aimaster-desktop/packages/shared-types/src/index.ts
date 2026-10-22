@@ -109,8 +109,28 @@ export interface AudioFileInfo {
 export interface LoudnessStats {
   integratedLufs: number;
   truePeakDbtp: number;
-  lra: number;
-  shortTermMax: number;
+  /**
+   * Loudness range, or null when the path that produced this master did not
+   * measure one.
+   *
+   * The offline chain renderer (`audio:master-rust-experimental`, which the
+   * Studio path uses) measures integrated LUFS and true peak on its second
+   * pass and nothing else.  It used to hand its own metrics object straight
+   * across as a `LoudnessStats`, so `lra` was undefined while this type said
+   * it was a number, and `lra.toFixed(1)` in the queue row took the whole app
+   * to the error boundary.  Null says "not measured" — the one thing a UI can
+   * render honestly without inventing a 0 dB range.
+   */
+  lra: number | null;
+  /**
+   * Maximum short-term loudness, when the path measured one.
+   *
+   * Optional because no path ever has: the Python engine's `loudnessAfter`
+   * carries integratedLufs / truePeakDbtp / lra / durationSec, and the Rust
+   * renderer carries neither.  It was declared required and nothing read it,
+   * which is the same lie as `lra` with nobody to notice it.
+   */
+  shortTermMax?: number;
 }
 
 export interface AIDetectionResult {
@@ -364,8 +384,15 @@ export interface MasteringResult {
   /** Absolute path to the MP3 preview. Always populated on success. */
   previewPath: string;
   appliedCorrections: string[];
-  loudnessBefore: { integratedLufs: number; truePeakDbtp: number; lra: number };
-  loudnessAfter: LoudnessStats;
+  loudnessBefore: { integratedLufs: number; truePeakDbtp: number; lra: number | null };
+  /**
+   * What the OUTPUT measured, or null when the render path measured nothing.
+   *
+   * Null rather than zeros: a master whose loudness was not measured and a
+   * master measured at 0 LUFS are different facts, and only one of them is
+   * worth showing a user.
+   */
+  loudnessAfter: LoudnessStats | null;
   spectralBalance: { lowToMidDb: number; highToMidDb: number } | null;
   analysisReport: AnalysisReport | null;
   pipelineWarnings: Array<{ code: string; level: string; userMessage: string }>;

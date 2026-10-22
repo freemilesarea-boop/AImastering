@@ -299,6 +299,13 @@ export function buildCommands(deps: CommandDeps, daw?: DawBridge): CommandMap {
         notify('복제할 마스터 결과가 없습니다', 'warning');
         return;
       }
+      // A revision is a record of a master's numbers.  Without measured
+      // numbers it would be a record of zeros, so it is refused by name
+      // rather than written wrong.
+      if (!r.loudnessAfter) {
+        notify('이 결과에는 측정된 라우드니스가 없어 리비전으로 복제할 수 없습니다', 'warning');
+        return;
+      }
       audio.addRevision({
         sourceFilePath: snap.selectedFile,
         sourceFileName: fileNameOf(snap.selectedFile),

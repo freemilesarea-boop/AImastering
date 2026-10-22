@@ -33,6 +33,7 @@
   "view-window",
   "global-lanes",
   "instrument-chains",
+  "render-metrics",
   "snapshot-panel",
   "text-prompt",
   "window-layout",

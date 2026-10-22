@@ -504,6 +504,11 @@ function MiniPlayer({
 
 // ── Queue item row ────────────────────────────────────────────────────────────
 
+/** A measured number, or a dash when the render path did not measure one. */
+function metricText(v: number | null | undefined, d = 1): string {
+  return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(d) : '—';
+}
+
 function QueueRow({
   item,
   activePlayerId,
@@ -543,10 +548,12 @@ function QueueRow({
         outputPath: result.outputPath,
         sourcePath: item.filePath,
         chain: chainLabel(options.style, options.targetLufs),
+        // Stamped only when measured: an unmeasured value written as a
+        // number is a number somebody will later read as a measurement.
         loudness: {
-          integratedLufs: after?.integratedLufs,
-          lra: after?.lra,
-          truePeakDbtp: after?.truePeakDbtp,
+          ...(typeof after?.integratedLufs === 'number' ? { integratedLufs: after.integratedLufs } : {}),
+          ...(typeof after?.lra === 'number' ? { lra: after.lra } : {}),
+          ...(typeof after?.truePeakDbtp === 'number' ? { truePeakDbtp: after.truePeakDbtp } : {}),
         },
         fallbackTitle: item.fileName.replace(/\.[^.]+$/, ''),
         appVersion: __APP_VERSION__,
@@ -750,16 +757,20 @@ function QueueRow({
       {/* Done: LUFS info + download buttons + preview */}
       {item.status === 'done' && item.masteringResult && (
         <>
-          {/* Stats */}
+          {/* Stats.
+              `loudnessAfter` is null when the render path measured nothing,
+              and `lra` is null on the offline chain path, which measures
+              loudness and true peak and not a range.  A dash says that; a
+              0.0 would say the master has no dynamics. */}
           <div className="mt-2 flex gap-3 text-[10px] font-mono text-zinc-600">
             <span>
-              {item.masteringResult.loudnessAfter.integratedLufs.toFixed(1)} LUFS
+              {metricText(item.masteringResult.loudnessAfter?.integratedLufs)} LUFS
             </span>
             <span>
-              TP {item.masteringResult.loudnessAfter.truePeakDbtp.toFixed(1)} dBTP
+              TP {metricText(item.masteringResult.loudnessAfter?.truePeakDbtp)} dBTP
             </span>
             <span>
-              LRA {item.masteringResult.loudnessAfter.lra.toFixed(1)} LU
+              LRA {metricText(item.masteringResult.loudnessAfter?.lra)} LU
             </span>
           </div>
 

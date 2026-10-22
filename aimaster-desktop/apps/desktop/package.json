@@ -254,6 +254,7 @@
     "test:view-window": "tsx scripts/view-window-selftest.ts",
     "test:global-lanes": "tsx scripts/global-lanes-selftest.ts",
     "test:instrument-chains": "tsx scripts/instrument-chains-selftest.ts",
+    "test:render-metrics": "tsx scripts/render-metrics-selftest.ts",
     "test:snapshot-panel": "tsx scripts/snapshot-panel-selftest.ts",
     "test:text-prompt": "tsx scripts/text-prompt-selftest.ts",
     "test:window-layout": "tsx scripts/window-layout-selftest.ts",
