@@ -350,7 +350,10 @@ console.log('\n=== 악기별 기본 체인 ===\n');
   );
   check(
     'and the master strip is not offered a vocal chain',
-    /!isMaster && !isVca && \(\s*<LazySelect/.test(mixer),
+    // The picker gained a SEND toggle beside it, so the guard now wraps a row
+    // rather than the select directly.  One optional element is allowed in
+    // between; deleting the guard still fails this.
+    /!isMaster && !isVca && \(\s*(<div[^>]*>\s*)?<LazySelect/.test(mixer),
     'the picker is hidden on master and VCA strips',
   );
 }

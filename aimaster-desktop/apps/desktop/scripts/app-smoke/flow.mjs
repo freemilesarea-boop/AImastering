@@ -1135,6 +1135,96 @@ try {
     );
   }
 
+  // ── 공간계는 센드로, through the same strip ────────────────────────────
+  //
+  // `chain-sends-selftest` checks the model.  What that cannot check is the
+  // part that decides whether anybody ever gets there: the SEND toggle lives
+  // in the workspace store and is read by two different panels, so the thing
+  // worth driving in a real renderer is "press the button in the console, pick
+  // the same chain, and the reverb is now on an aux".
+  //
+  // Pressed on the strip that just loaded the chain as inserts, so this also
+  // exercises the replace path over an existing channel rather than a clean
+  // one.
+  {
+    const routed = await page.evaluate(async () => {
+      const daw = await import('/stores/dawStore.ts');
+      const ops = await import('/daw/model/session-ops.ts');
+      const before = daw.useDawStore.getState().session;
+      const vox = before.tracks.find((t) => t.kind === 'audio');
+      if (!vox) return { error: 'the audio track from the previous step is gone' };
+
+      const toggle = [...document.querySelectorAll('button')]
+        .find((el) => (el.getAttribute('title') ?? '').startsWith('공간계(리버브'));
+      if (!toggle) return { error: 'SEND toggle not in the mixer strip' };
+      toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 300));
+
+      const ws = await import('/stores/workspaceStore.ts');
+      const flagOn = ws.useWorkspaceStore.getState().chainSendRouting === true;
+
+      const pick = [...document.querySelectorAll('select')]
+        .find((el) => (el.getAttribute('title') ?? '').startsWith('악기를 고르면'));
+      if (!pick) return { error: '악기 체인 picker not in the mixer strip' };
+      pick.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 200));
+      pick.value = 'vocal';
+      pick.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 700));
+
+      const after = daw.useDawStore.getState().session;
+      const track = ops.findTrack(after, vox.id);
+      const auxes = after.tracks.filter((t) => t.kind === 'aux');
+      const sends = (track?.sends ?? []).map((x) => ({ target: x.target, db: x.levelDb, pre: x.preFader }));
+      // Read the aux's own mix the way the module does: off the descriptor's
+      // declared range, which is 0..1 on the delay and 0..100 on the plate.
+      const plugins = await import('/daw/engine/plugins.ts');
+      const wets = auxes.map((a) => {
+        const only = a.inserts[0];
+        const def = plugins.findPlugin(only?.pluginId ?? '')?.params
+          .find((x) => x.id === 'mix' || x.id === 'mixPct');
+        if (!only || !def) return null;
+        return (only.params[def.id] - def.min) / (def.max - def.min);
+      });
+
+      return {
+        flagOn,
+        inserts: [...(track?.inserts ?? [])].sort((a, b) => a.slot - b.slot).map((i) => i.pluginId),
+        auxes: auxes.map((a) => a.inserts[0]?.pluginId ?? '(empty)').sort(),
+        auxFedByBus: auxes.every((a) => a.input !== null && after.buses.some((b) => b.id === a.input)),
+        buses: after.buses.length,
+        sends,
+        sendsHitAuxes: sends.length > 0
+          && sends.every((x) => auxes.some((a) => a.input === x.target)),
+        wets,
+      };
+    });
+
+    expect(
+      !routed.error && routed.flagOn,
+      'the SEND toggle in the console sets the workspace flag both pickers read',
+      routed.error ?? 'chainSendRouting = true after one click',
+    );
+    expect(
+      !routed.error && routed.inserts.join('>') === 'eq8>comp>deesser>tube'
+        && routed.auxes.join(',') === 'delay,plate',
+      'and the vocal chain\'s tail moves out of the channel onto two auxes',
+      routed.error ?? `channel ${routed.inserts.join(' → ')} · auxes ${routed.auxes.join(', ')}`,
+    );
+    expect(
+      !routed.error && routed.auxFedByBus && routed.sendsHitAuxes && routed.buses === 2,
+      'wired end to end — track → bus → aux, in the live session',
+      routed.error ?? `${routed.buses} buses, sends ${routed.sends
+        .map((x) => `${x.db.toFixed(1)}dB${x.pre ? ' PRE' : ''}`).join(', ')}`,
+    );
+    expect(
+      !routed.error && routed.wets.length === 2
+        && routed.wets.every((w) => w !== null && Math.abs(w - 1) < 1e-9),
+      'with both auxes fully wet, so the return is effect and not a second dry path',
+      routed.error ?? `aux mix ${routed.wets.map((w) => (w === null ? '?' : `${(w * 100).toFixed(0)}%`)).join(', ')}`,
+    );
+  }
+
   // `VITE_LOUI_GUIDED_FLOW` is set by CI on tag builds only, and it swaps the
   // whole front of the app: App.tsx renders <GuidedHome /> instead of
   // <HomePage />, and MasteringPage and ResultPage take guided branches.  No

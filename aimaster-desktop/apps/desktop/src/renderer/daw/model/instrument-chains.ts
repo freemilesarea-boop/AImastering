@@ -320,15 +320,25 @@ export function findInstrumentChain(id: string): InstrumentChain | undefined {
  * Slots are packed from A in chain order: unlike a user's saved rack, where
  * "the compressor is in C" is part of how it is remembered, a starter chain
  * has no history to preserve and a gap in it would only be a question.
+ *
+ * `devices` narrows it to a subset, which is how `chain-sends.ts` loads the
+ * channel half of a chain whose tail went to an aux — and how it reads the
+ * settings for the aux's own copy.  Taking a subset rather than filtering
+ * afterwards keeps the repack-from-A in one place: the channel of a vocal
+ * chain with the delay and the plate thrown is A–D with no gaps, not A, B, C
+ * and D with two holes where the tail used to be.
  */
-export function rackFromChain(chain: InstrumentChain): RackPreset {
+export function rackFromChain(
+  chain: InstrumentChain, devices: readonly ChainDevice[] = chain.devices,
+): RackPreset {
+  const whole = devices.length === chain.devices.length;
   return {
     id: `builtin:${chain.id}`,
-    name: `${chain.label} 기본 체인`,
+    name: `${chain.label} 기본 체인${whole ? '' : ' (일부)'}`,
     note: chain.hint,
     createdAt: 0,
     updatedAt: 0,
-    devices: chain.devices.map((device, slot) => ({
+    devices: devices.map((device, slot) => ({
       slot,
       pluginId: device.pluginId,
       label: '',
