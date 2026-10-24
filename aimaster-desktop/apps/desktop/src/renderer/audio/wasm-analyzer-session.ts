@@ -83,9 +83,56 @@ let _spectrumCreated = 0, _spectrumFreed = 0;
 let _loggedLenMismatch = false;
 let _diagFirstMsg = false;
 let _diagFirstBlock = false;
+/**
+ * Whether the crash-hunt instrumentation below speaks.
+ *
+ * It was written at `console.error` on purpose — "visible at the DEFAULT
+ * console level (warn/debug can be filtered out); cannot be hidden by level
+ * settings" — to corner the dlmalloc panic that once hard-disabled the
+ * realtime preview.  That panic was fixed at the source (see
+ * `safe-boot-flags.ts`, which turned the flag back ON for the same reason),
+ * and the instrumentation stayed, at error level, in every build.
+ *
+ * `app-smoke`'s new "the renderer logged no errors through any of it" step
+ * caught it on its first run: a user starting the app gets
+ * `[wasm-analyzer-session] DIAG build v3 loaded` as a console ERROR, and a
+ * user who plays audio gets four more.  Anything that collects errors —
+ * that step, a crash reporter, a support bundle — reads them as faults.
+ *
+ * So it is gated rather than deleted: a future regression hunt wants it
+ * back.  The gate is an EXPLICIT opt-in, not `isDevMode()`, which was tried
+ * first and is the wrong trigger — it is "ON automatically in a dev build",
+ * so every developer and every `app-smoke` run would still get the five
+ * lines, and the smoke's error step could never pass without a carve-out
+ * for them.  A carve-out in the one step that asks "what else happened" is
+ * how that step stops meaning anything.
+ *
+ * To turn it on for a hunt, either before the app loads:
+ *
+ *     window.__LOUI_ANALYZER_DIAG__ = true
+ *     localStorage['loui.analyzerDiag'] = 'true'   // survives a reload
+ *
+ * Read ONCE at module scope, because one of these fires from `processBlock`
+ * and reading `localStorage` per audio block is a real cost.  So the
+ * localStorage form needs a reload to take effect — which is how a flag
+ * read at import time always behaves.
+ */
+const DIAG = ((): boolean => {
+  try {
+    const w = globalThis as { __LOUI_ANALYZER_DIAG__?: boolean };
+    if (w.__LOUI_ANALYZER_DIAG__ === true) return true;
+    if (typeof localStorage !== 'undefined') {
+      const v = localStorage.getItem('loui.analyzerDiag');
+      if (v === 'true' || v === '1') return true;
+    }
+  } catch { /* private mode / no storage — stay off */ }
+  return false;
+})();
+
 function _lcLog(tag: string): void {
-  // console.error so it is visible at the DEFAULT console level (warn/debug
-  // can be filtered out); cannot be hidden by level settings.
+  if (!DIAG) return;
+  // console.error, not warn/debug: inside a diagnostic session the whole
+  // point is that a level filter cannot hide it.
   // eslint-disable-next-line no-console
   console.error(
     `[wasm-analyzer-lifecycle] ${tag} | wasmInit=${_wasmInitCount} ` +
@@ -99,7 +146,7 @@ function _lcLog(tag: string): void {
 // you are running a STALE bundle: git pull the branch, restart `pnpm dev`,
 // and hard-reload the window.
 // eslint-disable-next-line no-console
-console.error('[wasm-analyzer-session] DIAG build v3 loaded');
+if (DIAG) console.error('[wasm-analyzer-session] DIAG build v3 loaded');
 
 function ensureWasmReady(): Promise<void> {
   if (!_wasmReadyPromise) {
@@ -238,7 +285,7 @@ class WasmAnalyzerSession implements AnalyzerSession {
 
   async start(): Promise<void> {
     // eslint-disable-next-line no-console
-    console.error('[wasm-analyzer] start() called');
+    if (DIAG) console.error('[wasm-analyzer] start() called');
     if (this.isRunning || this._stopRequested || this._stopped) return;
 
     // ① WASM init — collapses onto a shared singleton so concurrent
@@ -307,7 +354,7 @@ class WasmAnalyzerSession implements AnalyzerSession {
         // the line below instead of to the call beside it — so this warning
         // stayed live and the next line was the one being silenced.
         // eslint-disable-next-line no-console
-        console.error('[wasm-analyzer] FIRST tapNode.port.onmessage');
+        if (DIAG) console.error('[wasm-analyzer] FIRST tapNode.port.onmessage');
       }
       const data = event.data as { left: Float32Array; right?: Float32Array };
       if (!data || !data.left) return;
@@ -521,7 +568,7 @@ class WasmAnalyzerSession implements AnalyzerSession {
     if (!_diagFirstBlock) {
       _diagFirstBlock = true;
       // eslint-disable-next-line no-console
-      console.error(`[wasm-analyzer] FIRST processBlock entered | stopped=${this._stopped} stopReq=${this._stopRequested} hasAnalyzer=${!!this.analyzer} hasSpectrum=${!!this.spectrum} leftLen=${left?.length} rightLen=${right?.length ?? 'none'} channels=${this.options.channels}`);
+      if (DIAG) console.error(`[wasm-analyzer] FIRST processBlock entered | stopped=${this._stopped} stopReq=${this._stopRequested} hasAnalyzer=${!!this.analyzer} hasSpectrum=${!!this.spectrum} leftLen=${left?.length} rightLen=${right?.length ?? 'none'} channels=${this.options.channels}`);
     }
     // Use-after-free guard: never touch the WASM analyzers once the session
     // has been told to stop (the heap objects are freed in stop()).

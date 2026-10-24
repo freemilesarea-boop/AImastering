@@ -331,8 +331,7 @@ export async function decodeAudioFile(
     // file read, not a decode.  Only the callers that genuinely need every
     // sample at once — offline render, spectral repair, warping — come here.
     const source = await ensureSource(fileId ?? path, path, ctx.sampleRate);
-    const resp = await fetch(source.url);
-    if (!resp.ok) throw new Error(`디코딩 결과를 읽지 못했습니다 (${resp.status})`);
+    const resp = await readFile(source.url, '디코딩 결과를 읽지 못했습니다', path);
     const pcm = new Uint8Array(await resp.arrayBuffer());
     return pcmToBuffer(ctx, {
       sampleRate: source.sampleRate,
@@ -341,9 +340,30 @@ export async function decodeAudioFile(
       pcm,
     });
   }
-  const resp = await fetch(toFileUrl(path));
-  if (!resp.ok) throw new Error(`오디오 로드 실패 (${resp.status}): ${path}`);
+  const resp = await readFile(toFileUrl(path), '오디오 파일을 열 수 없습니다', path);
   return ctx.decodeAudioData(await resp.arrayBuffer());
+}
+
+/**
+ * `fetch` a local file, failing with a message that names it.
+ *
+ * A `file://` fetch for something that is not there REJECTS; it does not come
+ * back as a response with a status.  So the `resp.ok` checks that used to
+ * stand here could not catch the usual case, and what reached
+ * `noteLoadFailure` — the reason a user is given for a silent track — was
+ * Chromium's "Failed to fetch", or "fetch failed" under Node.  Neither says
+ * which file, or that a file was involved at all.
+ */
+async function readFile(url: string, what: string, filePath: string): Promise<Response> {
+  const name = filePath.split(/[\\/]/).pop() ?? filePath;
+  let resp: Response;
+  try {
+    resp = await fetch(url);
+  } catch (err) {
+    throw new Error(`${what} — ${name} (${err instanceof Error ? err.message : String(err)})`);
+  }
+  if (!resp.ok) throw new Error(`${what} — ${name} (HTTP ${resp.status})`);
+  return resp;
 }
 
 interface DecodedPcm {
@@ -478,11 +498,16 @@ export async function decodeForDisplay(
   // for display costs a 32 KB sidecar instead of 92 MB of resident PCM —
   // which is the whole reason a sixteen-track session can be opened at all.
   if (canUseStore()) {
-    const { ready, failed: failedPaths } = await ensureSources(files, DECODE_SAMPLE_RATE, onProgress);
+    const { ready, failed: failedPaths, errors } = await ensureSources(
+      files, DECODE_SAMPLE_RATE, onProgress);
     // `ensureSources` answers in paths; the door upstairs is keyed by id.
     for (const p of failedPaths) {
       const file = files.find((f) => f.path === p);
-      if (file) noteLoadFailure(file.id, file.path, new Error('소스를 준비하지 못했습니다'));
+      // Main's own reason, not a sentence invented here.  The line that used
+      // to stand in its place said "소스를 준비하지 못했습니다" for every
+      // cause there is, and `LoadFailure.reason` — which exists to be read —
+      // could never say anything else.
+      if (file) noteLoadFailure(file.id, file.path, errors.get(p) ?? new Error('소스를 준비하지 못했습니다'));
     }
     return { decoded: ready, failed: failedPaths };
   }

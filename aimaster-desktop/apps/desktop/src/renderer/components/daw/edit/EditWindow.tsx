@@ -40,6 +40,9 @@ import {
 import { premium } from '../../../theme/premium.js';
 import { laneWindow } from '../../../daw/model/lane-window.js';
 import {
+  globalLanesPx, globalLanesShown, type GlobalLaneFlags,
+} from '../../../daw/model/global-lanes.js';
+import {
   addPlaylist, alternateLanes, cyclePlaylist, duplicatePlaylist, flattenComp,
   removePlaylist, setActivePlaylist,
 } from '../../../daw/edit/comping.js';
@@ -80,7 +83,7 @@ import { trackDelayMs } from '../../../daw/model/track-delay.js';
 import { describeDelay } from '../../../daw/edit/track-delay-ops.js';
 import {
   TRACK_COLORS, clampTrackHeight, renameTrack, setTrackColor,
-  setTrackHeight,
+  setTrackHeight, setHeights, heightToFit, FIT_VISIBLE_ROWS,
 } from '../../../daw/model/track-header.js';
 import { deleteTracks } from '../../../ui/delete-tracks.js';
 
@@ -166,6 +169,11 @@ export default function EditWindow() {
   const laneRef = useRef<HTMLDivElement>(null);
   const [laneWidth, setLaneWidth] = useState(900);
   const [showUniverse, setShowUniverse] = useState(false);
+  // The four lanes above the tracks — sections, chords, picture, tempo — and
+  // whether they are worth 190 px of the scroller.  `null` is the default and
+  // means "the ones with something in them"; see `global-lanes.ts` for what
+  // the four of them were costing a session with seven tracks.
+  const [globalOverride, setGlobalOverride] = useState<boolean | null>(null);
   const [decodeTick, setDecodeTick] = useState(0);
   const [drag, setDrag] = useState<null | { anchorSec: number; anchorTrackId: string }>(null);
   // The row the pointer is over, as a ref rather than state: the row handler
@@ -256,6 +264,9 @@ export default function EditWindow() {
   // Collapsed stacks fold their members away, so the arrange window stays
   // readable at forty tracks.
   const rows = visibleTracks(session);
+  const globalLanes: GlobalLaneFlags = useMemo(
+    () => globalLanesShown(session, globalOverride), [session, globalOverride]);
+  const globalPx = globalLanesPx(globalLanes);
 
   // Headers and lanes are two columns of the same list, so they are built ONCE
   // and both sides map over it.  Building them separately is how the two
@@ -294,9 +305,21 @@ export default function EditWindow() {
     const el = rowScroller.current;
     if (!el) return undefined;
     const read = (): void => {
-      // The fixed lanes above the tracks are always built, so the window is
-      // measured from where the track rows actually start.
-      const offset = rowsTop.current?.offsetTop ?? 0;
+      // The global lanes above the tracks are built inside this scroller, so
+      // the window is measured from where the track rows actually start.
+      //
+      // `rowsTop.offsetTop` ALONE is not that distance.  `offsetTop` is
+      // measured from the nearest POSITIONED ancestor, and this scroller is
+      // not positioned — so it came back 288 px when the rows began 190 px
+      // into the content, the extra 98 being the toolbar and the ruler
+      // outside the scroller.  Subtracting the scroller's own offset in the
+      // same ancestor is what makes it a distance inside the content; both
+      // are layout positions, so neither moves when the content scrolls.
+      //
+      // The error was masked by `LANE_OVERSCAN_PX` (240 > 98), which is the
+      // worst way for a measurement to be wrong: nothing to see until
+      // somebody shortens the overscan or makes the lanes taller.
+      const offset = (rowsTop.current?.offsetTop ?? 0) - el.offsetTop;
       setRowPort({ top: el.scrollTop - offset, height: el.clientHeight });
     };
     read();
@@ -307,7 +330,10 @@ export default function EditWindow() {
       el.removeEventListener('scroll', read);
       observer?.disconnect();
     };
-  }, []);
+    // `globalPx` is a dependency because showing or hiding a global lane
+    // moves the rows' origin, and a window measured from the old one builds
+    // the wrong rows until the next scroll.
+  }, [globalPx]);
   const rowHeights = useMemo(() => displayRows.map((r) => r.height), [displayRows]);
   const rowView = laneWindow(rowHeights, rowPort.top, rowPort.height);
   const builtRows = displayRows.slice(rowView.first, rowView.last);
@@ -552,7 +578,7 @@ export default function EditWindow() {
   return (
     <div className="relative flex-1 flex flex-col overflow-hidden bg-[#101018] text-zinc-200">
       {/* ── Toolbar ─────────────────────────────────────────────────────── */}
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-zinc-800 bg-[#15151d] flex-wrap">
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-zinc-800 bg-[#15151d] flex-nowrap overflow-x-auto [&>*]:shrink-0">
         <button
           onClick={() => setShowUniverse((v) => !v)}
           title="유니버스 — 곡 전체를 한 띠에 놓고, 지금 보고 있는 창을 끌어서 이동합니다"
@@ -560,6 +586,40 @@ export default function EditWindow() {
             ? 'bg-emerald-600/30 border-emerald-600/50 text-emerald-300'
             : 'bg-zinc-900 border-zinc-700 text-zinc-500 hover:text-zinc-300'}`}
         >UNIV</button>
+
+        {/* The global lanes, and the 190 px they cost.  Three states rather
+            than two: AUTO shows the lanes that have something in them, which
+            is what a new session wants, and the other two are the user
+            overruling that in either direction. */}
+        <button
+          onClick={() => setGlobalOverride((v) => (v === null ? true : v === true ? false : null))}
+          title={'글로벌 레인(섹션·코드·픽처·템포) — AUTO: 내용이 있는 레인만 표시 /'
+            + ' ON: 모두 표시 / OFF: 모두 숨김. 네 레인은 트랙 스크롤러의 맨 위 190 px 를 차지합니다.'}
+          className={`px-2 py-1 rounded text-[10px] font-mono tracking-wide border ${globalOverride === true
+            ? 'bg-emerald-600/30 border-emerald-600/50 text-emerald-300'
+            : globalOverride === false
+              ? 'bg-zinc-800 border-zinc-600 text-zinc-400'
+              : 'bg-zinc-900 border-zinc-700 text-zinc-500 hover:text-zinc-300'}`}
+        >{globalOverride === null ? 'G:AUTO' : globalOverride ? 'G:ON' : 'G:OFF'}</button>
+
+        {/* Every track in the window at once.  The height is computed from
+            what the scroller actually measures, minus what the global lanes
+            and open automation lanes are already spending — see
+            `heightToFit`.  It goes through `apply`, so it is one undo. */}
+        <button
+          onClick={() => {
+            const automationPx = displayRows
+              .filter((r) => r.kind === 'lane').length * AUTOMATION_LANE_HEIGHT;
+            // Up to twenty on screen; a bigger session keeps a legible
+            // lane and scrolls for the rest.
+            const px = heightToFit(
+              Math.min(rows.length, FIT_VISIBLE_ROWS), rowPort.height, globalPx + automationPx);
+            apply((st) => setHeights(st, rows.map((t) => t.id), px));
+          }}
+          title="세로 맞춤 — 트랙 높이를 창에 맞춰 한 번에 조절합니다. 최대 20개까지 한 화면에 들어가고, 그보다 많으면 나머지는 스크롤입니다 (되돌리기 한 번으로 복구)"
+          className={'px-2 py-1 rounded text-[10px] font-mono tracking-wide border'
+            + ' bg-zinc-900 border-zinc-700 text-zinc-500 hover:text-zinc-300'}
+        >FIT</button>
 
         <div className="flex rounded-md overflow-hidden border border-zinc-700">
           {EDIT_MODES.map((m) => (
@@ -741,10 +801,10 @@ export default function EditWindow() {
            onMouseUp={endDrag} onMouseLeave={endDrag}>
         {/* Headers */}
         <div style={{ width: HEADER_WIDTH }} className="shrink-0 border-r border-zinc-800 bg-[#12121a]">
-          <SectionLaneHeader />
-          <ChordLaneHeader />
-          <PictureLaneHeader />
-          <TempoTrackHeader session={session} />
+          {globalLanes.section && <SectionLaneHeader />}
+          {globalLanes.chord && <ChordLaneHeader />}
+          {globalLanes.picture && <PictureLaneHeader />}
+          {globalLanes.tempo && <TempoTrackHeader session={session} />}
           <div ref={rowsTop} style={{ height: rowView.padTop }} aria-hidden />
           {builtRows.map((row) => (row.kind === 'lane' ? (
             <AutomationLaneHeader key={row.key} track={row.track} lane={row.lane} />
@@ -808,13 +868,21 @@ export default function EditWindow() {
               </p>
             </div>
           )}
-          <SectionLane viewport={{ scrollSec, pxPerSec, width: laneWidth }} />
-          <ChordLane viewport={{ scrollSec, pxPerSec, width: laneWidth }} />
-          <PictureLane viewport={{ scrollSec, pxPerSec, width: laneWidth }} />
-          <TempoTrack
-            session={session}
-            viewport={{ scrollSec, pxPerSec, width: laneWidth }}
-          />
+          {globalLanes.section && (
+            <SectionLane viewport={{ scrollSec, pxPerSec, width: laneWidth }} />
+          )}
+          {globalLanes.chord && (
+            <ChordLane viewport={{ scrollSec, pxPerSec, width: laneWidth }} />
+          )}
+          {globalLanes.picture && (
+            <PictureLane viewport={{ scrollSec, pxPerSec, width: laneWidth }} />
+          )}
+          {globalLanes.tempo && (
+            <TempoTrack
+              session={session}
+              viewport={{ scrollSec, pxPerSec, width: laneWidth }}
+            />
+          )}
           <div style={{ height: rowView.padTop }} aria-hidden />
           {builtRows.map((row) => (row.kind === 'lane' ? (
             <AutomationLaneCanvas

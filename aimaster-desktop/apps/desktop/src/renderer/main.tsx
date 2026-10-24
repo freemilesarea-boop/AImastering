@@ -56,14 +56,21 @@ import { useAudioStore as _audioStoreForDefaults } from './stores/audioStore.js'
 // short delay so the warning lands after the window has drawn rather than
 // into a page that is still mounting.
 import { readFfmpegWarning } from './lib/ffmpeg-notice.js';
+import { readEngineWarning } from './lib/engine-notice.js';
 import { useAppStore as _appStoreForFfmpeg } from './stores/appStore.js';
 {
   const api = (window as Window & { electronAPI?: { invoke(c: string, ...a: unknown[]): Promise<unknown> } }).electronAPI;
   if (api) {
+    const invoke = (channel: string, ...args: unknown[]): Promise<unknown> => api.invoke(channel, ...args);
+    const say = (warning: string | null): void => {
+      if (warning !== null) _appStoreForFfmpeg.getState().notify(warning, 'warning');
+    };
     setTimeout(() => {
-      void readFfmpegWarning((channel, ...args) => api.invoke(channel, ...args))
-        .then((warning) => { if (warning !== null) _appStoreForFfmpeg.getState().notify(warning, 'warning'); })
-        .catch(() => { /* an older main, or not Electron */ });
+      void readFfmpegWarning(invoke).then(say).catch(() => { /* an older main, or not Electron */ });
+      // The engine's half of the same question.  Later than ffmpeg's because
+      // asking spawns the engine (about four seconds) and the first thing a
+      // user does is pick a file, not read a toast.
+      void readEngineWarning(invoke).then(say).catch(() => { /* ditto */ });
     }, 2500);
   }
 }

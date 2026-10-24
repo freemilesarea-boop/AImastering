@@ -4,6 +4,22 @@ Conflict Engine for Audio Profile Engine P0.
 Implements 24 conflict rules from design.
 Conflicts affect DSP Eligibility and allowed actions,
 NOT Profile State itself.
+
+Each rule reads its features through `f.get(name, default)`, and a feature the
+analyzer does not produce therefore reads as its default.  Measured against a
+real `extract_canonical_features` dict, three of the 24 rules do exactly that:
+
+    DYN_001   BLOCK        compression_density   never produced
+    DYN_002   WARN         envelope_smoothness   never produced
+    SPEC_004  CONDITIONAL  hf_ratio_variance     never produced
+
+Every default in this table sits on the non-firing side of its own comparison
+(checked, all 24), so those three rules have never fired and never can — and
+nothing said so.  `evaluate_all` now records which features each rule actually
+read, through a probe that the rule's own lambda drives, and reports the ones
+it could not evaluate.  Their `triggered` stays False, which is what the
+defaults already produced, so no verdict changes; what changes is that the
+difference between "measured and fine" and "never looked" is now in the report.
 """
 
 from dataclasses import dataclass, field
@@ -11,6 +27,40 @@ from typing import Dict, List, Optional, Any, Callable
 
 from .constants import ConflictSeverity
 from .feature_input import FeatureSet
+
+
+_MISSING = object()
+
+
+class _FeatureProbe:
+    """A `FeatureSet` stand-in that records what a rule asked for.
+
+    `evaluate_all` used to answer "which features did this rule use?" by
+    searching the rule's CONDITION STRING against a hand-kept list of 25
+    feature names — a third copy of information that already existed twice (in
+    the string and in the lambda), and one that goes stale silently.  Letting
+    the lambda itself do the asking removes the copy: whatever it reads is
+    recorded, and a feature the track lacks is recorded as missing instead of
+    quietly becoming the default.
+
+    A feature present but None counts as missing — `ms_ratio_db` and
+    `stereo_correlation` are None for a mono file, and a rule about the stereo
+    image has nothing to say about one.
+    """
+
+    def __init__(self, features: FeatureSet):
+        self._features = features
+        self.read: Dict[str, Any] = {}
+        self.missing: List[str] = []
+
+    def get(self, name: str, default: Any = None) -> Any:
+        value = self._features.get(name, _MISSING)
+        if value is _MISSING or value is None:
+            if name not in self.missing:
+                self.missing.append(name)
+            return default
+        self.read[name] = value
+        return value
 
 
 @dataclass
@@ -26,6 +76,10 @@ class ConflictResult:
     resolution: str
     blocked_actions: List[str] = field(default_factory=list)
     feature_values: Dict[str, Any] = field(default_factory=dict)
+    # Features the rule asked for and the track did not have.  Non-empty means
+    # the verdict below came from defaults, not from this track.
+    missing_features: List[str] = field(default_factory=list)
+    evaluable: bool = True
 
 
 @dataclass
@@ -39,6 +93,9 @@ class ConflictReport:
     results: List[ConflictResult]
     blocked_actions: List[str]
     conditional_profiles: List[str]
+    # Rule ids whose features this track does not carry.  An empty list is the
+    # claim that all 24 rules were measured against this track.
+    unevaluable_rules: List[str] = field(default_factory=list)
 
 
 class ConflictEngine:
@@ -411,16 +468,15 @@ class ConflictEngine:
         results = []
         blocked_actions = set()
         conditional_profiles = set()
+        unevaluable = []
 
         for rule in self._rules:
-            triggered = rule["check"](features)
-
-            # Collect feature values used in this rule
-            feature_values = {}
-            for feat in self._extract_features_from_condition(rule["condition"]):
-                val = features.get(feat)
-                if val is not None:
-                    feature_values[feat] = val
+            # The rule's own lambda drives the probe, so what is recorded is
+            # what the rule read — not a second reading of the condition
+            # string, which is how `_extract_features_from_condition` used to
+            # answer this and why it needed its own hand-kept list of names.
+            probe = _FeatureProbe(features)
+            triggered = rule["check"](probe)
 
             result = ConflictResult(
                 rule_id=rule["id"],
@@ -432,9 +488,13 @@ class ConflictEngine:
                 message=rule["message"] if triggered else "",
                 resolution=rule["resolution"] if triggered else "",
                 blocked_actions=rule["blocked_actions"] if triggered else [],
-                feature_values=feature_values,
+                feature_values=dict(probe.read),
+                missing_features=list(probe.missing),
+                evaluable=not probe.missing,
             )
             results.append(result)
+            if probe.missing:
+                unevaluable.append(rule["id"])
 
             if triggered:
                 blocked_actions.update(rule["blocked_actions"])
@@ -456,22 +516,30 @@ class ConflictEngine:
             results=results,
             blocked_actions=list(blocked_actions),
             conditional_profiles=list(conditional_profiles),
+            unevaluable_rules=unevaluable,
         )
 
-    def _extract_features_from_condition(self, condition: str) -> List[str]:
-        """Extract feature names from a condition string."""
-        # Simple extraction - look for known feature patterns
-        known_features = [
-            "input_i", "input_tp", "input_lra", "crest_factor_db",
-            "compression_density", "envelope_smoothness", "spectral_centroid",
-            "band_ratio_2-4kHz", "band_ratio_20-60Hz", "band_ratio_60-120Hz",
-            "band_ratio_250-500Hz", "band_ratio_500-1000Hz", "band_ratio_1-2kHz",
-            "band_ratio_6-8kHz", "spectral_contrast_band_4", "spectral_contrast_band_1",
-            "hf_ratio_variance", "stereo_width", "stereo_correlation",
-            "ms_ratio_db", "lr_balance_db", "spectral_flux_normalized_mean",
-            "onset_density", "envelope_range_normalized", "spectral_flatness",
-        ]
-        return [f for f in known_features if f in condition]
+    def rule_feature_names(self, rule_id: str) -> List[str]:
+        """The features a rule can ask for, read off its own lambda.
+
+        Static, unlike the probe in `evaluate_all`: `and` short-circuits, so a
+        rule whose first comparison is False never asks for its second feature
+        and the probe never learns the name.  That is right for "what did this
+        rule read about THIS track" and wrong for "can this rule be evaluated
+        at all" — DYN_001's `compression_density` is produced by nothing and
+        hid behind a False `crest_factor_db < 8.0`.
+
+        The names are the lambda's string constants, which is the lambda
+        itself, not a transcription of it.
+        """
+        rule = self.get_rule_by_id(rule_id)
+        if rule is None:
+            return []
+        return [c for c in rule["check"].__code__.co_consts if isinstance(c, str)]
+
+    def all_rule_feature_names(self) -> Dict[str, List[str]]:
+        """`rule_feature_names` for every rule, by id."""
+        return {r["id"]: self.rule_feature_names(r["id"]) for r in self._rules}
 
     def get_rule_by_id(self, rule_id: str) -> Optional[Dict]:
         """Get a specific rule by ID."""

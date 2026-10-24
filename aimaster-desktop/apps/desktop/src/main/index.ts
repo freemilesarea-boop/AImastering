@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, protocol, screen } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import { Readable } from 'node:stream';
@@ -22,12 +22,21 @@ import { parseRangeHeader, contentTypeForPath } from './utils/localFileResponse.
 import { applyBundledFfmpegEnv } from './utils/ffmpegEnv.js';
 import { devServerUrl } from './utils/devServerUrl.js';
 
-// ── License gate REMOVED (v3.6.0-rc.1+1) ─────────────────────────────────────
-// The previous LICENSE_HMAC_SECRET startup gate has been removed for the
-// internal RC test cycle.  License-key activation is not used in this build,
-// so requiring a production secret was blocking testers without giving the
-// app any real protection.  License IPC handlers / UI are also disabled —
-// see preload/index.ts and renderer/App.tsx.
+// ── The licence secret is not a startup gate ─────────────────────────────────
+// `assertLicenseSecretReady()` would throw on a build with no injected
+// LICENSE_HMAC_SECRET.  Nothing calls it: a missing secret weakens the local
+// tamper check on a stored record, but the server is what actually decides a
+// licence, so refusing to start would trade a weak check for a dead app.  The
+// packaged-build case is logged instead — see the `isLicenseSecretProductionReady`
+// branch further down, which is the whole of the startup handling.
+//
+// The two sentences that used to be here said the IPC handlers and the UI were
+// disabled as well, and pointed at preload/index.ts and renderer/App.tsx for
+// proof.  Both say the opposite: all seven licence channels are bridged, this
+// file registers their handlers, and App.tsx mounts the dialog.  What makes
+// them dormant is `LICENSE_ENFORCED`, one constant in shared-types, which the
+// dialog checks before it can open and `canProcess` checks before it can
+// refuse — see license-free-selftest and license-core-selftest.
 
 const isDev = !app.isPackaged;
 
@@ -53,9 +62,26 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 function createWindow(): void {
+  // How big the window opens.
+  //
+  // It opened 1100 × 740 — the size a utility opens at, not a DAW.  The Edit
+  // window spends about 218 px on chrome (title bar, two toolbars, the ruler
+  // and the horizontal scroll), so 740 px of window leaves ~497 px of track
+  // scroller: seventeen lanes at the 28 px floor, and the twentieth is out of
+  // reach however small the lanes get.  820 px of window is where twenty fit
+  // (560 px of lanes + the chrome), and a desktop that has the room should
+  // not have to be told twice.
+  //
+  // Clamped to the display's WORK AREA, not its size: a maximised-looking
+  // window that sits under the dock is worse than a smaller one, and a
+  // 1366 × 768 laptop must still get a window that fits on it.
+  const work = screen.getPrimaryDisplay().workAreaSize;
+  const width = Math.max(1100, Math.min(1600, work.width - 80));
+  const height = Math.max(740, Math.min(1000, work.height - 60));
+
   mainWindow = new BrowserWindow({
-    width: 1100,
-    height: 740,
+    width,
+    height,
     minWidth: 900,
     minHeight: 620,
     titleBarStyle: 'hiddenInset',
@@ -283,7 +309,6 @@ app.whenReady().then(() => {
   }
 
   ipcMain.handle('system:ffmpeg-status', () => ffmpeg);
-
   // ── Worklet/WASM asset reader (packaged file:// + asar safe) ───────────
   // Chromium's fetch()/audioWorklet.addModule() of file:// resources inside
   // app.asar is unreliable/blocked.  The main process reads these assets via

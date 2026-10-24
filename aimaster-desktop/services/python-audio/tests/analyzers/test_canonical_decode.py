@@ -10,6 +10,7 @@ removes that: one rate, one decoder, one resampler, all recorded.
 Only synthetic fixtures are used. No commercial or AI corpus audio is touched.
 """
 from __future__ import annotations
+from tests.conftest import ffmpeg_bin
 
 import os
 import subprocess
@@ -382,7 +383,7 @@ def test_t13_missing_audio_stream_fails(tmp_path, flac_with_cover):
 
     video_only = tmp_path / "cover_only.mkv"
     subprocess.run(
-        ["ffmpeg", "-y", "-i", flac_with_cover, "-map", "0:v", "-c", "copy",
+        [ffmpeg_bin(), "-y", "-i", flac_with_cover, "-map", "0:v", "-c", "copy",
          str(video_only)],
         check=True, capture_output=True,
     )

@@ -25,10 +25,12 @@ src/main/utils/supportBundle.ts::resetPipelineWarningsForTests
 src/renderer/audio/decode-context.ts::resetDecodeContext
 src/renderer/audio/engine-bridge/export-parameter-adapter.ts::exportSupportMatrix
 src/renderer/audio/engine-bridge/export-parameter-adapter.ts::summarizeChangedExport
+src/renderer/audio/engine-bridge/pending-summary.ts::summarizePending
 src/renderer/audio/masteringModes.ts::processMasteringWithMode
 src/renderer/audio/modules/eq-graph-model.ts::GRAPH_EQ_MODULES
 src/renderer/audio/modules/gr-meter-model.ts::decayPeak
 src/renderer/audio/modules/gr-meter-model.ts::describeGr
+src/renderer/audio/modules/loui-module-suite.ts::CHAIN_MODULE_IDS
 src/renderer/audio/modules/loui-module-suite.ts::activeModules
 src/renderer/audio/modules/module-support-matrix.ts::validateAllModules
 src/renderer/audio/parameters/parameter-glossary.ts::GLOSSARY_KEYS
@@ -237,7 +239,6 @@ src/renderer/daw/model/track-header.ts::colorTracks
 src/renderer/daw/model/track-header.ts::nextTrackColor
 src/renderer/daw/model/track-header.ts::noteSummary
 src/renderer/daw/model/track-header.ts::tracksWithNotes
-src/renderer/daw/model/video.ts::frameAt
 src/renderer/daw/model/video.ts::timelineTimeAt
 src/renderer/daw/model/warp.ts::clearMarkers
 src/renderer/daw/model/warp.ts::clipSourceSpan

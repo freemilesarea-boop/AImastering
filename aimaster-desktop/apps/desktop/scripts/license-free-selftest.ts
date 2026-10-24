@@ -48,11 +48,23 @@ check('nothing is counted and nothing is refused while it is off', () => {
 
 check('canProcess answers paid, because that is what opens the export gates', () => {
   // The main process asks exactly this and nothing else — see licensePaid().
+  //
+  // The answer itself moved out of the method and into `openGate()`, so that
+  // the trial arithmetic that used to sit beside it could be given its two
+  // facts as arguments and actually be RUN — see license-core-selftest, which
+  // calls it.  This check follows the answer rather than grepping where it
+  // used to be; the earlier version read the method body only and passed on
+  // any `isPaid: true` it found there.
   const at = core.indexOf('\n  canProcess():');
   assert(at >= 0, 'canProcess is there');
   const body = core.slice(at, at + 400);
-  assert(/isPaid: true/.test(body), 'the free answer is a paid answer');
-  assert(/remaining: Infinity/.test(body), 'with no runs left to count down');
+  assert(/if \(!LICENSE_ENFORCED\) return openGate\(\);/.test(body),
+    'the unlicensed build no longer answers with the open gate');
+  const gateAt = core.indexOf('function openGate()');
+  assert(gateAt >= 0, 'openGate is there');
+  const gate = core.slice(gateAt, gateAt + 400);
+  assert(/isPaid: true/.test(gate), 'the free answer is a paid answer');
+  assert(/remaining: Infinity/.test(gate), 'with no runs left to count down');
 });
 
 /** Source with comments removed, so a check reads code and not prose. */

@@ -5,11 +5,13 @@
 // See README.md for why this exists and what it deliberately does not do.
 
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
 
 const PORT = process.argv[2] ?? '9333';
 const WORK = process.argv[3] ?? '/tmp/smoke';
+const FF = process.env.AIMASTER_FFMPEG ?? 'ffmpeg';
 const SR = 48_000;
 
 let step = 0;
@@ -112,6 +114,21 @@ console.log(`\napp-smoke: the mastering flow, end to end\n  source  ${src}\n`);
 
 const browser = await chromium.connectOverCDP(`http://localhost:${PORT}`);
 const page = browser.contexts()[0].pages().find((p) => !p.url().startsWith('devtools://'));
+
+// Everything the renderer threw or logged as an error, from here on.
+//
+// The flow below drove the whole mastering path and nobody was listening: a
+// React error inside a panel, a failed dynamic import, an unhandled
+// rejection — all of it was invisible, because every step asserts its own
+// result and none of them asks what else happened.  Collected from before
+// the first interaction so the last step can account for all of it.
+const rendererErrors = [];
+if (page) {
+  page.on('pageerror', (e) => rendererErrors.push({ kind: 'pageerror', text: String(e?.message ?? e) }));
+  page.on('console', (m) => {
+    if (m.type() === 'error') rendererErrors.push({ kind: 'console', text: m.text() });
+  });
+}
 
 try {
   // 1 — the app is up and the bridge is there.
@@ -378,6 +395,902 @@ try {
     held.bad.length === 0
       ? `${held.checked} numeric controls, all reachable`
       : `${held.bad.length} of ${held.checked}: ${held.bad.slice(0, 4).join('; ')}`,
+  );
+  // 13 — the worklet assets the preview needs are actually servable.
+  //
+  //      Packaged Electron loads the renderer from file:// inside app.asar,
+  //      where fetching a relative asset is unreliable — so the main process
+  //      reads these with Node fs (which understands asar) and hands the
+  //      bytes over IPC.  That path has three parties: the renderer asks by
+  //      name, `loui:read-worklet-asset` allow-lists the name, and the build
+  //      has to have put the file in dist/renderer.  Nothing checked that
+  //      they agree, and a disagreement is invisible until the packaged app
+  //      tries to start its preview engine — which is the same shape as the
+  //      bug this whole directory exists for.
+  //
+  //      `preview-worklet-selftest` proves the wasm WORKS; this proves it
+  //      can be DELIVERED.  Asked through the real bridge, in the real app.
+  const assets = await page.evaluate(async () => {
+    const names = [
+      'loui-mastering-wasm.nomodules.wasm',
+      'loui-mastering-wasm.nomodules.js',
+      'mastering-chain.worklet.js',
+      'analyzer-tap.worklet.js',
+    ];
+    const bridge = window.louiAssets;
+    if (!bridge || typeof bridge.read !== 'function') {
+      return { bridge: false, rows: [] };
+    }
+    const rows = [];
+    for (const name of names) {
+      try {
+        const p = await bridge.read(name);
+        rows.push({ name, ok: p.size > 0, kind: p.kind, size: p.size });
+      } catch (e) {
+        rows.push({ name, ok: false, kind: 'error', size: 0, e: String(e?.message ?? e) });
+      }
+    }
+    return { bridge: true, rows };
+  });
+  if (!assets.bridge) {
+    skip('every worklet asset the preview needs is servable', 'the louiAssets preload bridge');
+  } else {
+    const bad = assets.rows.filter((r) => !r.ok);
+    expect(
+      bad.length === 0 && assets.rows.length === 4,
+      'every worklet asset the preview needs is servable',
+      bad.length === 0
+        ? assets.rows.map((r) => `${r.name.replace('loui-mastering-wasm.', '')} ${Math.round(r.size / 1024)}KB`).join(', ')
+        : bad.map((r) => `${r.name}: ${r.e ?? r.kind}`).join('; '),
+    );
+  }
+  // ── Every page the app can route to actually mounts ───────────────────
+  //
+  // The flow above never leaves home, and the headless suite tests DAW,
+  // mixer and arrangement MODELS — a `DawPage` that throws on mount would
+  // leave all of it green and the feature dead.  So each route is visited
+  // for real, through the store the app routes with.
+  //
+  // Three of the eight require data and bounce to home without it; by this
+  // point the flow has queued and rendered a file, so they should mount.
+  // The step records where each one landed rather than assuming.
+  const ROUTES = ['home', 'mastering', 'result', 'tweak', 'studio', 'qc', 'daw', 'settings'];
+  const visits = [];
+  for (const route of ROUTES) {
+    const before = rendererErrors.length;
+    let landed;
+    try {
+      landed = await page.evaluate(async (r) => {
+        const m = await import('/stores/appStore.ts');
+        m.useAppStore.getState().setPage(r);
+        await new Promise((res) => setTimeout(res, 450));
+        const root = document.getElementById('root');
+        return {
+          page: m.useAppStore.getState().currentPage,
+          nodes: root ? root.querySelectorAll('*').length : -1,
+        };
+      }, route);
+    } catch (e) {
+      landed = { page: '(threw)', nodes: -1, e: String(e?.message ?? e) };
+    }
+    visits.push({ route, ...landed, errors: rendererErrors.length - before });
+  }
+  const emptyPage = visits.filter((v) => v.nodes < 10);
+  const threw = visits.filter((v) => v.page === '(threw)' || v.errors > 0);
+  expect(
+    emptyPage.length === 0 && threw.length === 0,
+    'every page the app can route to mounts something',
+    emptyPage.length === 0 && threw.length === 0
+      ? visits.map((v) => `${v.route}${v.page === v.route ? '' : `→${v.page}`} ${v.nodes}`).join(', ')
+      : [...emptyPage, ...threw].map((v) => `${v.route}: landed ${v.page}, ${v.nodes} nodes, ${v.errors} error(s)${v.e ? ` — ${v.e}` : ''}`).join('; '),
+  );
+
+  // ── The DAW, driven rather than merely mounted ────────────────────────
+  //
+  // The step above proves `DawPage` renders.  These drive it: the headless
+  // suite has eighty-odd tests over the DAW's MODELS, and not one of them
+  // can tell whether the transport clock is actually wired to anything.
+  //
+  // The rate is sampled IN FLIGHT — two readings while already playing —
+  // and the reason is a measurement that went wrong first.  Sampling from
+  // before `play()` gave 1.502 s of wall clock for 1.401 s of playhead, a
+  // ratio of 0.933, which reads as a 7%-slow clock; the missing 0.101 s was
+  // the rAF loop starting.  In flight it measures 0.9962–0.9997 over four
+  // runs, so the band below is wide enough for a loaded machine and still
+  // catches a clock that does not move (0) or runs away (2).
+  const daw = await page.evaluate(async () => {
+    const app = await import('/stores/appStore.ts');
+    app.useAppStore.getState().setPage('daw');
+    await new Promise((r) => setTimeout(r, 600));
+    const m = await import('/stores/dawStore.ts');
+    const S = () => m.useDawStore.getState();
+
+    const tracksAtOpen = S().session.tracks?.length ?? -1;
+
+    // An edit, and the undo that takes it back.
+    S().addTrackHere('audio');
+    await new Promise((r) => setTimeout(r, 150));
+    const afterAdd = S().session.tracks?.length ?? -1;
+    const canUndo = S().canUndo();
+    S().undo();
+    await new Promise((r) => setTimeout(r, 150));
+    const afterUndo = S().session.tracks?.length ?? -1;
+
+    // The clock.
+    S().stop(); S().seek(0);
+    S().play();
+    await new Promise((r) => setTimeout(r, 400));
+    const w0 = performance.now(), h0 = S().playheadSec;
+    await new Promise((r) => setTimeout(r, 1200));
+    const w1 = performance.now(), h1 = S().playheadSec;
+    const playing = S().isPlaying;
+    S().stop();
+    await new Promise((r) => setTimeout(r, 400));
+    const stoppedAt = S().playheadSec, stillPlaying = S().isPlaying;
+    const rate = (h1 - h0) / ((w1 - w0) / 1000);
+
+    // The loop, entered from just inside its end so a wrap has to happen.
+    const LOOP_FROM = 1.0, LOOP_TO = 2.0;
+    S().seek(0);
+    S().setLoop(LOOP_FROM, LOOP_TO);
+    if (!S().loopEnabled) S().toggleLoop();
+    S().seek(LOOP_TO - 0.2);
+    S().play();
+    const samples = [];
+    for (let i = 0; i < 14; i++) {
+      await new Promise((r) => setTimeout(r, 120));
+      samples.push(S().playheadSec);
+    }
+    S().stop();
+    if (S().loopEnabled) S().toggleLoop();
+
+    return { tracksAtOpen, afterAdd, canUndo, afterUndo,
+             rate, playing, stoppedAt, stillPlaying, h1,
+             loop: { from: LOOP_FROM, to: LOOP_TO, samples } };
+  });
+
+  expect(
+    daw.tracksAtOpen >= 1 && daw.afterAdd === daw.tracksAtOpen + 1
+      && daw.canUndo === true && daw.afterUndo === daw.tracksAtOpen,
+    'the DAW takes an edit and gives it back',
+    `${daw.tracksAtOpen} track(s) at open → ${daw.afterAdd} after add → ${daw.afterUndo} after undo`,
+  );
+
+  expect(
+    daw.playing === true && daw.rate > 0.9 && daw.rate < 1.1,
+    'the playhead runs at real time while playing',
+    `${daw.rate.toFixed(4)} playhead-seconds per wall second, sampled in flight`,
+  );
+
+  expect(
+    daw.stillPlaying === false && Math.abs(daw.stoppedAt - daw.h1) < 0.05,
+    'and stop freezes it where it was',
+    `isPlaying ${daw.stillPlaying}, playhead ${daw.h1.toFixed(3)} → ${daw.stoppedAt.toFixed(3)} over 400 ms`,
+  );
+
+  {
+    // A wrap must happen, every sample must stay inside the loop (plus one
+    // sampling interval of slop at the top), and the landing carries the
+    // remainder rather than snapping to the start — measured 1.921 → 1.059,
+    // which is the loop end plus the overshoot, not the loop start.
+    const { from, to, samples } = daw.loop;
+    const wraps = samples.filter((v, i) => i > 0 && v < samples[i - 1] - 0.3).length;
+    const outside = samples.filter((v) => v < from - 0.02 || v > to + 0.2);
+    const landings = samples.filter((v, i) => i > 0 && v < samples[i - 1] - 0.3);
+    const snapped = landings.filter((v) => Math.abs(v - from) < 0.005);
+    expect(
+      wraps >= 1 && outside.length === 0 && snapped.length === 0,
+      'a loop keeps the playhead inside it, carrying the remainder',
+      `${wraps} wrap(s) in [${from}, ${to}], range ${Math.min(...samples).toFixed(3)}–${Math.max(...samples).toFixed(3)}`
+      + (outside.length ? `, OUTSIDE: ${outside.map((v) => v.toFixed(3)).join(', ')}` : '')
+      + (snapped.length ? `, snapped to start: ${snapped.map((v) => v.toFixed(3)).join(', ')}` : ''),
+    );
+  }
+
+  // ── The decoded-audio store, with ffmpeg and a real disk ──────────────
+  //
+  // `daw:pcm-source` decodes a source once and keeps the samples on disk
+  // under a 12 GB cap.  The sweep that enforces the cap counted `*.f32` only,
+  // so a `.part` file left by a killed decode — up to ~4 GB for a file at the
+  // handler's three-hour ceiling — was counted by nothing and deleted by
+  // nothing.  Driven here rather than only in a temp directory, because the
+  // store's directory, its ffmpeg and its sweep all live in the main process.
+  {
+    const decode = async (rate) => page.evaluate(async ([w, r]) => {
+      try { return { ok: true, r: await window.electronAPI.invoke('daw:pcm-source', { path: w, sampleRate: r }) }; }
+      catch (e) { return { ok: false, e: String(e?.message ?? e) }; }
+    }, [src, rate]);
+
+    const first = await decode(48000);
+    const info = first.r ?? {};
+    const sizeOk = first.ok && typeof info.pcmPath === 'string' && fs.existsSync(info.pcmPath)
+      && fs.statSync(info.pcmPath).size === info.frames * info.channels * 4;
+    expect(
+      sizeOk && Array.isArray(info.peaks) && info.peaks.length > 0,
+      'ffmpeg decodes a source into the store, and the file size IS the frame count',
+      first.ok
+        ? `${info.frames} frames x ${info.channels}ch, ${(fs.statSync(info.pcmPath).size / 1e6).toFixed(2)} MB, `
+          + `${info.peaks?.length} peaks`
+        : first.e.slice(0, 140),
+    );
+
+    if (sizeOk) {
+      const dir = path.dirname(info.pcmPath);
+      const key = path.basename(info.pcmPath).replace(/\.f32$/, '');
+      expect(
+        fs.existsSync(path.join(dir, `${key}.json`)),
+        'and writes the sidecar the next session reads instead of decoding again',
+        `${key.slice(0, 10)}….json beside ${key.slice(0, 10)}….f32`,
+      );
+
+      // A decode that died: ffmpeg had written most of the file and nothing
+      // ever came back to remove it.  Aged two hours so the sweep can tell it
+      // from one being written right now.
+      const orphan = path.join(dir, `${'f'.repeat(40)}.11111111-2222-3333-4444-555555555555.part`);
+      fs.writeFileSync(orphan, Buffer.alloc(3 * 1024 * 1024));
+      const old = (Date.now() - 2 * 60 * 60 * 1000) / 1000;
+      fs.utimesSync(orphan, old, old);
+
+      // A different rate is a different store, so this one misses the cache
+      // and the sweep runs for real.
+      const second = await decode(44100);
+      expect(
+        second.ok && !fs.existsSync(orphan),
+        'and the next decode sweeps out a part-file no request could ever use',
+        second.ok
+          ? (fs.existsSync(orphan) ? 'the orphan is STILL THERE' : 'orphan gone, 3 MB reclaimed')
+          : second.e.slice(0, 140),
+      );
+      // Leave the profile as it was found.
+      for (const n of fs.readdirSync(dir)) {
+        if (n.startsWith(key) || n.startsWith(path.basename(String(second.r?.pcmPath ?? '')).slice(0, 40))) {
+          try { fs.rmSync(path.join(dir, n), { force: true }); } catch { /* fine */ }
+        }
+      }
+    } else {
+      bad('and writes the sidecar the next session reads instead of decoding again', 'no store');
+      bad('and the next decode sweeps out a part-file no request could ever use', 'no store');
+    }
+  }
+
+  // ── Crash recovery, end to end ────────────────────────────────────────
+  //
+  // The app writes an autosave, keeps the one before it as a `.bak`, and
+  // offers them back at startup.  Nothing had ever driven that chain: the
+  // decision model was tested with hand-made records, and the main process's
+  // half — the atomic write, the kept generation, the listing — could not be
+  // imported outside Electron at all.  So the `.bak` was written, swept after
+  // thirty days and deleted on a clean save while `autosave:list` filtered
+  // `*.louisession`, which excludes it, and no code path could reach it.
+  //
+  // Both writes here go through the real IPC handler, so the previous
+  // generation this reads back is one the app made, not one the test planted.
+  {
+    const sessionJson = (name) => JSON.stringify({
+      version: 3, id: 'smoke-recovery', name,
+      sampleRate: 48000, tempoBpm: 120, timeSignature: [4, 4],
+      files: [], tracks: [], padding: 'x'.repeat(2000),
+    }, null, 2);
+
+    const written = await page.evaluate(async ([first, second]) => {
+      const api = window.electronAPI;
+      const a = await api.invoke('autosave:write', { id: 'smoke-recovery', data: first });
+      // A distinct second write is what produces the backup: the handler
+      // copies the current target aside before the new bytes land.
+      const b = await api.invoke('autosave:write', { id: 'smoke-recovery', data: second });
+      const list = await api.invoke('autosave:list');
+      return { a, b, list };
+    }, [sessionJson('스모크 복구 — 먼저'), sessionJson('스모크 복구 — 나중')]);
+
+    const mine = (written.list ?? []).filter((r) => String(r.path ?? '').includes('smoke-recovery'));
+    const latest = mine.find((r) => r.generation === 'latest');
+    const previous = mine.find((r) => r.generation === 'previous');
+    expect(
+      latest !== undefined && previous !== undefined
+        && previous.path === `${latest.path}.bak`
+        && latest.sessionName === '스모크 복구 — 나중'
+        && previous.sessionName === '스모크 복구 — 먼저'
+        && latest.savedAtMs >= previous.savedAtMs,
+      'the app keeps the autosave before last, and the listing hands back both',
+      mine.map((r) => `${r.generation}:${r.sessionName}`).join(' | ')
+      + (latest && previous ? `, latest leads by ${(latest.savedAtMs - previous.savedAtMs).toFixed(0)} ms` : ''),
+    );
+
+    // Now the prompt itself, after a reload — it scans once, on mount.
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(2500);
+    const prompt = await page.evaluate(async () => {
+      const m = await import('/stores/appStore.ts');
+      m.useAppStore.getState().setPage('daw');
+      await new Promise((res) => setTimeout(res, 900));
+      const text = document.body.innerText ?? '';
+      const banner = text.includes('복구할 세션이 있습니다');
+      const buttons = Array.from(document.querySelectorAll('button')).map((b) => b.innerText.trim());
+      return { banner, previousControl: buttons.find((t) => t.startsWith('그 전 ·')) ?? null, buttons: buttons.slice(0, 40) };
+    });
+    expect(
+      prompt.banner && prompt.previousControl !== null,
+      'and the restore prompt offers the previous copy as a second choice',
+      prompt.banner
+        ? `banner up, "${prompt.previousControl ?? 'NO PREVIOUS CONTROL'}"`
+        : 'no recovery banner at all',
+    );
+
+    // Leave the profile as it was found, so a second run of this flow is not
+    // greeted by the first run's leftovers.
+    await page.evaluate(async () => {
+      await window.electronAPI.invoke('autosave:clear', 'smoke-recovery');
+    });
+  }
+
+  // ── What the engine noticed about the file ────────────────────────────
+  // `analyze` has always returned `warnings` — Korean, written for the user —
+  // and shared-types did not declare the field, so no renderer code could
+  // read it and none did.  Measured on a mono 22.05 kHz wav: three warnings
+  // crossed the IPC boundary and the user was told none of them.
+  //
+  // Driven through the real engine here, because the warnings are the engine's
+  // judgement about the file and a stub would only prove the markup renders.
+  {
+    const mono = path.join(WORK, 'media', 'mono-22k.wav');
+    fs.writeFileSync(mono, Buffer.alloc(0));
+    const built = spawnSync(FF, ['-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
+      '-ar', '22050', '-ac', '1', '-acodec', 'pcm_s16le', mono], { encoding: 'utf8' });
+
+    const shown = await page.evaluate(async (monoPath) => {
+      const api = window.electronAPI;
+      const analysis = await api.invoke('audio:analyze', monoPath);
+      const store = await import('/stores/audioStore.ts');
+      const app = await import('/stores/appStore.ts');
+      app.useAppStore.getState().setPage('home');
+      store.useAudioStore.getState().clearQueue();
+      store.useAudioStore.getState().addFilesToQueue([monoPath]);
+      const id = store.useAudioStore.getState().queue[0]?.id;
+      store.useAudioStore.getState().updateQueueItem(id, { analysis });
+      await new Promise((r) => setTimeout(r, 400));
+      const list = document.querySelector('[data-testid="analysis-warnings"]');
+      const text = list ? list.innerText.trim() : '';
+      store.useAudioStore.getState().clearQueue();
+      return {
+        codes: (analysis.warnings ?? []).map((w) => w.code),
+        rendered: text,
+        lines: list ? list.querySelectorAll('li').length : 0,
+      };
+    }, mono);
+
+    expect(
+      built.status === 0 && shown.codes.includes('MONO_INPUT')
+        && shown.codes.includes('NON_STANDARD_SAMPLE_RATE'),
+      'the engine says what is wrong with a mono 22 kHz file',
+      built.status === 0 ? shown.codes.join(', ') : `could not build the file: ${built.stderr}`,
+    );
+    expect(
+      shown.lines === shown.codes.length && /22050|모노/.test(shown.rendered),
+      'and the queue row the file sits on says it to the user',
+      shown.lines > 0
+        ? `${shown.lines} line(s) on the row: "${shown.rendered.replace(/\n/g, ' / ').slice(0, 110)}"`
+        : 'nothing was rendered on the row',
+    );
+    fs.rmSync(mono, { force: true });
+  }
+
+  // ── A file the app cannot decode ──────────────────────────────────────
+  // The reason has to survive two hand-offs to be worth anything: main has to
+  // turn ffmpeg's English stderr into a sentence, and the renderer has to keep
+  // it.  Measured before this was fixed: main rejected with
+  // `ffmpeg exited 1: ... Invalid data found ...` and the renderer replaced it
+  // with "소스를 준비하지 못했습니다" — the same words for a file that is not
+  // audio, a file that has moved, and a disk with no room left.
+  //
+  // Through the real IPC with the real ffmpeg, because the classification runs
+  // in main and nothing in the renderer can stand in for it.
+  {
+    const bad = path.join(WORK, 'media', 'not-audio.wav');
+    fs.writeFileSync(bad, Buffer.from(Array.from({ length: 4096 }, (_, i) => (i * 37) % 256)));
+    const gone = path.join(WORK, 'media', '사라진 파일.wav');
+
+    const said = await page.evaluate(async ([badPath, gonePath]) => {
+      const ask = async (p) => {
+        try {
+          await window.electronAPI.invoke('daw:pcm-source', { path: p, sampleRate: 48000 });
+          return '(no error at all)';
+        } catch (e) { return String(e?.message ?? e); }
+      };
+      const store = await import('/daw/engine/audio-cache.ts');
+      store.clearAudioCache();
+      const report = await store.decodeForDisplay([{ id: 'smoke-bad', path: badPath }]);
+      const remembered = store.missingFiles().find((f) => f.id === 'smoke-bad');
+      return {
+        corrupt: await ask(badPath),
+        missing: await ask(gonePath),
+        reason: remembered?.reason ?? '(nothing was remembered)',
+        failed: report.failed.length,
+      };
+    }, [bad, gone]);
+
+    expect(
+      /손상|지원하지 않는/.test(said.corrupt) && !/ffmpeg exited/.test(said.corrupt),
+      'a file that is not audio comes back as a sentence, not as ffmpeg stderr',
+      said.corrupt.slice(0, 120),
+    );
+    expect(
+      /찾을 수 없습니다/.test(said.missing) && said.missing.includes('사라진 파일.wav')
+        && !/ENOENT|no such file/i.test(said.missing),
+      'and so does a file that is not there — naming it, before ffmpeg is involved',
+      said.missing.slice(0, 120),
+    );
+    expect(
+      said.failed === 1 && /손상|지원하지 않는/.test(said.reason),
+      'and the DAW remembers that reason against the track, not a placeholder',
+      `failed=${said.failed}, reason="${said.reason.slice(0, 90)}"`,
+    );
+    fs.rmSync(bad, { force: true });
+  }
+
+  // ── The licence, on the real store ────────────────────────────────────
+  // license-core-selftest drives the service against a Map.  This asks the
+  // running app, where the store is electron-store on disk and the machine id
+  // comes from the machine: `_readTrialUsed` calls `machineIdSync` OUTSIDE its
+  // try block, so a host that cannot produce an id rejects `license:status`
+  // rather than answering free, and the only place that shows up is here.
+  //
+  // `remaining` is Infinity, which CDP serialises as null — compared as a
+  // string so a missing value cannot read as a pass.
+  {
+    const lic = await page.evaluate(async () => {
+      const api = window.electronAPI;
+      const before = await api.invoke('license:status');
+      const gate = await api.invoke('license:can-process');
+      await api.invoke('license:decrement-trial');
+      const after = await api.invoke('license:status');
+      const remaining = await api.invoke('license:get-remaining');
+      return { before, gate: { ...gate, remaining: String(gate.remaining) }, after, remaining: String(remaining) };
+    });
+    expect(
+      lic.before?.tier === 'free' && lic.before?.trialUsed === 0 && lic.before?.trialMax === 3
+        && lic.before?.canSaveMasterWav === true,
+      'the app reads its own licence store and reports an honest free build',
+      JSON.stringify(lic.before),
+    );
+    expect(
+      lic.gate?.allowed === true && lic.gate?.isPaid === true && lic.gate?.remaining === 'Infinity'
+        && lic.remaining === 'Infinity' && lic.after?.trialUsed === 0,
+      'and a processing run is allowed without counting anything',
+      `gate=${JSON.stringify(lic.gate)}, trialUsed after a run=${String(lic.after?.trialUsed)}`,
+    );
+  }
+
+  // ── And nothing was thrown along the way ──────────────────────────────
+  // CDP delivers console events asynchronously, so a message logged by the
+  // last step can still be in flight when that step's promise settles.  The
+  // packaged flow measured it: with this wait removed and errors injected
+  // into the page, a `pageerror` from a setTimeout never arrived and the step
+  // read `clean`.
+  // ── The Home a release actually ships ─────────────────────────────────
+  //
+  // ── Eight tracks, and how many of them the window shows ────────────────
+  //
+  // The report: "7개 이상의 트랙을 올리면 7개부터는 UX 에서 짤려서 오디오 파형이
+  // 보이지 않는다".  It was not the waveform.  Four lanes above the tracks —
+  // sections, chords, picture, tempo — sit INSIDE the track scroller and took
+  // its first 190 px whether or not the session had anything to put in them,
+  // and 190 px is two lanes at 96.  Measured here at 1920×1080: six tracks
+  // fitted and the seventh was cut.
+  //
+  // So the window is forced to a real full-screen size — the Electron window
+  // this harness boots is 1100×715, which shows two and would have called the
+  // bug fixed at any point — eight stems are imported, and the lanes are
+  // counted against the scroller that actually holds them.
+  {
+    const cdp = await browser.contexts()[0].newCDPSession(page);
+    await cdp.send('Emulation.setDeviceMetricsOverride',
+      { width: 1920, height: 1080, deviceScaleFactor: 1, mobile: false });
+    await page.waitForTimeout(400);
+
+    const stems = Array.from({ length: 8 }, (_, i) =>
+      writeWav(path.join(WORK, 'media', `stem${i + 1}.wav`), 3 + i * 0.5, 0.2));
+
+    const seen = await page.evaluate(async (paths) => {
+      const app = await import('/stores/appStore.ts');
+      app.useAppStore.getState().setPage('daw');
+      await new Promise((r) => setTimeout(r, 700));
+      const daw = await import('/stores/dawStore.ts');
+      daw.useDawStore.getState().setWindow('edit');
+      // From a known session, not from whatever the last run left on disk:
+      // the app restores the previous session, and counting lanes in a
+      // session that already had nine of them is a check that passes for the
+      // wrong reason.
+      const ops = await import('/daw/model/session-ops.ts');
+      daw.useDawStore.getState().loadSession(ops.createSession('smoke-eight'));
+      await new Promise((r) => setTimeout(r, 300));
+      const si = await import('/daw/edit/session-import.ts');
+      const report = await si.importIntoSession(paths, [], 0);
+      await new Promise((r) => setTimeout(r, 1500));
+
+      const read = () => {
+        const divs = [...document.querySelectorAll('div')];
+        const sc = divs.find((d) => typeof d.className === 'string'
+          && d.className.includes('overflow-y-auto') && d.className.includes('flex-1'));
+        if (!sc) return null;
+        const box = sc.getBoundingClientRect();
+        // TRACK lanes only.  The global lanes draw canvases too, so counting
+        // every canvas in the column called the tempo lane a track — which is
+        // exactly the confusion this step exists to measure.
+        const lanes = [...sc.children[1].querySelectorAll(
+          'div.border-b.border-zinc-900 > canvas')]
+          .map((c) => c.getBoundingClientRect())
+          .filter((r) => r.height > 0);
+        // The two columns are two renderings of one list: every row that is
+        // built must start at the same y in both, or a header names a lane
+        // that is not beside it.
+        // In-flow children only.  The lane column also holds the playhead and
+        // the empty-session notice, both ABSOLUTE and neither a row — counting
+        // them made the two columns look one apart when they were not.
+        const inFlow = (el) => [...el.children]
+          .filter((c) => getComputedStyle(c).position !== 'absolute')
+          .map((c) => Math.round(c.getBoundingClientRect().top));
+        const heads = inFlow(sc.children[0]);
+        const rows = inFlow(sc.children[1]);
+        return {
+          scroller: Math.round(box.height),
+          scrollHeight: sc.scrollHeight,
+          fully: lanes.filter((r) => r.top >= box.top && r.bottom <= box.bottom).length,
+          aligned: heads.length === rows.length && heads.every((t, i) => t === rows[i]),
+          columns: `${heads.length} header rows / ${rows.length} lane rows`,
+        };
+      };
+
+      const before = read();
+      // FIT, by the button the user has — not by calling the store.
+      const fit = [...document.querySelectorAll('button')]
+        .find((b) => (b.getAttribute('title') ?? '').startsWith('세로 맞춤'));
+      fit?.click();
+      await new Promise((r) => setTimeout(r, 600));
+      const after = read();
+      return { tracks: report.audioTracks, failed: report.failed, before, after,
+               rows: daw.useDawStore.getState().session.tracks.length,
+               hasFit: Boolean(fit) };
+    }, stems);
+
+    expect(
+      seen.tracks === 8 && seen.failed.length === 0 && seen.rows === 9,
+      'eight stems import as eight tracks, in a session of nine rows',
+      `${seen.tracks} imported, ${seen.failed.length} refused, ${seen.rows} rows with the master`,
+    );
+    expect(
+      seen.before !== null && seen.before.fully >= 8,
+      'and at 1920×1080 the seventh and eighth are on screen, not below it',
+      seen.before
+        ? `${seen.before.fully} whole lanes in a ${seen.before.scroller} px scroller`
+        : 'no track scroller found',
+    );
+    expect(
+      seen.before !== null && seen.before.aligned,
+      'headers and lanes are still the same list, row for row',
+      seen.before ? seen.before.columns : '—',
+    );
+    expect(
+      seen.hasFit && seen.after !== null && seen.after.scrollHeight <= seen.after.scroller,
+      'and FIT puts every row inside the window, with nothing left to scroll',
+      seen.after
+        ? `${seen.after.fully} whole lanes, content ${seen.after.scrollHeight} px in ${seen.after.scroller} px`
+        : 'FIT button not found',
+    );
+
+    // ── and twenty of them ──────────────────────────────────────────────
+    //
+    // Twenty is what FIT aims for: below 28 px a lane is a stripe, and
+    // twenty of those need 560 px of scroller.  Three toolbars used to wrap
+    // onto second and third lines as the window narrowed — 284 px of chrome
+    // at 1280 px wide against 188 at 1920 — so the narrow windows were the
+    // ones that could show the fewest tracks.  They scroll sideways now.
+    const twenty = await page.evaluate(async (paths) => {
+      const si = await import('/daw/edit/session-import.ts');
+      const daw = await import('/stores/dawStore.ts');
+      await si.importIntoSession(paths, [], 0);
+      await new Promise((r) => setTimeout(r, 2000));
+      [...document.querySelectorAll('button')]
+        .find((b) => (b.getAttribute('title') ?? '').startsWith('세로 맞춤'))?.click();
+      await new Promise((r) => setTimeout(r, 800));
+      const divs = [...document.querySelectorAll('div')];
+      const sc = divs.find((d) => typeof d.className === 'string'
+        && d.className.includes('overflow-y-auto') && d.className.includes('flex-1'));
+      const box = sc.getBoundingClientRect();
+      const lanes = [...sc.children[1].querySelectorAll('div.border-b.border-zinc-900 > canvas')]
+        .map((c) => c.getBoundingClientRect()).filter((r) => r.height > 0);
+      return {
+        rows: daw.useDawStore.getState().session.tracks.length,
+        whole: lanes.filter((r) => r.top >= box.top && r.bottom <= box.bottom).length,
+        laneH: lanes.length ? Math.round(lanes[0].height) : 0,
+        scroller: Math.round(box.height),
+        chromeAbove: Math.round(box.top),
+      };
+    }, stems.concat(stems).slice(0, 12));
+
+    expect(
+      twenty.rows === 21,
+      'twelve more stems make a twenty-track session',
+      `${twenty.rows} rows with the master`,
+    );
+    expect(
+      twenty.whole >= 20,
+      'and FIT puts twenty of them on screen at once',
+      `${twenty.whole} whole lanes at ${twenty.laneH} px in a ${twenty.scroller} px scroller`,
+    );
+    expect(
+      twenty.chromeAbove <= 200,
+      'with the chrome above the tracks holding at one line each',
+      `${twenty.chromeAbove} px above the scroller`,
+    );
+
+    // The size that used to be worst.  At 1280 px wide the three toolbars
+    // wrapped onto second and third lines — 284 px of chrome against 188 at
+    // 1920 — and only seventeen lanes could be reached however small they
+    // got.  Measured here rather than at 1920, because at 1920 nothing
+    // wrapped and the check would pass with the wrapping put back.
+    await cdp.send('Emulation.setDeviceMetricsOverride',
+      { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+    await page.waitForTimeout(600);
+    const narrow = await page.evaluate(async () => {
+      [...document.querySelectorAll('button')]
+        .find((b) => (b.getAttribute('title') ?? '').startsWith('세로 맞춤'))?.click();
+      await new Promise((r) => setTimeout(r, 800));
+      const divs = [...document.querySelectorAll('div')];
+      const sc = divs.find((d) => typeof d.className === 'string'
+        && d.className.includes('overflow-y-auto') && d.className.includes('flex-1'));
+      const box = sc.getBoundingClientRect();
+      const lanes = [...sc.children[1].querySelectorAll('div.border-b.border-zinc-900 > canvas')]
+        .map((c) => c.getBoundingClientRect()).filter((r) => r.height > 0);
+      return {
+        chromeAbove: Math.round(box.top),
+        scroller: Math.round(box.height),
+        whole: lanes.filter((r) => r.top >= box.top && r.bottom <= box.bottom).length,
+        laneH: lanes.length ? Math.round(lanes[0].height) : 0,
+      };
+    });
+
+    expect(
+      narrow.chromeAbove <= 200,
+      'a 1280 px wide window spends no more chrome than a 1920 one',
+      `${narrow.chromeAbove} px above the scroller, ${narrow.scroller} px of scroller`,
+    );
+    expect(
+      narrow.whole >= 20,
+      'and twenty tracks still fit in it',
+      `${narrow.whole} whole lanes at ${narrow.laneH} px`,
+    );
+
+    await cdp.send('Emulation.clearDeviceMetricsOverride');
+  }
+
+  // ── 악기별 기본 체인, through the mixer strip ──────────────────────────
+  //
+  // The chains are data checked by `instrument-chains-selftest`; what this
+  // checks is the thing that data exists for — that picking "보컬" in the
+  // console puts six devices on the channel, in order, with the settings
+  // that were written rather than the defaults.  Through the strip's own
+  // <select>, because that is the control a beginner uses.
+  {
+    const chain = await page.evaluate(async () => {
+      const app = await import('/stores/appStore.ts');
+      app.useAppStore.getState().setPage('daw');
+      await new Promise((r) => setTimeout(r, 400));
+      const daw = await import('/stores/dawStore.ts');
+      const ops = await import('/daw/model/session-ops.ts');
+      const vox = ops.createTrack('Lead Vox', 'audio');
+      daw.useDawStore.getState().loadSession(ops.addTrack(ops.createSession('chains'), vox));
+      daw.useDawStore.getState().setWindow('mix');
+      await new Promise((r) => setTimeout(r, 900));
+
+      const pick = [...document.querySelectorAll('select')]
+        .find((el) => (el.getAttribute('title') ?? '').startsWith('악기를 고르면'));
+      if (!pick) return { error: '악기 체인 picker not in the mixer strip' };
+      // The option list is built on first interaction — a lazy <select>.
+      pick.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 200));
+      const options = [...pick.options].map((o) => o.value).filter(Boolean);
+      pick.value = 'vocal';
+      pick.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 600));
+
+      const chains = await import('/daw/model/instrument-chains.ts');
+      const wanted = chains.findInstrumentChain('vocal');
+      const track = ops.findTrack(daw.useDawStore.getState().session, vox.id);
+      const got = [...(track?.inserts ?? [])].sort((a, b) => a.slot - b.slot);
+      const wrong = [];
+      wanted.devices.forEach((device, i) => {
+        if (got[i]?.pluginId !== device.pluginId) {
+          wrong.push(`slot ${i}: ${got[i]?.pluginId ?? '(empty)'} ≠ ${device.pluginId}`);
+          return;
+        }
+        // Resolved the way the app resolves it: a device the instrument
+        // presets answer takes its settings from there, not from the chain.
+        for (const [id, value] of Object.entries(chains.chainDeviceParams(wanted, device))) {
+          if (got[i].params[id] !== value) wrong.push(`${device.pluginId}.${id}`);
+        }
+      });
+      return {
+        options: options.length,
+        order: got.map((i) => i.pluginId),
+        wanted: wanted.devices.map((d) => d.pluginId),
+        wrong,
+      };
+    });
+
+    expect(
+      !chain.error && chain.options === 12,
+      'the mixer strip offers twelve instrument chains',
+      chain.error ?? `${chain.options} options`,
+    );
+    expect(
+      !chain.error && chain.order.join('>') === chain.wanted.join('>'),
+      'and picking 보컬 builds the vocal chain in order',
+      chain.error ?? `${chain.order.join(' → ')}`,
+    );
+    expect(
+      !chain.error && chain.wrong.length === 0,
+      'with the settings the chain carries, not the devices\' defaults',
+      chain.error ?? (chain.wrong.length === 0 ? 'every value as written' : chain.wrong.slice(0, 4).join(', ')),
+    );
+  }
+
+  // ── 공간계는 센드로, through the same strip ────────────────────────────
+  //
+  // `chain-sends-selftest` checks the model.  What that cannot check is the
+  // part that decides whether anybody ever gets there: the SEND toggle lives
+  // in the workspace store and is read by two different panels, so the thing
+  // worth driving in a real renderer is "press the button in the console, pick
+  // the same chain, and the reverb is now on an aux".
+  //
+  // Pressed on the strip that just loaded the chain as inserts, so this also
+  // exercises the replace path over an existing channel rather than a clean
+  // one.
+  {
+    const routed = await page.evaluate(async () => {
+      const daw = await import('/stores/dawStore.ts');
+      const ops = await import('/daw/model/session-ops.ts');
+      const before = daw.useDawStore.getState().session;
+      const vox = before.tracks.find((t) => t.kind === 'audio');
+      if (!vox) return { error: 'the audio track from the previous step is gone' };
+
+      const toggle = [...document.querySelectorAll('button')]
+        .find((el) => (el.getAttribute('title') ?? '').startsWith('공간계(리버브'));
+      if (!toggle) return { error: 'SEND toggle not in the mixer strip' };
+      toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 300));
+
+      const ws = await import('/stores/workspaceStore.ts');
+      const flagOn = ws.useWorkspaceStore.getState().chainSendRouting === true;
+
+      const pick = [...document.querySelectorAll('select')]
+        .find((el) => (el.getAttribute('title') ?? '').startsWith('악기를 고르면'));
+      if (!pick) return { error: '악기 체인 picker not in the mixer strip' };
+      pick.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 200));
+      pick.value = 'vocal';
+      pick.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 700));
+
+      const after = daw.useDawStore.getState().session;
+      const track = ops.findTrack(after, vox.id);
+      const auxes = after.tracks.filter((t) => t.kind === 'aux');
+      const sends = (track?.sends ?? []).map((x) => ({ target: x.target, db: x.levelDb, pre: x.preFader }));
+      // Read the aux's own mix the way the module does: off the descriptor's
+      // declared range, which is 0..1 on the delay and 0..100 on the plate.
+      const plugins = await import('/daw/engine/plugins.ts');
+      const wets = auxes.map((a) => {
+        const only = a.inserts[0];
+        const def = plugins.findPlugin(only?.pluginId ?? '')?.params
+          .find((x) => x.id === 'mix' || x.id === 'mixPct');
+        if (!only || !def) return null;
+        return (only.params[def.id] - def.min) / (def.max - def.min);
+      });
+
+      return {
+        flagOn,
+        inserts: [...(track?.inserts ?? [])].sort((a, b) => a.slot - b.slot).map((i) => i.pluginId),
+        auxes: auxes.map((a) => a.inserts[0]?.pluginId ?? '(empty)').sort(),
+        auxFedByBus: auxes.every((a) => a.input !== null && after.buses.some((b) => b.id === a.input)),
+        buses: after.buses.length,
+        sends,
+        sendsHitAuxes: sends.length > 0
+          && sends.every((x) => auxes.some((a) => a.input === x.target)),
+        wets,
+      };
+    });
+
+    expect(
+      !routed.error && routed.flagOn,
+      'the SEND toggle in the console sets the workspace flag both pickers read',
+      routed.error ?? 'chainSendRouting = true after one click',
+    );
+    expect(
+      !routed.error && routed.inserts.join('>') === 'eq8>comp>deesser>tube'
+        && routed.auxes.join(',') === 'delay,plate',
+      'and the vocal chain\'s tail moves out of the channel onto two auxes',
+      routed.error ?? `channel ${routed.inserts.join(' → ')} · auxes ${routed.auxes.join(', ')}`,
+    );
+    expect(
+      !routed.error && routed.auxFedByBus && routed.sendsHitAuxes && routed.buses === 2,
+      'wired end to end — track → bus → aux, in the live session',
+      routed.error ?? `${routed.buses} buses, sends ${routed.sends
+        .map((x) => `${x.db.toFixed(1)}dB${x.pre ? ' PRE' : ''}`).join(', ')}`,
+    );
+    expect(
+      !routed.error && routed.wets.length === 2
+        && routed.wets.every((w) => w !== null && Math.abs(w - 1) < 1e-9),
+      'with both auxes fully wet, so the return is effect and not a second dry path',
+      routed.error ?? `aux mix ${routed.wets.map((w) => (w === null ? '?' : `${(w * 100).toFixed(0)}%`)).join(', ')}`,
+    );
+  }
+
+  // `VITE_LOUI_GUIDED_FLOW` is set by CI on tag builds only, and it swaps the
+  // whole front of the app: App.tsx renders <GuidedHome /> instead of
+  // <HomePage />, and MasteringPage and ResultPage take guided branches.  No
+  // smoke run ever set it — not this one, not the packaged one — so every step
+  // above exercised the legacy Home while every release shipped the other one.
+  //
+  // Asserted through the flag module and the DOM, not through one string of
+  // copy: `isGuidedFlowEnabled()` must flip, the render must change, and the
+  // guided front must actually appear.  `window.__LOUI_GUIDED_FLOW__` is the
+  // runtime half of the same flag, which is what makes this testable at all.
+  {
+    const GUIDED_MARKERS = ['트랙을 올리면', '오디오 파일 올리기', '어디서나 무난한 표준'];
+
+    const readHome = async (markers) => page.evaluate(async (needles) => {
+      const app = await import('/stores/appStore.ts');
+      app.useAppStore.getState().setPage('home');
+      await new Promise((r) => setTimeout(r, 500));
+      const flag = await import('/audio/guided-flow-flag.ts');
+      const root = document.getElementById('root');
+      const text = root ? (root.textContent ?? '') : '';
+      return {
+        flagOn: flag.isGuidedFlowEnabled(),
+        nodes: root ? root.querySelectorAll('*').length : -1,
+        guided: needles.some((n) => text.includes(n)),
+      };
+    }, markers);
+
+    const before = await readHome(GUIDED_MARKERS);
+    expect(
+      before.flagOn === false && before.guided === false,
+      'the 31 steps above ran on the legacy Home, as every smoke run has',
+      `flag=${before.flagOn}, guided markers=${before.guided}, ${before.nodes} nodes`,
+    );
+
+    await page.addInitScript(() => { window.__LOUI_GUIDED_FLOW__ = true; });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(1500);
+    const after = await readHome(GUIDED_MARKERS);
+
+    expect(
+      after.flagOn === true,
+      'and with the release flag on, the app agrees it is on',
+      `isGuidedFlowEnabled()=${after.flagOn}`,
+    );
+    expect(
+      after.guided === true && after.nodes > 0,
+      'and the guided Home is what renders then — the UI a tagged build ships',
+      after.guided
+        ? `${after.nodes} nodes, guided front present`
+        : `${after.nodes} nodes and none of ${GUIDED_MARKERS.join(' / ')} — GuidedHome did not mount`,
+    );
+    expect(
+      after.nodes !== before.nodes,
+      'and it is a different render, not the same page with a flag set',
+      `${before.nodes} nodes legacy → ${after.nodes} nodes guided`,
+    );
+  }
+
+  await page.waitForTimeout(500);
+  expect(
+    rendererErrors.length === 0,
+    'the renderer logged no errors through any of it',
+    rendererErrors.length === 0
+      ? 'clean'
+      : rendererErrors.slice(0, 6).map((e) => `[${e.kind}] ${e.text.slice(0, 120)}`).join(' | ')
+        + (rendererErrors.length > 6 ? ` … and ${rendererErrors.length - 6} more` : ''),
   );
 } finally {
   await browser.close();

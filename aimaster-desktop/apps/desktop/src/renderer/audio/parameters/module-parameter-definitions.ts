@@ -92,10 +92,14 @@ const EQ_DEFS: ModuleParameterDefinitions = {
       // 0.707, and a control's reachable values are min + n*step — on a
       // 0.01 grid from 0.3 that set stops at 0.70 and 0.71, so the slider
       // could not hold the value it opens with.  The value is what stays
-      // fixed: `eq-curve-model.ts` draws all three of these bands with a
-      // literal `q: 0.707`, and `recommended-defaults.ts` asks for 0.707,
-      // so moving the default to 0.71 would put three files into
-      // disagreement to save a slider.
+      // fixed: `recommended-defaults.ts` asks for 0.707 on all three of
+      // these bands, so moving the default to 0.71 would put two files into
+      // disagreement to save a slider.  This used to cite
+      // `eq-curve-model.ts` as a third, for drawing them with a literal
+      // `q: 0.707`; that model served the EQ overlay the Studio replaced
+      // with `LouiEqGraph`, and it is gone.  Its successor,
+      // `eq-graph-model.ts`, draws whatever Q the state holds — so the
+      // drawn curve no longer has an opinion to disagree with.
       min: 0.3, max: 6, default: 0.707, step: 0.001,
       format: fmt.qFactor, automatable: true,
       binding: { moduleType: 'adaptive-eq', path: 'bands[lowCut].q', status: 'wired' },
