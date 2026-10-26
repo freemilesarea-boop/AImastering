@@ -14,6 +14,9 @@
 import {
   activePlaylist, clipEnd, createClip, sortClips, trackClips, updateClips, findTrack,
 } from '../model/session-ops.js';
+// Value import, not just a type: edit-groups takes only `type TimeSelection`
+// from this file, so the dependency runs one way at runtime.
+import { editGroupsOf } from './edit-groups.js';
 import type { Clip, ClipId, DawSession, Fade, TrackId } from '../model/types.js';
 import { withFade, type FadeSide } from '../model/clip-fade.js';
 import { clipPitch, withClipPitch } from '../model/clip-pitch.js';
@@ -236,6 +239,106 @@ export function clearRange(session: DawSession, sel: TimeSelection, ripple = fal
 export function moveClip(session: DawSession, trackId: TrackId, clipId: ClipId, toSec: number): DawSession {
   return updateClips(session, trackId, (clips) =>
     mapClips(clips, (c) => (c.id === clipId ? { ...c, startSec: Math.max(0, toSec) } : c)));
+}
+
+export interface TrackMoveResult {
+  session: DawSession;
+  /** Empty when the move happened; one line saying why when it did not. */
+  problems: string[];
+}
+
+/**
+ * Move a clip to ANOTHER track, and to a new time, in one step.
+ *
+ * `moveClip` could only ever move a clip along its own lane — the destination
+ * track was not a parameter — so the only way to get a piece onto a different
+ * track was copy, select the other track, paste.  Dragging it there is the
+ * gesture every DAW uses for this, and the model had no way to express it.
+ *
+ * One step rather than remove-then-add, because with undo recording every
+ * apply, two steps means a state a user can press Ctrl+Z back into: the clip
+ * gone from one track and not yet on the other.
+ *
+ * ── What is refused, and why it is refused rather than fixed up ────────────
+ *
+ * A MIDI part on an audio track, or an audio clip on an instrument track, is
+ * not a thing the engine can play — `ClipPlayer` reads one and the instrument
+ * reads the other.  Dropping it there and silently leaving it where it was is
+ * how a drag "does nothing"; dropping it there and letting it land is how a
+ * track goes silent with no explanation.  So it is refused out loud.
+ *
+ * A track in an EDIT GROUP is refused too, and that one is less obvious.  The
+ * group exists to keep its members aligned in time; moving one member's clip
+ * to a different track leaves the group holding an alignment that is no
+ * longer true of the same material.  Cubase answers this with a track-offset
+ * map across the group, which needs a correspondence between members that
+ * this session model does not have.  Refusing says so instead of guessing.
+ */
+export function moveClipToTrack(
+  session: DawSession,
+  fromTrackId: TrackId,
+  clipId: ClipId,
+  toTrackId: TrackId,
+  toSec: number,
+): TrackMoveResult {
+  if (fromTrackId === toTrackId) {
+    return { session: moveClip(session, fromTrackId, clipId, toSec), problems: [] };
+  }
+  const refusal = clipTrackMoveRefusal(session, fromTrackId, clipId, toTrackId);
+  if (refusal !== null) return { session, problems: [refusal] };
+
+  const from = findTrack(session, fromTrackId);
+  const clip = from && trackClips(from).find((c) => c.id === clipId);
+  // Cannot be missing — the refusal check above would have said so — but the
+  // compiler does not know that and a cast here would be the kind of lie that
+  // produced the toFixed crash.
+  if (!clip) return { session, problems: ['클립을 찾을 수 없습니다'] };
+
+  const moved: Clip = { ...clip, startSec: Math.max(0, toSec) };
+  // Lifted and landed in one expression so there is no session in between
+  // with the clip on neither track.
+  const lifted = updateClips(session, fromTrackId, (clips) => clips.filter((c) => c.id !== clipId));
+  return {
+    session: updateClips(lifted, toTrackId, (clips) => [...clips, moved]),
+    problems: [],
+  };
+}
+
+/**
+ * Why this clip cannot go on that track, or `null` if it can.
+ *
+ * Pure, and separate from the move, because the drag has to ask BEFORE it
+ * applies anything: a drag that applied the move and then inspected the
+ * result would have to undo it on every refused mouse-move, and the user
+ * would see the clip flicker onto a track it is not allowed on. The move
+ * above asks the same function, so there is one copy of the rules.
+ */
+export function clipTrackMoveRefusal(
+  session: DawSession, fromTrackId: TrackId, clipId: ClipId, toTrackId: TrackId,
+): string | null {
+  if (fromTrackId === toTrackId) return null;
+
+  const from = findTrack(session, fromTrackId);
+  const to = findTrack(session, toTrackId);
+  if (!from || !to) return '트랙을 찾을 수 없습니다';
+
+  const clip = trackClips(from).find((c) => c.id === clipId);
+  if (!clip) return '클립을 찾을 수 없습니다';
+
+  if (to.kind !== 'audio' && to.kind !== 'instrument') {
+    return `${to.name} 트랙에는 클립을 놓을 수 없습니다`;
+  }
+  const wants = clip.kind === 'midi' ? 'instrument' : 'audio';
+  if (to.kind !== wants) {
+    return clip.kind === 'midi'
+      ? `MIDI 파트는 인스트루먼트 트랙에만 놓을 수 있습니다 — ${to.name} 은 오디오 트랙입니다`
+      : `오디오 클립은 오디오 트랙에만 놓을 수 있습니다 — ${to.name} 은 인스트루먼트 트랙입니다`;
+  }
+  if (editGroupsOf(session, fromTrackId).length > 0
+      || editGroupsOf(session, toTrackId).length > 0) {
+    return '편집 그룹에 묶인 트랙끼리는 클립을 옮길 수 없습니다 — 그룹을 먼저 끄세요';
+  }
+  return null;
 }
 
 /** Nudge every clip touching the selection by ±delta seconds. */

@@ -1133,3 +1133,37 @@ export const LICENSE_ENFORCED = false;
  */
 export const APP_NAME = 'LV DAW';
 
+
+// ── UI 배율 ───────────────────────────────────────────────────────────────────
+//
+// The console is dense on purpose — a mixer strip that says less is a mixer
+// strip you have to open something to read — but density was bought in font
+// size, and the bill came to 521 pieces of text under 11 px, 64 of them at
+// 8 px.  At that size the strip is not dense, it is unreadable, and no amount
+// of layout work fixes a glyph that is too small for the eye looking at it.
+//
+// The fix is not 521 edits.  Electron scales the whole renderer with one call,
+// so the app gets what Cubase has and Logic inherits from the system: a
+// number the user picks once.
+//
+// The steps are listed rather than a range because both ends of this live in
+// different processes — the settings page offers them, the main process
+// validates and applies them — and a range would let the two disagree about
+// what 1.0001 means.  Listed, they cannot.
+export const UI_SCALES: readonly number[] = [0.9, 1, 1.1, 1.25, 1.4, 1.6];
+
+export const DEFAULT_UI_SCALE = 1;
+
+/** Readable name for each step, because "1.25" is not what the user wants to read. */
+export const UI_SCALE_LABELS: Readonly<Record<string, string>> = {
+  '0.9':  '90% — 더 많이',
+  '1':    '100% — 기본',
+  '1.1':  '110%',
+  '1.25': '125% — 권장',
+  '1.4':  '140%',
+  '1.6':  '160% — 가장 크게',
+};
+
+export function isUiScale(v: unknown): v is number {
+  return typeof v === 'number' && UI_SCALES.includes(v);
+}

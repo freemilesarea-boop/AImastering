@@ -7,7 +7,7 @@ import { registerAudioHandlers, killBridge } from './ipc/audioHandlers.js';
 import { registerFileHandlers } from './ipc/fileHandlers.js';
 import { registerDecodeHandlers } from './ipc/decodeHandlers.js';
 import { registerPluginHandlers } from './ipc/pluginHandlers.js';
-import { registerSettingsHandlers } from './ipc/settingsHandlers.js';
+import { applyUiScale, registerSettingsHandlers } from './ipc/settingsHandlers.js';
 import { registerLicenseHandlers, licenseService } from './ipc/licenseHandlers.js';
 import { registerEntitlementHandlers } from './ipc/entitlementHandlers.js';
 import { registerAssistantHandlers } from './ipc/assistantHandlers.js';
@@ -94,6 +94,20 @@ function createWindow(): void {
       nodeIntegration: false,
       sandbox: true,
     },
+  });
+
+  // The stored UI scale, applied BEFORE the window is shown.
+  //
+  // On `did-finish-load` rather than after `show()`: the zoom factor changes
+  // every CSS pixel in the renderer, so applying it to a visible window is a
+  // visible reflow — the console appears at 100 % and snaps to 125 % while the
+  // user watches.  Done here it is the only size the window is ever seen at.
+  //
+  // `did-finish-load` fires again on a reload, which is correct: the renderer
+  // that comes back has to be scaled too.
+  mainWindow.webContents.on('did-finish-load', () => {
+    const scale = applyUiScale(mainWindow);
+    if (scale !== 1) log.info('ui-scale applied', { scale });
   });
 
   // 렌더러가 첫 페인트를 마친 뒤에 창을 표시

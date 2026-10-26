@@ -1,5 +1,6 @@
 import type { IpcMain, BrowserWindow } from 'electron';
 import { dialog } from 'electron';
+import { DEFAULT_UI_SCALE, isUiScale } from '@aimaster/shared-types';
 import { settingsStore as store } from '../utils/settingsStore.js';
 
 // Whitelist of persisted setting keys plus a per-key validator.  Anything
@@ -15,7 +16,27 @@ const SETTING_VALIDATORS: Record<string, (v: unknown) => boolean> = {
   // renderer has to throw away on every launch.
   defaultSampleRate:  (v) => v === 44100 || v === 48000 || v === 96000,
   defaultBitDepth:    (v) => v === 16 || v === 24,
+  // The steps are the shared list, not a range — see UI_SCALES.  A renderer
+  // that offered 1.3 would be refused here rather than quietly stored as a
+  // value the settings page can never show as selected again.
+  uiScale:            isUiScale,
 };
+
+/**
+ * Put the stored scale on the window.
+ *
+ * Exported because two places need it and they must not each have their own
+ * idea of what "no setting yet" means: the handler below, when the user picks
+ * a step, and startup, which has to apply what was picked last time.  A
+ * renderer that loads at 100 % and jumps a moment later is the same bug as not
+ * applying it at all.
+ */
+export function applyUiScale(win: BrowserWindow | null): number {
+  const stored = store.get('uiScale');
+  const scale = isUiScale(stored) ? stored : DEFAULT_UI_SCALE;
+  win?.webContents.setZoomFactor(scale);
+  return scale;
+}
 
 export function registerSettingsHandlers(ipc: IpcMain, win: BrowserWindow | null): void {
   ipc.handle('settings:get', (_e, key: unknown) => {
@@ -34,6 +55,10 @@ export function registerSettingsHandlers(ipc: IpcMain, win: BrowserWindow | null
       throw new Error(`settings:set: value rejected for key '${key}'`);
     }
     store.set(key, value);
+    // Applied in the same call that stores it.  A separate `ui:set-zoom`
+    // channel would be a second thing to keep in step with the first, and the
+    // failure would be silent: the number saved, the window unchanged.
+    if (key === 'uiScale') applyUiScale(win);
   });
 
   ipc.handle('settings:choose-output-dir', async () => {

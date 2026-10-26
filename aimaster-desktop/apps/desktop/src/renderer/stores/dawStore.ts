@@ -403,6 +403,23 @@ function forgetUnreferencedFailures(session: DawSession): void {
 
 const initialSession = createSession();
 
+/**
+ * Horizontal zoom limits, and the clamp that enforces them.
+ *
+ * Exported because anchored zoom needs the SAME bounds the setter uses: the
+ * arrange window computes where to scroll to keep the time under the pointer
+ * still, and it has to divide by the zoom it actually got.  With its own copy
+ * of the limits the anchor drifts at both ends — the clamp fires in here, the
+ * caller's arithmetic does not know, and the timeline slides under the cursor
+ * exactly when the user is at full zoom trying to be precise.
+ */
+export const PX_PER_SEC_MIN = 4;
+export const PX_PER_SEC_MAX = 2000;
+
+export function clampPxPerSec(v: number): number {
+  return Math.max(PX_PER_SEC_MIN, Math.min(PX_PER_SEC_MAX, v));
+}
+
 export const useDawStore = create<DawState>((set, get) => ({
   session: initialSession,
   history: initHistory(initialSession),
@@ -775,7 +792,7 @@ export const useDawStore = create<DawState>((set, get) => ({
   toggleTabToTransient: () => set((s) => ({ tabToTransient: !s.tabToTransient })),
 
   pxPerSec: 60,
-  setPxPerSec: (v) => set({ pxPerSec: Math.max(4, Math.min(2000, v)) }),
+  setPxPerSec: (v) => set({ pxPerSec: clampPxPerSec(v) }),
   scrollSec: 0,
   setScrollSec: (v) => set({ scrollSec: Math.max(0, v) }),
   laneWidthPx: 900,

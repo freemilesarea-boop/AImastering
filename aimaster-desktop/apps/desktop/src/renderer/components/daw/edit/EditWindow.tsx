@@ -7,7 +7,8 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { LAYER } from '../../../theme/layers.js';
-import { useDawStore, snapToGrid, snapMoveTo, type EditMode } from '../../../stores/dawStore.js';
+import {
+  useDawStore, snapToGrid, snapMoveTo, type EditMode } from '../../../stores/dawStore.js';
 import { followScrollSec, rulerTicks } from '../../../daw/model/viewport.js';
 import UniverseStrip from './UniverseStrip.js';
 import { formatLabel, DEFAULT_FPS, TIME_FORMATS } from '../../../daw/model/spot-time.js';
@@ -20,7 +21,9 @@ import { decodeForDisplay } from '../../../daw/engine/audio-cache.js';
 import {
   activePlaylist, clipAt, clipEnd, findTrack, sessionEndSec, trackClips,
 } from '../../../daw/model/session-ops.js';
-import { setClipFade, setOneClipGain, trackBand } from '../../../daw/edit/clip-edit.js';
+import {
+  clipTrackMoveRefusal, moveClipToTrack, setClipFade, setOneClipGain, trackBand } from '../../../daw/edit/clip-edit.js';
+import { wheelNav } from '../../../daw/edit/wheel-nav.js';
 import { describeGroup, moveClipWithGroup } from '../../../daw/edit/edit-groups.js';
 import { autoCrossfadeTrack } from '../../../daw/edit/auto-fade.js';
 import {
@@ -181,9 +184,28 @@ export default function EditWindow() {
   // first.  A ref is already updated by the time the lane reads it; state
   // would be one event behind, which is one row behind for the whole drag.
   const bandTrackRef = useRef<string | null>(null);
+  // The reason a drop was last refused, so the toast fires once per reason
+  // instead of once per mouse-move.
+  const refusedDropRef = useRef<string | null>(null);
+  // The dragged clip's length, captured at mouse-down: the selection that
+  // follows the clip across lanes needs it, and reading it from the session
+  // mid-drag would read the transient copy being moved.
+  const clipDragLenRef = useRef(0);
+  // `notify` through a ref because the move handler is a useCallback that
+  // must not re-create on every toast — a new handler identity mid-drag
+  // detaches the listener the gesture is running on.
+  const onNotifyRef = useRef<(m: string, t?: 'info' | 'success' | 'warning' | 'error') => void>(() => {});
   // Clip drag: one gesture = one undo step, so it writes through
   // applyTransient and commits on mouse up.
   const [clipDrag, setClipDrag] = useState<null | {
+    /**
+     * The track the clip is on RIGHT NOW, not the one the drag started on.
+     *
+     * A vertical drag changes it mid-gesture, and every move after that has to
+     * lift the clip from where it actually is.  Holding the original track
+     * here would make the second lane change a no-op against a track the clip
+     * had already left.
+     */
     trackId: string; clipId: string; grabOffsetSec: number;
     /**
      * Where the clip started, captured at mouse-down and never updated.
@@ -260,6 +282,53 @@ export default function EditWindow() {
     const rect = el.getBoundingClientRect();
     return Math.max(0, scrollSec + (clientX - rect.left) / pxPerSec);
   }, [scrollSec, pxPerSec]);
+
+  // ── Wheel navigation ──────────────────────────────────────────────────
+  //
+  // The two gestures every DAW has and this one did not: Cmd/Ctrl + wheel to
+  // zoom horizontally, Shift + wheel to scroll horizontally.  Before this the
+  // only way across a long song was the zoom buttons and the overview strip,
+  // which is three controls for the thing the hand is already on.
+  //
+  // Attached as a NATIVE listener with `{ passive: false }` rather than
+  // React's `onWheel`, because React registers wheel on the root as passive
+  // and `preventDefault()` inside an `onWheel` prop is therefore ignored.
+  //
+  // What that preventDefault is worth was measured rather than assumed, and
+  // the honest answer is less than it looks: with the listener made passive
+  // on purpose, Ctrl + wheel in this build did NOT page-zoom the window —
+  // Electron does not wire Chrome's wheel-zoom accelerator into a plain
+  // BrowserWindow, so the hazard the preventDefault guards against is not
+  // armed today.  It stays because it is the correct way to own a gesture
+  // (and because `setVisualZoomLevelLimits` is one line away from arming it),
+  // not because it is currently load-bearing.
+  //
+  // The arithmetic is `wheelNav`, which has no DOM in it and can be asked
+  // whether the time under the cursor actually held still.  What is left here
+  // is the part only a listener can do.
+  useEffect(() => {
+    const el = laneRef.current;
+    if (!el) return undefined;
+
+    const onWheel = (e: WheelEvent): void => {
+      const outcome = wheelNav({ scrollSec, pxPerSec }, {
+        deltaX: e.deltaX,
+        deltaY: e.deltaY,
+        zoomModifier: e.ctrlKey || e.metaKey,
+        shiftKey: e.shiftKey,
+        offsetPx: e.clientX - el.getBoundingClientRect().left,
+      });
+      // 'pass' is the plain vertical wheel: left alone so the row scroller
+      // above still scrolls a forty-track session.
+      if (outcome.kind === 'pass') return;
+      e.preventDefault();
+      if (outcome.kind === 'zoom') setPxPerSec(outcome.pxPerSec);
+      setScrollSec(outcome.scrollSec);
+    };
+
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [scrollSec, pxPerSec, setPxPerSec, setScrollSec]);
 
   // Collapsed stacks fold their members away, so the arrange window stays
   // readable at forty tracks.
@@ -340,6 +409,7 @@ export default function EditWindow() {
 
   const recordStatus = useRecordingStore((s) => s.status);
   const notify = useAppStore((s) => s.notify);
+  onNotifyRef.current = notify;
   // A session with only a master track is not "empty timeline", it is "you
   // have nothing to work on yet" — and a blank grid says neither.
   const hasMaterial = session.tracks.some((t) => t.kind === 'audio' || t.kind === 'instrument');
@@ -436,6 +506,7 @@ export default function EditWindow() {
         // Spot mode: the position is known to the frame and the mouse cannot
         // express it, so clicking asks for the number instead of dragging.
         if (editMode === 'spot') { setSpotTarget({ trackId: track.id, clipId: clip.id }); return; }
+        clipDragLenRef.current = clip.durationSec;
         setClipDrag({
           trackId: track.id, clipId: clip.id,
           grabOffsetSec: raw - clip.startSec, fromSec: clip.startSec,
@@ -485,6 +556,36 @@ export default function EditWindow() {
         clipDrag.fromSec,
         Math.max(0, secAt(e.clientX) - clipDrag.grabOffsetSec),
       );
+      // ── Across lanes ────────────────────────────────────────────────────
+      //
+      // `bandTrackRef` is the row the pointer is over, recorded by every
+      // lane's own mousemove.  Using it rather than measuring y here means
+      // the virtualised row list stays the authority on which track is
+      // where — the arithmetic would have to re-derive heights, collapsed
+      // stacks and the global lanes above, and would be wrong the first time
+      // any of those changed.
+      const over = bandTrackRef.current;
+      if (over && over !== clipDrag.trackId) {
+        const refusal = clipTrackMoveRefusal(session, clipDrag.trackId, clipDrag.clipId, over);
+        if (refusal === null) {
+          applyTransient((s) =>
+            moveClipToTrack(s, clipDrag.trackId, clipDrag.clipId, over, target).session);
+          setClipDrag({ ...clipDrag, trackId: over });
+          setSelection({ startSec: target, endSec: target + clipDragLenRef.current, trackIds: [over] });
+          refusedDropRef.current = null;
+          return;
+        }
+        // Refused.  Said once per reason, not once per mouse-move — a drag
+        // held over a track it cannot land on fires this handler every few
+        // milliseconds, and sixty identical toasts is not an explanation.
+        if (refusedDropRef.current !== refusal) {
+          onNotifyRef.current(refusal, 'warning');
+          refusedDropRef.current = refusal;
+        }
+        // The horizontal half of the gesture still works: the clip follows
+        // the pointer in time on the lane it is already on, which is what it
+        // did before lanes could be crossed at all.
+      }
       // Grouped tracks move together.  A drag is the one edit that does not
       // go through the selection, so it is the one place that has to ask.
       applyTransient((s) => moveClipWithGroup(s, clipDrag.trackId, clipDrag.clipId, target));
@@ -522,6 +623,7 @@ export default function EditWindow() {
   const endDrag = useCallback(() => {
     if (gainDrag) { commitEdit(); setGainDrag(null); }
     if (clipDrag) {
+      refusedDropRef.current = null;
       // The drag is over, so this is the moment the overlap is real.  Doing
       // it during the drag would rewrite the fades on every mousemove and
       // leave a trail of them behind wherever the pointer passed.

@@ -1225,6 +1225,215 @@ try {
     );
   }
 
+  // ── Cubase 격차 1~3, in the real renderer ──────────────────────────────
+  //
+  // Driven with Playwright's REAL mouse and keyboard, not synthetic events.
+  // Two of these three gestures are defined by what the browser does when
+  // nobody stops it — Ctrl + wheel is page zoom, a drag is a sequence the
+  // event system assembles — so a hand-built MouseEvent would be testing my
+  // idea of the gesture rather than the gesture.
+  {
+    const setup = await page.evaluate(async () => {
+      const app = await import('/stores/appStore.ts');
+      app.useAppStore.getState().setPage('daw');
+      await new Promise((r) => setTimeout(r, 300));
+      const daw = await import('/stores/dawStore.ts');
+      const ops = await import('/daw/model/session-ops.ts');
+
+      const clip = ops.createClip('ux-file', 'ux.wav', { startSec: 4, durationSec: 3 });
+      const a = ops.createTrack('UX A', 'audio');
+      const withClip = { ...a, playlists: a.playlists.map((p) => ({ ...p, clips: [clip] })) };
+      const b = ops.createTrack('UX B', 'audio');
+      daw.useDawStore.getState().loadSession(
+        ops.addTrack(ops.addTrack(ops.createSession('ux'), withClip), b));
+      daw.useDawStore.getState().setWindow('edit');
+      daw.useDawStore.getState().setPxPerSec(60);
+      daw.useDawStore.getState().setScrollSec(0);
+      await new Promise((r) => setTimeout(r, 800));
+
+      // Scoped to the row scroller.  The bare class combo also matches
+      // EditWindow's OUTER container — whose children are the toolbar, the
+      // ruler and the status bar — and a probe that measured those put the
+      // drag's coordinates on the toolbar while reporting no error at all.
+      const lanes = document.querySelectorAll(
+        'div.flex-1.flex.overflow-y-auto > div.flex-1.relative.overflow-hidden');
+      if (lanes.length !== 1) return { error: `lane column selector matched ${lanes.length}` };
+      const lane = lanes[0];
+      const rect = lane.getBoundingClientRect();
+      // In-flow children only: the padding spacers are zero-height and the
+      // playhead is absolutely positioned over the whole column.
+      const rows = [...lane.children]
+        .filter((el) => getComputedStyle(el).position !== 'absolute')
+        .map((el) => el.getBoundingClientRect())
+        .filter((r) => r.height > 20);
+      if (rows.length < 2) return { error: `only ${rows.length} lane row(s)` };
+      return {
+        lane: { left: rect.left, top: rect.top, width: rect.width },
+        rowA: { top: rows[0].top, height: rows[0].height },
+        rowB: { top: rows[1].top, height: rows[1].height },
+        trackA: withClip.id, trackB: b.id, clipId: clip.id,
+        innerWidth: window.innerWidth,
+      };
+    });
+
+    if (setup.error) {
+      expect(false, 'the arrange lane and two track rows are on screen', setup.error);
+    } else {
+      const read = () => page.evaluate(async () => {
+        const daw = await import('/stores/dawStore.ts');
+        const st = daw.useDawStore.getState();
+        return { px: st.pxPerSec, scroll: st.scrollSec, innerWidth: window.innerWidth };
+      });
+
+      // ── 2a. Ctrl + wheel → zoom, and NOT browser page zoom ──────────────
+      const anchorX = setup.lane.left + 300;
+      const anchorY = setup.rowA.top + setup.rowA.height * 0.5;
+      const before = await read();
+      const timeUnder = (st) => st.scroll + 300 / st.px;
+      const wantTime = timeUnder(before);
+
+      await page.mouse.move(anchorX, anchorY);
+      await page.keyboard.down('Control');
+      await page.mouse.wheel(0, -120);
+      await page.keyboard.up('Control');
+      await new Promise((r) => setTimeout(r, 300));
+      const afterZoom = await read();
+
+      expect(
+        afterZoom.px > before.px,
+        'Ctrl + wheel zooms the arrange window',
+        `${before.px} → ${afterZoom.px.toFixed(1)} px/s`,
+      );
+      expect(
+        Math.abs(timeUnder(afterZoom) - wantTime) < 1e-6,
+        'and the time under the pointer does not move while it zooms',
+        `drift ${Math.abs(timeUnder(afterZoom) - wantTime).toExponential(1)} s`,
+      );
+      // The two zooms must stay separate: the timeline's and the window's.
+      // Measured, not assumed — and the measurement says this build does not
+      // page-zoom on Ctrl + wheel even with the listener made passive, so
+      // this is a guard against that changing rather than a fix for it.
+      expect(
+        afterZoom.innerWidth === before.innerWidth,
+        'and the window itself did not scale — the timeline zoom and UI 배율 stay separate',
+        `innerWidth held at ${afterZoom.innerWidth} CSS px`,
+      );
+
+      // ── 2b. Shift + wheel → sideways ────────────────────────────────────
+      await page.evaluate(async () => {
+        const daw = await import('/stores/dawStore.ts');
+        daw.useDawStore.getState().setPxPerSec(60);
+        daw.useDawStore.getState().setScrollSec(10);
+      });
+      await new Promise((r) => setTimeout(r, 200));
+      await page.keyboard.down('Shift');
+      await page.mouse.wheel(0, 120);
+      await page.keyboard.up('Shift');
+      await new Promise((r) => setTimeout(r, 300));
+      const afterScroll = await read();
+      expect(
+        Math.abs(afterScroll.scroll - 12) < 1e-6,
+        'Shift + wheel scrolls the timeline sideways',
+        `10 s + 120 px at 60 px/s → ${afterScroll.scroll} s`,
+      );
+
+      // ── 2c. A plain wheel must be left for the track list ───────────────
+      const beforePlain = await read();
+      await page.mouse.wheel(0, 120);
+      await new Promise((r) => setTimeout(r, 250));
+      const afterPlain = await read();
+      expect(
+        afterPlain.px === beforePlain.px && afterPlain.scroll === beforePlain.scroll,
+        'and a plain wheel is left alone, so the track list still scrolls',
+        `zoom and position unchanged at ${afterPlain.px} px/s / ${afterPlain.scroll} s`,
+      );
+
+      // ── 3. Drag a clip onto the other lane ──────────────────────────────
+      await page.evaluate(async () => {
+        const daw = await import('/stores/dawStore.ts');
+        daw.useDawStore.getState().setPxPerSec(60);
+        daw.useDawStore.getState().setScrollSec(0);
+      });
+      await new Promise((r) => setTimeout(r, 300));
+
+      // The clip starts at 4 s; grab its UPPER half, which is the 'move'
+      // zone (the lower half starts a marquee and the corners are fades).
+      const grabX = setup.lane.left + 4 * 60 + 25;
+      await page.mouse.move(grabX, setup.rowA.top + setup.rowA.height * 0.25);
+      await page.mouse.down();
+      await page.mouse.move(grabX + 60, setup.rowA.top + setup.rowA.height * 0.25, { steps: 4 });
+      await page.mouse.move(grabX + 120, setup.rowB.top + setup.rowB.height * 0.5, { steps: 8 });
+      await new Promise((r) => setTimeout(r, 200));
+      await page.mouse.up();
+      await new Promise((r) => setTimeout(r, 400));
+
+      const drag = await page.evaluate(async (ids) => {
+        const daw = await import('/stores/dawStore.ts');
+        const ops = await import('/daw/model/session-ops.ts');
+        const s = daw.useDawStore.getState().session;
+        const onA = ops.findTrack(s, ids.trackA);
+        const onB = ops.findTrack(s, ids.trackB);
+        return {
+          aCount: ops.trackClips(onA).length,
+          bCount: ops.trackClips(onB).length,
+          landedId: ops.trackClips(onB)[0]?.id ?? null,
+          landedSec: ops.trackClips(onB)[0]?.startSec ?? null,
+        };
+      }, { trackA: setup.trackA, trackB: setup.trackB });
+
+      expect(
+        drag.aCount === 0 && drag.bCount === 1 && drag.landedId === setup.clipId,
+        'dragging a clip onto another lane moves it there — the same clip, not a copy',
+        `A ${drag.aCount} clip(s), B ${drag.bCount} clip(s), id ${
+          drag.landedId === setup.clipId ? 'kept' : `CHANGED (${drag.landedId})`}`,
+      );
+      expect(
+        drag.landedSec !== null && drag.landedSec > 4,
+        'and it kept the horizontal half of the gesture too',
+        `started at 4 s, landed at ${drag.landedSec === null ? 'nowhere' : drag.landedSec.toFixed(2)} s`,
+      );
+    }
+  }
+
+  // ── UI 배율, which only the main process can apply ─────────────────────
+  //
+  // Measured rather than asserted from the setting: `setZoomFactor` changes
+  // how many CSS pixels fit the window, so a window that did not change its
+  // innerWidth did not scale, whatever the store says it stored.
+  {
+    const scale = await page.evaluate(async () => {
+      const at100 = window.innerWidth;
+      await window.electronAPI.invoke('settings:set', 'uiScale', 1.4);
+      await new Promise((r) => setTimeout(r, 400));
+      const at140 = window.innerWidth;
+      const readBack = await window.electronAPI.invoke('settings:get', 'uiScale');
+      let refused = null;
+      try {
+        await window.electronAPI.invoke('settings:set', 'uiScale', 1.3);
+        refused = 'accepted 1.3';
+      } catch { refused = 'refused'; }
+      await window.electronAPI.invoke('settings:set', 'uiScale', 1);
+      await new Promise((r) => setTimeout(r, 400));
+      return { at100, at140, back: window.innerWidth, readBack, refused };
+    });
+
+    expect(
+      scale.at140 < scale.at100 && scale.readBack === 1.4,
+      'the UI 배율 setting actually scales the window, not just the store',
+      `innerWidth ${scale.at100} → ${scale.at140} CSS px at 140 %, stored ${scale.readBack}`,
+    );
+    expect(
+      scale.refused === 'refused',
+      'and a step that is not on the list is refused by the main process',
+      `1.3 → ${scale.refused}`,
+    );
+    expect(
+      scale.back === scale.at100,
+      'back to 100 % restores the window exactly',
+      `${scale.at140} → ${scale.back} CSS px (was ${scale.at100})`,
+    );
+  }
+
   // `VITE_LOUI_GUIDED_FLOW` is set by CI on tag builds only, and it swaps the
   // whole front of the app: App.tsx renders <GuidedHome /> instead of
   // <HomePage />, and MasteringPage and ResultPage take guided branches.  No
