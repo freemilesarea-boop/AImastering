@@ -1434,6 +1434,224 @@ try {
     );
   }
 
+  // ── Cubase 격차 4·5, in the real renderer ──────────────────────────────
+  //
+  // A right-click menu and a key remap are both "wiring" features: the model
+  // tests cover what the menus contain and what an override resolves to, and
+  // cannot cover whether a real secondary click opens anything or whether a
+  // rebound key actually runs the command afterwards.  Both are driven here
+  // with real input.
+  {
+    const surfaces = await page.evaluate(async () => {
+      const app = await import('/stores/appStore.ts');
+      app.useAppStore.getState().setPage('daw');
+      await new Promise((r) => setTimeout(r, 300));
+      const daw = await import('/stores/dawStore.ts');
+      const ops = await import('/daw/model/session-ops.ts');
+      const clip = ops.createClip('ctx-file', 'ctx.wav', { startSec: 2, durationSec: 4 });
+      const a = ops.createTrack('CTX A', 'audio');
+      const withClip = { ...a, playlists: a.playlists.map((p) => ({ ...p, clips: [clip] })) };
+      daw.useDawStore.getState().loadSession(
+        ops.addTrack(ops.createSession('ctx'), withClip));
+      daw.useDawStore.getState().setWindow('edit');
+      daw.useDawStore.getState().setPxPerSec(60);
+      daw.useDawStore.getState().setScrollSec(0);
+      await new Promise((r) => setTimeout(r, 800));
+
+      const lanes = document.querySelectorAll(
+        'div.flex-1.flex.overflow-y-auto > div.flex-1.relative.overflow-hidden');
+      if (lanes.length !== 1) return { error: `lane selector matched ${lanes.length}` };
+      const lane = lanes[0];
+      const rect = lane.getBoundingClientRect();
+      const rows = [...lane.children]
+        .filter((el) => getComputedStyle(el).position !== 'absolute')
+        .map((el) => el.getBoundingClientRect())
+        .filter((r) => r.height > 20);
+      if (rows.length < 1) return { error: 'no lane rows' };
+      // The track header column is the sibling before the lane.
+      const header = lane.previousElementSibling?.getBoundingClientRect() ?? null;
+      return {
+        clipX: rect.left + 3 * 60, rowY: rows[0].top + rows[0].height * 0.5,
+        headerX: header ? header.left + header.width / 2 : null,
+        trackId: withClip.id, clipId: clip.id,
+      };
+    });
+
+    if (surfaces.error) {
+      expect(false, 'the arrange lane and a track row are on screen', surfaces.error);
+    } else {
+      const readMenu = () => page.evaluate(async () => {
+        const store = await import('/stores/contextMenuStore.ts');
+        const m = store.useContextMenuStore.getState().menu;
+        if (!m) return { open: false };
+        const box = [...document.querySelectorAll('div.fixed')]
+          .find((el) => el.textContent?.includes(m.title));
+        const buttons = box ? [...box.querySelectorAll('button')] : [];
+        return {
+          open: true, title: m.title, items: m.items.length,
+          rendered: buttons.length,
+          labels: buttons.slice(0, 4).map((b) => b.textContent?.trim() ?? ''),
+          /** Accelerators shown on the rows — the shortcut being taught. */
+          accels: buttons.map((b) => b.querySelector('span.font-mono')?.textContent?.trim() ?? '')
+            .filter(Boolean),
+        };
+      });
+
+      // ── A real secondary click on the clip ──────────────────────────────
+      await page.mouse.click(surfaces.clipX, surfaces.rowY, { button: 'right' });
+      await new Promise((r) => setTimeout(r, 300));
+      const clipMenuState = await readMenu();
+      expect(
+        clipMenuState.open === true && clipMenuState.rendered > 8,
+        'a right-click on a clip opens a menu — the surface had none before',
+        clipMenuState.open
+          ? `"${clipMenuState.title}" · ${clipMenuState.items} items, ${clipMenuState.rendered} rows`
+          : 'no menu opened',
+      );
+      expect(
+        clipMenuState.accels !== undefined && clipMenuState.accels.length > 4,
+        'and it shows each command\'s shortcut, which is where the app teaches them',
+        `${clipMenuState.accels?.length ?? 0} accelerators on the rows: ${
+          (clipMenuState.accels ?? []).slice(0, 3).join(' · ')}`,
+      );
+      // The right-click also selected the clip, which is why the entries can
+      // be command ids at all.
+      // The arrange window's selection lives in dawStore — it carries
+      // trackIds, which the workspace's plain TimeRange does not.
+      const selected = await page.evaluate(async () => {
+        const daw = await import('/stores/dawStore.ts');
+        return daw.useDawStore.getState().selection;
+      });
+      expect(
+        selected !== null && Math.abs(selected.startSec - 2) < 0.01
+          && Math.abs(selected.endSec - 6) < 0.01,
+        'and it selected the clip it was about, so the commands act on that clip',
+        selected ? `selection ${selected.startSec.toFixed(2)}–${selected.endSec.toFixed(2)} s` : 'nothing selected',
+      );
+
+      // Escape dismisses it.
+      await page.keyboard.press('Escape');
+      await new Promise((r) => setTimeout(r, 250));
+      const afterEsc = await readMenu();
+      expect(
+        afterEsc.open === false,
+        'Escape closes the menu',
+        'dismissed',
+      );
+
+      // ── And on the track header, which is a different menu ──────────────
+      if (surfaces.headerX !== null) {
+        await page.mouse.click(surfaces.headerX, surfaces.rowY, { button: 'right' });
+        await new Promise((r) => setTimeout(r, 300));
+        const headerMenu = await readMenu();
+        expect(
+          headerMenu.open === true && headerMenu.title === 'CTX A',
+          'a right-click on the track header opens the track\'s menu, not the clip\'s',
+          headerMenu.open ? `"${headerMenu.title}" · ${headerMenu.items} items` : 'no menu opened',
+        );
+        await page.keyboard.press('Escape');
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    }
+  }
+
+  // ── A remapped key actually runs the command ───────────────────────────
+  //
+  // Measured end to end: store an override, press the NEW chord, and check
+  // the thing the command does.  `view.zoomInH` is the one picked because its
+  // effect is a number in the store rather than a window opening.
+  {
+    const remap = await page.evaluate(async () => {
+      const ko = await import('/shortcuts/key-overrides.ts');
+      const ss = await import('/stores/shortcutStore.ts');
+      const daw = await import('/stores/dawStore.ts');
+      // Find a chord nothing holds, the same way the selftest does.
+      // The whole alphabet across three modifier sets: of 78 candidates only
+      // nine are free, so a narrower search finds nothing and reads as the
+      // feature being broken.  Measured — the first draft of this probe
+      // searched twenty and all twenty were taken.
+      let spare = null;
+      for (const mods of ['Mod+Alt+Shift+', 'Mod+Alt+', 'Alt+Shift+']) {
+        for (const letter of 'QWERTYUIOPASDFGHJKLZXCVBNM'.split('')) {
+          const spec = `${mods}Key${letter}`;
+          if (ko.conflictOf(spec, 'file.new', ko.loadOverrides()) === null) { spare = spec; break; }
+        }
+        if (spare) break;
+      }
+      if (!spare) return { error: 'no free chord' };
+      const result = ss.useShortcutStore.getState().setChords('view.zoomInH', [spare]);
+      daw.useDawStore.getState().setPxPerSec(60);
+      await new Promise((r) => setTimeout(r, 300));
+      return { spare, ok: result.ok, reason: result.reason ?? null, before: 60 };
+    });
+
+    if (remap.error || remap.ok !== true) {
+      expect(false, 'a binding can be remapped', remap.error ?? remap.reason ?? 'refused');
+    } else {
+      // Press the new chord with real keys.
+      const chord = remap.spare.split('+');
+      const key = chord[chord.length - 1].replace('Key', '');
+      if (chord.includes('Mod')) await page.keyboard.down('Control');
+      if (chord.includes('Alt')) await page.keyboard.down('Alt');
+      if (chord.includes('Shift')) await page.keyboard.down('Shift');
+      await page.keyboard.press(`Key${key}`);
+      if (chord.includes('Shift')) await page.keyboard.up('Shift');
+      if (chord.includes('Alt')) await page.keyboard.up('Alt');
+      if (chord.includes('Mod')) await page.keyboard.up('Control');
+      await new Promise((r) => setTimeout(r, 300));
+
+      const after = await page.evaluate(async () => {
+        const daw = await import('/stores/dawStore.ts');
+        return daw.useDawStore.getState().pxPerSec;
+      });
+      expect(
+        after > remap.before,
+        'a remapped key runs its command on the next keystroke, with no relaunch',
+        `${remap.spare} → zoom ${remap.before} → ${after.toFixed(1)} px/s`,
+      );
+
+      // The old chord must no longer do it.
+      await page.evaluate(async () => {
+        const daw = await import('/stores/dawStore.ts');
+        daw.useDawStore.getState().setPxPerSec(60);
+      });
+      await new Promise((r) => setTimeout(r, 200));
+      await page.keyboard.press('KeyF');
+      await new Promise((r) => setTimeout(r, 300));
+      const afterOld = await page.evaluate(async () => {
+        const daw = await import('/stores/dawStore.ts');
+        return daw.useDawStore.getState().pxPerSec;
+      });
+      expect(
+        afterOld === 60,
+        'and the chord it used to answer to no longer does',
+        `F → ${afterOld} px/s (was 화면 가로 확대 before the remap)`,
+      );
+
+      // Put it back, so nothing after this runs on a remapped keyboard.
+      await page.evaluate(async () => {
+        const ss = await import('/stores/shortcutStore.ts');
+        ss.useShortcutStore.getState().resetAll();
+      });
+      await new Promise((r) => setTimeout(r, 200));
+      await page.evaluate(async () => {
+        const daw = await import('/stores/dawStore.ts');
+        daw.useDawStore.getState().setPxPerSec(60);
+      });
+      await page.keyboard.press('KeyF');
+      await new Promise((r) => setTimeout(r, 300));
+      const restored = await page.evaluate(async () => {
+        const daw = await import('/stores/dawStore.ts');
+        return daw.useDawStore.getState().pxPerSec;
+      });
+      expect(
+        restored > 60,
+        'and resetting the remap gives the default key its command back',
+        `F → ${restored.toFixed(1)} px/s after reset`,
+      );
+    }
+  }
+
   // `VITE_LOUI_GUIDED_FLOW` is set by CI on tag builds only, and it swaps the
   // whole front of the app: App.tsx renders <GuidedHome /> instead of
   // <HomePage />, and MasteringPage and ResultPage take guided branches.  No

@@ -38,6 +38,9 @@ import type {
 } from '../../../daw/model/types.js';
 import { useAutomationStore } from '../../../stores/automationStore.js';
 import { useWorkspaceStore } from '../../../stores/workspaceStore.js';
+import { usePluginWindowStore } from '../../../stores/pluginWindowStore.js';
+import { openContextMenu } from '../../../stores/contextMenuStore.js';
+import { insertMenu, mixerMenu } from '../surface-menus.js';
 import { findLane, isWritingMode, pointValueAt } from '../../../daw/model/automation.js';
 import { ensureLane } from '../../../daw/edit/automation-lanes.js';
 import { stackDepth, isSummingStack } from '../../../daw/model/stacks.js';
@@ -294,6 +297,10 @@ function ChannelStrip({
 
   return (
     <div
+      onContextMenu={(e) => openContextMenu(e, track.name, mixerMenu({
+        onInserts: () => usePluginWindowStore.getState().toggleRack(track.id),
+        isMaster,
+      }))}
       className={`w-[124px] shrink-0 border-r ${stripColor} flex flex-col`}
       style={{
         background: isFolder ? 'rgba(198,167,104,0.06)' : '#12121a',
@@ -423,7 +430,22 @@ function ChannelStrip({
         {slotsToShow(track.inserts.map((i) => i.slot), insertsOpen).map((slot) => {
           const insert = track.inserts.find((i) => i.slot === slot);
           return (
-            <div key={slot} className="flex items-center gap-0.5">
+            <div
+              key={slot}
+              onContextMenu={(e) => openContextMenu(e,
+                insert ? `${slotLetter(slot)} · ${pluginName(insert.pluginId)}` : `${slotLetter(slot)} · 빈 슬롯`,
+                insertMenu({
+                  pluginName: insert ? pluginName(insert.pluginId) : null,
+                  bypassed: insert?.bypass === true,
+                  onOpen: () => usePluginWindowStore.getState().open(track.id, slot),
+                  onToggleBypass: () => {
+                    if (insert) onApply((s) => setInsert(s, track.id, { ...insert, bypass: !insert.bypass }));
+                  },
+                  onRemove: () => onApply((s) => removeInsert(s, track.id, slot)),
+                  onInserts: () => usePluginWindowStore.getState().toggleRack(track.id),
+                }))}
+              className="flex items-center gap-0.5"
+            >
               {/* The letter, because a collapsed list still has to say WHERE a
                   device sits — "the compressor is in C" is how an engineer
                   remembers a chain. */}

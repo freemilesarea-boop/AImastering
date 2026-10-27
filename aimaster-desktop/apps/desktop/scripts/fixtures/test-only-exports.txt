@@ -142,6 +142,7 @@ src/renderer/daw/engine/struck-string.ts::modeSample
 src/renderer/daw/engine/struck-string.ts::stretchCents
 src/renderer/daw/engine/template-store.ts::resetTemplateIds
 src/renderer/daw/engine/template-store.ts::setTemplateStore
+src/renderer/shortcuts/key-overrides.ts::setOverrideStore
 src/renderer/daw/engine/upward.ts::upwardOutputDb
 src/renderer/daw/engine/upward.ts::upwardPeakGainDb
 src/renderer/daw/engine/user-presets.ts::clearUserPresets

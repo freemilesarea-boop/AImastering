@@ -17,7 +17,7 @@
 //   • 세션 열기 — added on Mod+Shift+O (Cubase has no equivalent; Ctrl+O
 //     opens an audio file here because that is the actual entry point).
 
-import { parseChord, formatChord, type KeyChord, type Platform } from './keys.js';
+import { parseChord, type KeyChord } from './keys.js';
 
 export type ShortcutGroupId = 'file' | 'transport' | 'tools' | 'edit' | 'window' | 'daw';
 
@@ -631,10 +631,10 @@ export const BINDINGS: Binding[] = SHORTCUTS.flatMap((def) =>
   def.chords.map((spec) => ({ def, chord: parseChord(spec) })),
 );
 
-/** Help-overlay label for a definition, e.g. 'Ctrl + Shift + S  /  Ctrl + Y'. */
-export function displayChords(def: ShortcutDef, platform: Platform): string[] {
-  return def.chords.map((spec) => formatChord(parseChord(spec), platform));
-}
+// `displayChords` lived here and formatted a definition's DEFAULT chords.
+// It was removed with the overrides layer: a label built from the defaults is
+// the wrong label the moment a user remaps anything, so the help overlay now
+// asks `describeSpec` about the chords `effectiveChords` resolved.
 
 /** The definition owning a command id (undefined for an unknown id). */
 export function findShortcut(id: CommandId): ShortcutDef | undefined {

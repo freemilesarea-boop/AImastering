@@ -18,6 +18,7 @@ import DawInspector from './DawInspector.js';
 import ControlRoomPanel from './mix/ControlRoomPanel.js';
 import DawMediaBay from './DawMediaBay.js';
 import DawShortcutHelp from './DawShortcutHelp.js';
+import ContextMenu from './ContextMenu.js';
 import ControlSurfacePanel from './surface/ControlSurfacePanel.js';
 import DeviceSetupPanel from './devices/DeviceSetupPanel.js';
 
@@ -63,6 +64,9 @@ export default function DawWorkspaceChrome() {
 
       {panels.mediaBay && <DawMediaBay />}
       {panels.help     && <DawShortcutHelp />}
+      {/* Not behind a panel flag: the menu owns its own open state, and it has
+          to be mountable from any surface in the workspace. */}
+      <ContextMenu />
       {panels.surface  && <ControlSurfacePanel />}
       {panels.deviceSetup && <DeviceSetupPanel />}
     </>

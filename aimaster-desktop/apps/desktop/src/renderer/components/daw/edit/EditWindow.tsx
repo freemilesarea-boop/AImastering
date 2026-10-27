@@ -22,8 +22,11 @@ import {
   activePlaylist, clipAt, clipEnd, findTrack, sessionEndSec, trackClips,
 } from '../../../daw/model/session-ops.js';
 import {
+  clearRange,
   clipTrackMoveRefusal, moveClipToTrack, setClipFade, setOneClipGain, trackBand } from '../../../daw/edit/clip-edit.js';
 import { wheelNav } from '../../../daw/edit/wheel-nav.js';
+import { openContextMenu } from '../../../stores/contextMenuStore.js';
+import { clipMenu, trackMenu } from '../surface-menus.js';
 import { describeGroup, moveClipWithGroup } from '../../../daw/edit/edit-groups.js';
 import { autoCrossfadeTrack } from '../../../daw/edit/auto-fade.js';
 import {
@@ -34,7 +37,8 @@ import {
   gainFromY, laneGrab, type LaneGrab,
 } from '../../../daw/model/lane-grab.js';
 import { fadeCurve } from '../../../daw/engine/clip-player.js';
-import type { FadeShape } from '../../../daw/model/types.js';
+import type {
+  Clip, FadeShape } from '../../../daw/model/types.js';
 import { useMidiEditorStore } from '../../../stores/midiEditorStore.js';
 import {
   collapsedOverviewClips, stackDepth, stackSummary, toggleCollapsed, unpackStack,
@@ -282,6 +286,63 @@ export default function EditWindow() {
     const rect = el.getBoundingClientRect();
     return Math.max(0, scrollSec + (clientX - rect.left) / pxPerSec);
   }, [scrollSec, pxPerSec]);
+
+  /**
+   * Open the editor this clip's kind needs.
+   *
+   * Lifted out of the double-click handler so the context menu's
+   * "편집기에서 열기" is the same code rather than a second answer to the
+   * same question — a MIDI part goes to the Key Editor, an audio clip to the
+   * Region Lab with any chain it already carries loaded back.
+   */
+  const openClipEditor = useCallback((trackId: string, clip: Clip): void => {
+    if (clip.kind === 'midi') {
+      useMidiEditorStore.getState().openPart({ trackId, clipId: clip.id });
+      useDawStore.getState().setWindow('midi');
+      return;
+    }
+    const fx = clip.regionFx;
+    useRegionLabStore.getState().openLab(
+      { trackId, clipId: clip.id },
+      fx ? fx.inserts.map((i) => ({ ...i })) : [],
+      fx ? fx.tailMode : 'keep',
+    );
+  }, []);
+
+  /**
+   * Right-click in a lane: select what is under the pointer, then offer the
+   * menu for it.
+   *
+   * Selecting FIRST is why the menu is almost entirely command ids — the
+   * commands act on the selection, so they act on the thing that was
+   * clicked without the menu having to pass anything along.  It is also what
+   * every DAW does, and the reason a right-click on an unselected clip does
+   * not operate on whatever was selected before.
+   */
+  const onLaneContext = useCallback((e: React.MouseEvent, track: Track): void => {
+    const at = secAt(e.clientX);
+    const clip = clipAt(track, at);
+    setFocusedTrack(track.id);
+    if (!clip) {
+      // Empty lane: the track's own menu, because that is what is there.
+      openContextMenu(e, track.name, trackMenu({
+        onDelete: track.kind === 'master' ? null : () => void deleteTracks([track.id]),
+        onInserts: () => usePluginWindowStore.getState().toggleRack(track.id),
+        inStack: stackDepth(session, track.id) > 0,
+      }));
+      return;
+    }
+    setSelection({
+      startSec: clip.startSec, endSec: clipEnd(clip), trackIds: [track.id],
+    });
+    openContextMenu(e, clip.name || '클립', clipMenu({
+      kind: clip.kind === 'midi' ? 'midi' : 'audio',
+      onOpenEditor: () => openClipEditor(track.id, clip),
+      onDelete: () => apply((st) => clearRange(st, {
+        startSec: clip.startSec, endSec: clipEnd(clip), trackIds: [track.id],
+      })),
+    }));
+  }, [secAt, setFocusedTrack, setSelection, session, apply, openClipEditor]);
 
   // ── Wheel navigation ──────────────────────────────────────────────────
   //
@@ -924,6 +985,15 @@ export default function EditWindow() {
               focused={focusedTrackId === row.track.id}
               onFocus={() => setFocusedTrack(row.track.id)}
               onDelete={row.track.kind === 'master' ? null : () => void deleteTracks([row.track.id])}
+              onContextMenu={(e) => {
+                setFocusedTrack(row.track.id);
+                openContextMenu(e, row.track.name, trackMenu({
+                  onDelete: row.track.kind === 'master'
+                    ? null : () => void deleteTracks([row.track.id]),
+                  onInserts: () => usePluginWindowStore.getState().toggleRack(row.track.id),
+                  inStack: stackDepth(session, row.track.id) > 0,
+                }));
+              }}
               onSolo={() => apply((s) => toggleSolo(s, row.track.id))}
               onMute={() => apply((s) => toggleMute(s, row.track.id))}
               onCyclePlaylist={(dir) => apply((s) => cyclePlaylist(s, row.track.id, dir))}
@@ -1020,21 +1090,12 @@ export default function EditWindow() {
                   });
                   return;
                 }
-                if (clip.kind === 'midi') {
-                  useMidiEditorStore.getState().openPart({ trackId: row.track.id, clipId: clip.id });
-                  useDawStore.getState().setWindow('midi');
-                  return;
-                }
                 // Re-opening a piece that has already been processed loads its
                 // saved chain back, so changing one knob and applying again is
-                // an edit rather than a rebuild.
-                const fx = clip.regionFx;
-                useRegionLabStore.getState().openLab(
-                  { trackId: row.track.id, clipId: clip.id },
-                  fx ? fx.inserts.map((i) => ({ ...i })) : [],
-                  fx ? fx.tailMode : 'keep',
-                );
+                // an edit rather than a rebuild — see `openClipEditor`.
+                openClipEditor(row.track.id, clip);
               }}
+              onContextMenu={(e) => onLaneContext(e, row.track)}
               className="relative border-b border-zinc-900"
               // The cursor is the only thing telling you the scissors are
               // armed, or that the corner under the pointer is a fade handle —
@@ -1234,7 +1295,7 @@ function TrackHeader({
   track, editGroup, depth, summary, focused, onFocus, onDelete, onSolo, onMute, onCyclePlaylist,
   onPickTake, onAddTake, onDuplicateTake, onRemoveTake, onFlattenTakes,
   onToggleCollapse, onUnpack, onSmart, onInserts, onArm, recording,
-  onToggleAutomation, automationOpen, onRename, onColor, onResize,
+  onToggleAutomation, automationOpen, onRename, onColor, onResize, onContextMenu,
 }: {
   track: Track;
   editGroup: GroupDef | null;
@@ -1244,6 +1305,8 @@ function TrackHeader({
   onFocus: () => void;
   /** Null on the master, which is the output and not a channel. */
   onDelete: (() => void) | null;
+  /** The header's right-click menu, composed by the caller that owns the ops. */
+  onContextMenu: (e: React.MouseEvent) => void;
   onSolo: () => void;
   onMute: () => void;
   onCyclePlaylist: (dir: 1 | -1) => void;
@@ -1279,6 +1342,7 @@ function TrackHeader({
   return (
     <div
       onMouseDown={onFocus}
+      onContextMenu={onContextMenu}
       className={`relative px-2 py-1.5 border-b border-zinc-900 flex flex-col gap-1 ${focused ? 'bg-zinc-800/60' : ''}`}
       style={{
         height: track.height,

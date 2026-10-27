@@ -37,6 +37,8 @@
   "ui-scale",
   "wheel-nav",
   "clip-track-move",
+  "key-overrides",
+  "context-menu",
   "render-metrics",
   "snapshot-panel",
   "text-prompt",
