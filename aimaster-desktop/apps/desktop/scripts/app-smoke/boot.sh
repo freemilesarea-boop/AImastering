@@ -81,6 +81,33 @@ node esbuild.main.cjs --dev > "$WORK/esbuild.log" 2>&1 || {
   echo "main bundle FAILED"; tail -5 "$WORK/esbuild.log"; exit 1; }
 echo "main     built"
 
+# A vite that is OLDER than the source it serves is the quiet version of the
+# CDP hazard below, and it cost three runs to find.  The dev server keeps a
+# module graph; after a large edit it can serve a MIXED one, and two copies of
+# `dawStore.ts` means the React tree subscribes to one store while this
+# harness writes to the other.  What that looks like is not an error: the
+# import reported eight tracks, the UI drew seven lanes, the store read one,
+# the chrome grew 29 px, and 25 steps failed naming the product.  Same run on
+# a fresh vite: 69/69.
+#
+# So reuse is allowed only when nothing under src/ has been touched since the
+# server started.  `etimes` is the process's age in seconds, and `find
+# -newermt` asks the question directly.
+VITE_PID="$(ps -eo pid,args --no-headers | grep -F 'bin/vite' | grep -v grep \
+  | awk '{print $1}' | head -1)"
+if [ -n "$VITE_PID" ]; then
+  VITE_AGE="$(ps -o etimes= -p "$VITE_PID" 2>/dev/null | tr -d ' ')"
+  if [ -n "$VITE_AGE" ] \
+    && [ -n "$(find src -type f -newermt "-${VITE_AGE} seconds" -print -quit 2>/dev/null)" ]; then
+    echo "vite     ${VITE_AGE}s old and src/ is newer — restarting it"
+    kill -9 "$VITE_PID" 2>/dev/null
+    for _ in $(seq 1 20); do
+      curl -s -m 2 http://localhost:5173 > /dev/null || break
+      sleep 0.5
+    done
+  fi
+fi
+
 if ! curl -s -m 2 http://localhost:5173 > /dev/null; then
   npx vite > "$WORK/vite.log" 2>&1 &
   npx wait-on http://localhost:5173 -t 90000 || { echo "vite FAILED"; exit 1; }

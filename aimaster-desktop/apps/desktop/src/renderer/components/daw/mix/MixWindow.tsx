@@ -33,6 +33,7 @@ import {
   type ChannelMeterReading,
 } from '../../../daw/model/channel-meter.js';
 
+import { SEND_LEVEL_MAX_DB, SEND_LEVEL_MIN_DB } from '../../../daw/model/types.js';
 import type {
   AutomationMode, AutomationTarget, DawSession, Track,
 } from '../../../daw/model/types.js';
@@ -541,7 +542,8 @@ function ChannelStrip({
               {send && (
                 <div className="flex items-center gap-1">
                   <input
-                    type="range" min={-60} max={12} step={0.5} value={send.levelDb}
+                    type="range" min={SEND_LEVEL_MIN_DB} max={SEND_LEVEL_MAX_DB}
+                    step={0.5} value={send.levelDb}
                     title={`레벨 ${send.levelDb.toFixed(1)} dB`}
                     onPointerDown={() => grab({ kind: 'sendLevel', sendId: send.id })}
                     onPointerUp={() => release({ kind: 'sendLevel', sendId: send.id })}

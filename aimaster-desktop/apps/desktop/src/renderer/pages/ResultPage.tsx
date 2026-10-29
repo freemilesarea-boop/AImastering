@@ -1173,7 +1173,7 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
   const setStyle      = useAudioStore((s) => s.setStyle);
   const updateOptions = useAudioStore((s) => s.updateOptions);
 
-  const rt = options.rt ?? {};
+  const rt = options.rt ?? NO_RT;
   const updateRt = useCallback((patch: Partial<NonNullable<MasteringOptions['rt']>>) => {
     updateOptions({ rt: { ...rt, ...patch } });
   }, [rt, updateOptions]);
@@ -1421,6 +1421,10 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
 }
 
 // ── ResultPage ────────────────────────────────────────────────────────────────
+
+/** One empty realtime block, not a fresh one per render — it feeds the
+ *  dependency array of the callback that writes it back. */
+const NO_RT: NonNullable<MasteringOptions['rt']> = {};
 
 export default function ResultPage() {
   const setPage         = useAppStore((s) => s.setPage);

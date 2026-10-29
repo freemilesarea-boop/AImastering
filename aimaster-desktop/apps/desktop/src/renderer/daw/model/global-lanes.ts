@@ -21,6 +21,22 @@
 // The tracks were not clipped by a bug in the waveform: 190 px of the
 // scroller was spent on four lanes, three of which had nothing in them.
 //
+// That fix then took something with it.  The `+` that adds a section
+// boundary, the `뼈대` and `분석` that make the first chords, and the `+` and
+// `박자` that add the first tempo and meter change are all INSIDE their own
+// lane's header.  So an empty chord lane hid the only buttons that could put
+// a chord in it: no chords → no lane → no buttons → no chords.  The toolbar's
+// three-state toggle was the one way out, and "press the button marked G:AUTO"
+// is not how anyone finds the chord track.
+//
+// So a lane with nothing in it is COLLAPSED to the single row that carries its
+// entry point rather than removed: 26 px instead of 76 for chords, 26 instead
+// of 62 for the tempo map, and the section lane is one row already.  The
+// picture lane is the one with nothing to offer — every control in it needs a
+// video that is loaded from elsewhere — so it still takes none.  An empty
+// session spends 78 px of the 190, and the full lane comes back the moment
+// there is something to show in it.
+//
 // So a lane shows itself when the session has something for it, and the
 // project's own reasoning about the Universe strip — "on a short session it
 // is a band of nothing, and screen height is the scarce thing here" — is
@@ -57,8 +73,26 @@ export const GLOBAL_LANE_HEIGHTS: Readonly<Record<GlobalLaneId, number>> = {
 
 export type GlobalLaneFlags = Readonly<Record<GlobalLaneId, boolean>>;
 
-const ALL_ON: GlobalLaneFlags = { section: true, chord: true, picture: true, tempo: true };
-const ALL_OFF: GlobalLaneFlags = { section: false, chord: false, picture: false, tempo: false };
+/**
+ * What a lane takes when it is collapsed to the row that holds its entry
+ * point.  `0` means the lane has no entry point of its own and is left out
+ * entirely — the picture lane's controls all need a video, and a video is
+ * loaded from the menu, not from the lane.
+ *
+ * The section lane's full height is already one row, so collapsing it changes
+ * nothing but the name; it is listed so the arithmetic has no special case.
+ */
+export const GLOBAL_LANE_COLLAPSED_HEIGHTS: Readonly<Record<GlobalLaneId, number>> = {
+  section: 26,
+  chord: 26,
+  picture: 0,
+  tempo: 26,
+};
+
+/** Shown whole, shown as its entry-point row, or not built at all. */
+export type GlobalLaneView = 'off' | 'collapsed' | 'full';
+
+export type GlobalLaneViews = Readonly<Record<GlobalLaneId, GlobalLaneView>>;
 
 /**
  * Which lanes have something in them.
@@ -78,23 +112,40 @@ export function globalLanesWithMaterial(session: DawSession): GlobalLaneFlags {
 }
 
 /**
- * Which lanes to build, given the user's override.
+ * How to build each lane, given the user's override.
  *
- * `null` is the default and means "the ones with material"; `true` and
- * `false` are the user saying so, and the user wins either way — a tempo map
- * with four changes can still be put away to get the height back.
+ * `null` is the default: a lane with material is shown whole, and a lane
+ * without it is collapsed to its entry-point row rather than removed.  `true`
+ * and `false` are the user saying so, and the user wins either way — a tempo
+ * map with four changes can still be put away to get the height back, and
+ * `false` takes the entry-point rows with it, because a user who asks for the
+ * height back has said what they want.
+ *
+ * This replaced `globalLanesShown`, which returned a boolean per lane.  Two
+ * states could not say "keep the row that adds the first chord", which is the
+ * whole of the defect it was changed for.
  */
-export function globalLanesShown(
+export function globalLaneViews(
   session: DawSession, override: boolean | null,
-): GlobalLaneFlags {
-  if (override === true) return ALL_ON;
-  if (override === false) return ALL_OFF;
-  return globalLanesWithMaterial(session);
+): GlobalLaneViews {
+  const material = globalLanesWithMaterial(session);
+  const views: Record<GlobalLaneId, GlobalLaneView> = {
+    section: 'off', chord: 'off', picture: 'off', tempo: 'off',
+  };
+  for (const id of GLOBAL_LANE_IDS) {
+    if (override === false) continue;
+    if (override === true || material[id]) views[id] = 'full';
+    else if (GLOBAL_LANE_COLLAPSED_HEIGHTS[id] > 0) views[id] = 'collapsed';
+  }
+  return views;
 }
 
-/** What the shown lanes take off the top of the scroller. */
-export function globalLanesPx(shown: GlobalLaneFlags): number {
+/** What the built lanes take off the top of the scroller. */
+export function globalLanesPx(views: GlobalLaneViews): number {
   let px = 0;
-  for (const id of GLOBAL_LANE_IDS) if (shown[id]) px += GLOBAL_LANE_HEIGHTS[id];
+  for (const id of GLOBAL_LANE_IDS) {
+    if (views[id] === 'full') px += GLOBAL_LANE_HEIGHTS[id];
+    else if (views[id] === 'collapsed') px += GLOBAL_LANE_COLLAPSED_HEIGHTS[id];
+  }
   return px;
 }

@@ -125,10 +125,13 @@ jobs:
 
       # ── The suite, which CI did not run ─────────────────────────────────
       #
-      # Until now this job ran `typecheck` and `lint` and nothing else: the 226
-      # selftests (4,795 assertions) had never once run in CI.  They ran only
-      # when someone ran them by hand, which is the same standing as not
-      # having them.
+      # Until now this job ran `typecheck` and `lint` and nothing else: the
+      # selftests had never once run in CI.  They ran only when someone ran
+      # them by hand, which is the same standing as not having them.
+      #
+      # The count in the step's name below comes from `scripts/suite-order.json`,
+      # and `ci-env-parity-selftest` fails if the two disagree — the name said
+      # 226 for every release after the suite passed 230.
       #
       # What this does NOT do is run the whole Python suite.  `test:python-suite`
       # inside the chain asserts that pytest still COLLECTS its 551 tests and
@@ -145,7 +148,7 @@ jobs:
       #
       # It needs the built engine (test:python-suite spawns it) and the ffmpeg
       # pair, so it sits after both are in public/bin — i.e. here, not earlier.
-      - name: Test (226 selftests, including the Python engine's collection)
+      - name: Test (234 selftests, including the Python engine's collection)
         working-directory: aimaster-desktop/apps/desktop
         run: pnpm -s test
 

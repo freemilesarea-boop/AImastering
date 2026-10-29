@@ -200,6 +200,10 @@ export default function DawPage() {
     if (!shouldAdoptQueue(session, queue.length)) return;
     importedOnce.current = true;
     void importQueue(true);
+    // `session.tracks` and not `session`: this runs at most once, guarded by
+    // `importedOnce`, and re-running it on every unrelated session change
+    // would only re-test a flag that is already set.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queue.length, session.tracks, importQueue]);
 
   const handleImportAudio = useCallback(async () => {

@@ -160,6 +160,7 @@
   "eq-graph",
   "free-eq-offline",
   "session-schema",
+  "session-repair",
   "undo-redo",
   "dynamics-graph",
   "restoration-views",
@@ -228,6 +229,7 @@
   "instrument-patches",
   "settings",
   "layers",
+  "tooling",
   "layout",
   "ui-language",
   "ui-consistency"

@@ -307,6 +307,11 @@ export function TapeView(props: {
       d += `${i === 0 ? 'M' : 'L'}${hzToX(hz, props.width).toFixed(1)},${yFor((bump + loss) * wet).toFixed(1)}`;
     }
     return d;
+    // `yFor` is a helper rebuilt each render, so naming it here would make
+    // this memo recompute every render — the opposite of its purpose.  What
+    // it actually reads is module constants and `props.width`, and that is
+    // listed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bumpDb, bumpHz, lossDb, rollHz, wet, props.width]);
 
   return (
@@ -690,6 +695,9 @@ export function ReverbView(props: {
       d += `L${xFor(ms).toFixed(1)},${(base - amp * (base - PAD.top - 10)).toFixed(1)}`;
     }
     return `${d}L${xFor(TIME_VIEW_MS).toFixed(1)},${base.toFixed(1)}Z`;
+    // Same as above: `xFor` and `base` are rebuilt each render and read
+    // nothing but module constants and `props.width`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pre, rt60Ms, damping, wet, props.width]);
 
   return (

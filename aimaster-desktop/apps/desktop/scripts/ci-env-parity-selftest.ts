@@ -159,5 +159,29 @@ check(
   linuxSteps.filter((s) => s.run).map((s) => String(s.name ?? '?')).join(' · '),
 );
 
+// And does the step still say how many it runs?
+//
+// The name read "Test (226 selftests…)" while the suite had grown past 230.
+// A label with a number in it is a claim, and this one was wrong for every
+// release since the count last changed — so the count now has to come from
+// the list that decides it.
+{
+  const order = JSON.parse(
+    fs.readFileSync(path.join(DESKTOP, 'scripts', 'suite-order.json'), 'utf8'),
+  ) as string[];
+  const named = linuxSteps
+    .map((s) => String(s.name ?? ''))
+    .filter((n) => /selftests/.test(n));
+  const claimed = named
+    .flatMap((n) => [...n.matchAll(/(\d[\d,]*)\s*selftests/g)].map((m) => Number(m[1]?.replace(/,/g, ''))));
+  check(
+    'the suite step says how many selftests it runs, and the number is the list\'s own',
+    claimed.length > 0 && claimed.every((n) => n === order.length),
+    claimed.length === 0
+      ? `no step name mentions a selftest count: ${named.join(' · ') || '(none)'}`
+      : `step claims ${claimed.join('/')} · suite-order.json lists ${order.length}`,
+  );
+}
+
 console.log(`\n=== ${passed} passed, ${failed} failed ===\n`);
 process.exit(failed === 0 ? 0 : 1);

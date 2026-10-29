@@ -69,10 +69,16 @@ export default function VideoViewer() {
   // The element only exists while the viewer is open, so attaching is tied to
   // both.  Detaching pauses it — a hidden video that keeps decoding is a
   // hidden video that keeps burning battery.
+  //
+  // `video?.id` and not `video`: a nudge, a trim or a spot moves fields on the
+  // same video, and re-attaching the element on each of those would reload the
+  // decoder mid-edit.  Which film is loaded is the only change that matters
+  // here, and that is the id.
   useEffect(() => {
     if (open && video && videoRef.current) videoFollower.attach(videoRef.current);
     else videoFollower.detach();
     return () => videoFollower.detach();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, video?.id]);
 
   // The transport reports; the follower decides.  This runs on every position
@@ -119,6 +125,11 @@ export default function VideoViewer() {
     } catch (err) {
       notify(`영상을 읽지 못했습니다: ${(err as Error).message}`, 'error');
     } finally { setProbing(null); }
+  // `pullVideoAudio` is declared below this callback, so naming it here is a
+  // ReferenceError at render time, not a missing dependency.  The call reads
+  // the binding when the user picks a file — after both are defined — so no
+  // stale version of it can be observed.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apply, notify, setOpen, setProbing]);
 
   /**

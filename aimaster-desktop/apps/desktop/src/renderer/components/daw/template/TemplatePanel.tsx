@@ -33,8 +33,13 @@ export default function TemplatePanel({ onClose }: { onClose: () => void }) {
 
   // Bumped after every write so the lists re-read the store.
   const [revision, setRevision] = useState(0);
+  // Both lists read module state that is not reactive, so `revision` is
+  // what makes them re-read it.  Dropping it would freeze the panel on the
+  // templates that existed when it mounted.
+  /* eslint-disable react-hooks/exhaustive-deps */
   const tracks = useMemo(() => listTrackTemplates(), [revision]);
   const sessions = useMemo(() => listSessionTemplates(), [revision]);
+  /* eslint-enable react-hooks/exhaustive-deps */
   const [trackName, setTrackName] = useState('');
   const [sessionName, setSessionName] = useState('');
   const [count, setCount] = useState(1);

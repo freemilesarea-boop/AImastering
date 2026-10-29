@@ -55,6 +55,7 @@ export default function PoolPanel({ onClose }: { onClose: () => void }) {
     () => buildPool(session, { missingIds: missingFileIds() }),
     // `engineWarning` is what changes when a preload fails, so it is what
     // makes this recompute; the cache itself is not reactive.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [session, engineWarning]);
   const shown = useMemo(() => queryPool(pool, { search, filter, sort }), [pool, search, filter, sort]);
   const summary = useMemo(() => summarisePool(pool), [pool]);

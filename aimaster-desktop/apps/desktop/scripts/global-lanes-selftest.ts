@@ -30,7 +30,8 @@ export {};
 import { readFileSync } from 'node:fs';
 
 import {
-  GLOBAL_LANE_HEIGHTS, GLOBAL_LANE_IDS, globalLanesPx, globalLanesShown,
+  GLOBAL_LANE_COLLAPSED_HEIGHTS, GLOBAL_LANE_HEIGHTS, GLOBAL_LANE_IDS,
+  globalLaneViews, globalLanesPx,
   globalLanesWithMaterial, type GlobalLaneId,
 } from '../src/renderer/daw/model/global-lanes.js';
 import {
@@ -77,8 +78,86 @@ console.log('\n=== The four lanes above the tracks ===\n');
   );
   check(
     'and together they are the 190 px the measurement found',
-    globalLanesPx({ section: true, chord: true, picture: true, tempo: true }) === 190,
-    `${globalLanesPx({ section: true, chord: true, picture: true, tempo: true })} px`,
+    globalLanesPx({ section: 'full', chord: 'full', picture: 'full', tempo: 'full' }) === 190,
+    `${globalLanesPx({ section: 'full', chord: 'full', picture: 'full', tempo: 'full' })} px`,
+  );
+}
+
+// ── The row that was removed with the lane ───────────────────────────────
+//
+// The defect this state exists for: the `+` that adds a section boundary, the
+// `뼈대`/`분석` that make the first chords and the `+`/`박자` that add the
+// first tempo and meter change are inside their own lane's header, so hiding
+// an empty lane hid the only way to fill it.  These checks are about the
+// buttons, not the pixels — a collapsed row that has lost its button is the
+// bug again at a smaller size.
+{
+  const collapsedSources: Record<GlobalLaneId, [string, string]> = {
+    section: ['src/renderer/components/daw/edit/SectionLane.tsx', 'SECTION_LANE_HEIGHT'],
+    chord:   ['src/renderer/components/daw/edit/ChordLane.tsx',   'CHORD_LANE_COLLAPSED_HEIGHT'],
+    picture: ['src/renderer/components/daw/edit/PictureLane.tsx', 'PICTURE_LANE_HEIGHT'],
+    tempo:   ['src/renderer/components/daw/edit/TempoTrack.tsx',  'TEMPO_TRACK_COLLAPSED_HEIGHT'],
+  };
+  const wrong: string[] = [];
+  const seen: string[] = [];
+  for (const id of GLOBAL_LANE_IDS) {
+    const want = GLOBAL_LANE_COLLAPSED_HEIGHTS[id];
+    if (want === 0) { seen.push(`${id}=0 (no entry point of its own)`); continue; }
+    const [file, name] = collapsedSources[id];
+    const m = new RegExp(`export const ${name} = (\\d+)`).exec(read(file));
+    const px = m ? Number(m[1]) : NaN;
+    seen.push(`${id}=${String(px)}`);
+    if (px !== want) wrong.push(`${name} is ${String(px)}, global-lanes says ${want}`);
+  }
+  check(
+    'each collapsed height is the one its component exports',
+    wrong.length === 0,
+    wrong.length === 0 ? seen.join(', ') : wrong.join('; '),
+  );
+  check(
+    'and a collapsed row is never taller than the lane it stands in for',
+    GLOBAL_LANE_IDS.every(
+      (id) => GLOBAL_LANE_COLLAPSED_HEIGHTS[id] <= GLOBAL_LANE_HEIGHTS[id]),
+    GLOBAL_LANE_IDS.map(
+      (id) => `${id} ${GLOBAL_LANE_COLLAPSED_HEIGHTS[id]}/${GLOBAL_LANE_HEIGHTS[id]}`).join(', '),
+  );
+}
+{
+  const chord = read('src/renderer/components/daw/edit/ChordLane.tsx');
+  const start = chord.indexOf('  if (collapsed) {');
+  const row = start < 0 ? '' : chord.slice(start, chord.indexOf('\n  }\n', start));
+  const missing = ([
+    ['뼈대 (8마디 뼈대)', 'onClick={seed}'],
+    ['+ (재생헤드에 코드)', 'onClick={addHere}'],
+    ['분석 (오디오에서 코드)', 'void readChords()'],
+  ] as const).filter(([, needle]) => !row.includes(needle)).map(([label]) => label);
+  check(
+    'the collapsed chord row still carries all three ways to make a first chord',
+    start >= 0 && missing.length === 0,
+    start < 0 ? 'no collapsed branch in ChordLane.tsx'
+      : missing.length === 0 ? `${row.split('<button').length - 1} buttons in the row`
+        : `missing: ${missing.join(', ')}`,
+  );
+  check(
+    'and it is the row that an empty session gets, not the hidden lane',
+    globalLaneViews(createSession('x'), null).chord === 'collapsed',
+    `empty session → chord:${globalLaneViews(createSession('x'), null).chord}`,
+  );
+}
+{
+  const tempo = read('src/renderer/components/daw/edit/TempoTrack.tsx');
+  const header = tempo.slice(
+    tempo.indexOf('export function TempoTrackHeader'),
+    tempo.indexOf('export default function TempoTrack'));
+  check(
+    'the tempo row shares its two buttons with the full lane rather than copying them',
+    (header.split('addTempoEvent(').length - 1) === 1
+      && (header.split('addMeterEvent(').length - 1) === 1
+      && (header.split('{addTempoHere}').length - 1) === 2
+      && (header.split('{addMeterHere}').length - 1) === 2,
+    `addTempoEvent×${header.split('addTempoEvent(').length - 1}`
+      + ` · addMeterEvent×${header.split('addMeterEvent(').length - 1}`
+      + ` · rendered in ${header.split('{addTempoHere}').length - 1} layouts`,
   );
 }
 
@@ -87,9 +166,15 @@ console.log('\n=== The four lanes above the tracks ===\n');
   const empty = createSession('empty');
   const flags = globalLanesWithMaterial(empty);
   check(
-    'a new session gives all 190 px to the tracks',
-    GLOBAL_LANE_IDS.every((id) => flags[id] === false) && globalLanesPx(flags) === 0,
+    'a new session has material for none of the four',
+    GLOBAL_LANE_IDS.every((id) => flags[id] === false),
     GLOBAL_LANE_IDS.map((id) => `${id}=${String(flags[id])}`).join(' '),
+  );
+  const views = globalLaneViews(empty, null);
+  check(
+    'so it spends 78 px on entry-point rows and gives the other 112 to the tracks',
+    globalLanesPx(views) === 78,
+    `${globalLanesPx(views)} px — ${GLOBAL_LANE_IDS.map((id) => `${id}:${views[id]}`).join(' ')}`,
   );
 }
 {
@@ -105,14 +190,15 @@ console.log('\n=== The four lanes above the tracks ===\n');
   const b = globalLanesWithMaterial(withChord);
   check(
     'a section brings back its lane, and only its lane',
-    a.section === true && a.chord === false && a.picture === false && a.tempo === false
-      && globalLanesPx(a) === GLOBAL_LANE_HEIGHTS.section,
-    `${globalLanesPx(a)} px for a session with one section`,
+    a.section === true && a.chord === false && a.picture === false && a.tempo === false,
+    GLOBAL_LANE_IDS.map((id) => `${id}=${String(a[id])}`).join(' '),
   );
+  const bv = globalLaneViews(withChord, null);
   check(
-    'and a chord brings back its own, which is the tall one',
-    b.chord === true && b.section === false && globalLanesPx(b) === GLOBAL_LANE_HEIGHTS.chord,
-    `${globalLanesPx(b)} px for a session with one chord`,
+    'and one chord opens the chord lane whole, the others staying one row',
+    b.chord === true && bv.chord === 'full' && bv.section === 'collapsed'
+      && bv.tempo === 'collapsed' && bv.picture === 'off',
+    `${globalLanesPx(bv)} px — ${GLOBAL_LANE_IDS.map((id) => `${id}:${bv[id]}`).join(' ')}`,
   );
 }
 {
@@ -133,8 +219,8 @@ console.log('\n=== The four lanes above the tracks ===\n');
     ...createSession('r'),
     sections: [{ id: 'sec1', name: 'Verse', kind: 'verse', startSec: 0 }],
   };
-  const off = globalLanesShown(rich, false);
-  const on = globalLanesShown(createSession('e'), true);
+  const off = globalLaneViews(rich, false);
+  const on = globalLaneViews(createSession('e'), true);
   check(
     'OFF puts away a lane that has something in it',
     globalLanesPx(off) === 0,
@@ -147,8 +233,9 @@ console.log('\n=== The four lanes above the tracks ===\n');
   );
   check(
     'AUTO is neither of those — it asks the session',
-    globalLanesPx(globalLanesShown(rich, null)) === GLOBAL_LANE_HEIGHTS.section,
-    `${globalLanesPx(globalLanesShown(rich, null))} px`,
+    globalLaneViews(rich, null).section === 'full'
+      && globalLaneViews(rich, null).chord === 'collapsed',
+    `section:${globalLaneViews(rich, null).section} chord:${globalLaneViews(rich, null).chord}`,
   );
 }
 
@@ -291,12 +378,12 @@ function lanesThatFit(scrollerPx: number, globalPx: number, trackHeightPx: numbe
 // ── The window is still built from both columns at once ──────────────────
 {
   const edit = read('src/renderer/components/daw/edit/EditWindow.tsx');
-  const pairs = GLOBAL_LANE_IDS.map((id) => {
-    const uses = edit.split(`globalLanes.${id} &&`).length - 1;
-    return `${id}×${uses}`;
-  });
-  const bothColumns = GLOBAL_LANE_IDS.every(
-    (id) => edit.split(`globalLanes.${id} &&`).length - 1 === 2);
+  // `!== 'off'` rather than a truthy test since the lanes grew a third
+  // state.  Counted as a string so a lane dropped from one column is a
+  // failure here rather than a lane that scrolls with nothing above it.
+  const gate = (id: string): number => edit.split(`globalLanes.${id} !== 'off'`).length - 1;
+  const pairs = GLOBAL_LANE_IDS.map((id) => `${id}×${gate(id)}`);
+  const bothColumns = GLOBAL_LANE_IDS.every((id) => gate(id) === 2);
   check(
     'every lane is gated in BOTH columns — headers and lanes are one list',
     bothColumns,
@@ -314,8 +401,16 @@ function lanesThatFit(scrollerPx: number, globalPx: number, trackHeightPx: numbe
   );
   check(
     'FIT asks for the height rather than naming one',
-    /rowPort\.height, globalPx \+ automationPx\)/.test(edit),
-    'the button computes from what the scroller measured',
+    /const reserved = globalPx \+ automationPx;/.test(edit)
+      && /heightToFit\(wanted, rowPort\.height, reserved\)/.test(edit),
+    'the button computes from what the scroller measured, minus what the lanes hold',
+  );
+  check(
+    'and it says how many it managed when the minimum height is not enough',
+    /const got = Math\.floor\(room \/ px\);/.test(edit)
+      && /if \(got < wanted\) \{/.test(edit)
+      && /글로벌 레인 \$\{globalPx\} px/.test(edit),
+    'its tooltip promises twenty; at 1280 × 800 with the lanes it reaches seventeen',
   );
 }
 

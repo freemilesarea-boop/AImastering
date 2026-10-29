@@ -53,7 +53,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 
@@ -345,6 +345,61 @@ function haveXvfb() {
   return spawnSync('sh', ['-c', 'command -v Xvfb'], { encoding: 'utf8' }).status === 0;
 }
 
+/**
+ * Does the display ANSWER?  `existsSync` on the lock file asked the wrong
+ * question: `/tmp/.X98-lock` and `/tmp/.X11-unix/X98` outlive the server that
+ * made them, so a stale pair made this script report "using the X server
+ * already on :98" and then blame the debugger when nothing could connect.
+ *
+ * Same test, same order and same reason as `app-smoke/boot.sh` — ask the
+ * server with `xdpyinfo`, fall back to looking for the process only when
+ * `xdpyinfo` is not installed, and only in that direction.  `boot-shares`
+ * in `tooling-selftest` holds the two to each other.
+ */
+function displayIsDead(display) {
+  const run = (cmd) => spawnSync('sh', ['-c', cmd], { encoding: 'utf8' }).status === 0;
+  if (run('command -v xdpyinfo')) return !run(`xdpyinfo -display ${display} > /dev/null 2>&1`);
+  return !run(`pgrep -f "Xvfb ${display} " > /dev/null 2>&1`);
+}
+
+/**
+ * Take the CDP port, or refuse to measure.
+ *
+ * `boot.sh` learned this one at full price: launching a second Electron does
+ * NOT take the port from the first.  The newcomer starts and serves nothing
+ * while the tool connects to the OLD app and measures code that is no longer
+ * on disk — a deliberately broken build once reported 26/26 green that way.
+ * This script had none of that check, and in this container it attached to
+ * the smoke run's leftover app (the two share port 9333) and timed out
+ * "waiting for the window to render" on a page it never launched.
+ */
+async function ownCdpPort(port) {
+  const url = `http://127.0.0.1:${port}/json/version`;
+  if (!await reachable(url)) return;
+  console.log(`CDP      :${port} answered BEFORE launch — killing the previous run's Electron`);
+  // By PID from the port in its own argv; `pkill -f` would match this script.
+  spawnSync('sh', ['-c',
+    `ps -eo pid,args --no-headers | grep -F -- "remote-debugging-port=${port}"`
+    + " | grep -v grep | awk '{print $1}' | xargs -r kill -9"], { encoding: 'utf8' });
+  try {
+    await until(`CDP :${port} to go quiet`, async () => !await reachable(url), 10_000);
+  } catch {
+    throw new Error(`something is STILL serving CDP on ${port} — refusing to measure it,`
+      + ' because the app that answers would not be the one this run built');
+  }
+  console.log(`CDP      :${port} is clear`);
+}
+
+/** The files a dead server leaves behind, which Xvfb then refuses to start over. */
+function clearStaleDisplay(display) {
+  const n = display.replace(':', '');
+  const leftovers = [`/tmp/.X${n}-lock`, `/tmp/.X11-unix/X${n}`].filter((f) => existsSync(f));
+  if (leftovers.length === 0) return false;
+  console.log(`display  ${display} had a stale lock/socket — removing`);
+  for (const f of leftovers) { try { rmSync(f, { force: true }); } catch { /* not ours */ } }
+  return true;
+}
+
 async function main() {
   const linux = process.platform === 'linux';
   let display = process.env.DISPLAY ?? '';
@@ -360,14 +415,20 @@ async function main() {
     // says nothing, and the run then quietly borrows the first one — which is
     // fine until cleanup, where it would kill a server it did not start.  So
     // decide explicitly, and only own what this run brought up.
-    if (existsSync(`/tmp/.X${display.replace(':', '')}-lock`)) {
+    if (!displayIsDead(display)) {
       console.log(`using the X server already on ${display}`);
     } else {
+      clearStaleDisplay(display);
       bg('Xvfb', [display, '-screen', '0', '1600x1000x24']);
-      await sleep(2000);
+      // Ask the display whether it answers, rather than sleeping a fixed two
+      // seconds and hoping.
+      await until(`the X server on ${display}`,
+        async () => !displayIsDead(display), 20_000);
       console.log(`Xvfb on ${display}`);
     }
   }
+
+  await ownCdpPort(CDP_PORT);
 
   const env = { ...noProxy, ...(display ? { DISPLAY: display } : {}) };
 
@@ -393,7 +454,19 @@ async function main() {
     cwd: APP,
     env: { ...env, VITE_DEV_SERVER_URL: `http://localhost:${VITE_PORT}` },
   });
-  await until(`the app's debugger on ${CDP_PORT}`, async () => await pageTarget() !== undefined);
+  // The debugger is the LAST thing to come up, so it is the first thing
+  // blamed.  Twice in this container the real cause was the display — a
+  // stale lock with no server behind it — and the message sent the reader to
+  // look at Electron.  So when it times out, say what the display was doing.
+  try {
+    await until(`the app's debugger on ${CDP_PORT}`, async () => await pageTarget() !== undefined);
+  } catch (err) {
+    const where = display === '' ? 'no DISPLAY set'
+      : displayIsDead(display) ? `and ${display} is not answering either — the display is the`
+        + ' likelier cause (a stale /tmp/.X*-lock with no server behind it does this)'
+        : `while ${display} answers, so the display is not the cause`;
+    throw new Error(`${err instanceof Error ? err.message : String(err)} — ${where}`);
+  }
 
   const target = await pageTarget();
   const cdp = connect(target.webSocketDebuggerUrl);

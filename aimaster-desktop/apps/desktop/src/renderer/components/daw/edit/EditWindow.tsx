@@ -47,7 +47,7 @@ import {
 import { premium } from '../../../theme/premium.js';
 import { laneWindow } from '../../../daw/model/lane-window.js';
 import {
-  globalLanesPx, globalLanesShown, type GlobalLaneFlags,
+  globalLaneViews, globalLanesPx, type GlobalLaneViews,
 } from '../../../daw/model/global-lanes.js';
 import {
   addPlaylist, alternateLanes, cyclePlaylist, duplicatePlaylist, flattenComp,
@@ -394,8 +394,8 @@ export default function EditWindow() {
   // Collapsed stacks fold their members away, so the arrange window stays
   // readable at forty tracks.
   const rows = visibleTracks(session);
-  const globalLanes: GlobalLaneFlags = useMemo(
-    () => globalLanesShown(session, globalOverride), [session, globalOverride]);
+  const globalLanes: GlobalLaneViews = useMemo(
+    () => globalLaneViews(session, globalOverride), [session, globalOverride]);
   const globalPx = globalLanesPx(globalLanes);
 
   // Headers and lanes are two columns of the same list, so they are built ONCE
@@ -587,7 +587,8 @@ export default function EditWindow() {
     setSelection({ startSec: at, endSec: at, trackIds: [track.id] });
     setDrag({ anchorSec: at, anchorTrackId: track.id });
     bandTrackRef.current = track.id;
-  }, [secAt, setFocusedTrack, tool, setPxPerSec, pxPerSec, seek, setSelection, editMode, apply]);
+  }, [secAt, setFocusedTrack, tool, setPxPerSec, pxPerSec, seek, setSelection, editMode,
+      apply, setSpotTarget]);
 
   const onLaneMove = useCallback((e: React.MouseEvent) => {
     if (gainDrag) {
@@ -750,14 +751,16 @@ export default function EditWindow() {
             : 'bg-zinc-900 border-zinc-700 text-zinc-500 hover:text-zinc-300'}`}
         >UNIV</button>
 
-        {/* The global lanes, and the 190 px they cost.  Three states rather
-            than two: AUTO shows the lanes that have something in them, which
+        {/* The global lanes, and the up-to-190 px they cost.  Three states
+            rather than two: AUTO shows the lanes that have something in them
+            whole and the rest as the single row that holds their `+`, which
             is what a new session wants, and the other two are the user
-            overruling that in either direction. */}
+            overruling that in either direction.  OFF takes the rows too —
+            see `global-lanes.ts` for why that is the user's call to make. */}
         <button
           onClick={() => setGlobalOverride((v) => (v === null ? true : v === true ? false : null))}
-          title={'글로벌 레인(섹션·코드·픽처·템포) — AUTO: 내용이 있는 레인만 표시 /'
-            + ' ON: 모두 표시 / OFF: 모두 숨김. 네 레인은 트랙 스크롤러의 맨 위 190 px 를 차지합니다.'}
+          title={'글로벌 레인(섹션·코드·픽처·템포) — AUTO: 내용이 있는 레인은 전체,'
+            + ' 빈 레인은 추가 버튼 한 줄(78 px) / ON: 모두 전체(190 px) / OFF: 모두 숨김'}
           className={`px-2 py-1 rounded text-[10px] font-mono tracking-wide border ${globalOverride === true
             ? 'bg-emerald-600/30 border-emerald-600/50 text-emerald-300'
             : globalOverride === false
@@ -775,9 +778,25 @@ export default function EditWindow() {
               .filter((r) => r.kind === 'lane').length * AUTOMATION_LANE_HEIGHT;
             // Up to twenty on screen; a bigger session keeps a legible
             // lane and scrolls for the rest.
-            const px = heightToFit(
-              Math.min(rows.length, FIT_VISIBLE_ROWS), rowPort.height, globalPx + automationPx);
+            const wanted = Math.min(rows.length, FIT_VISIBLE_ROWS);
+            const reserved = globalPx + automationPx;
+            const px = heightToFit(wanted, rowPort.height, reserved);
             apply((st) => setHeights(st, rows.map((t) => t.id), px));
+
+            // What it actually managed.  `heightToFit` clamps at
+            // MIN_TRACK_HEIGHT, so on a short window the button used to
+            // promise twenty tracks in its own tooltip and quietly deliver
+            // seventeen.  The shortfall is named, with the thing in the way:
+            // the global lanes are the part of it the user has a switch for.
+            const room = Math.max(0, rowPort.height - reserved);
+            const got = Math.floor(room / px);
+            if (got < wanted) {
+              notify(
+                `${wanted}개 중 ${got}개까지 올라갑니다 — 트랙 높이 ${px} px 가 최소치입니다`
+                + (globalPx > 0 ? ` · 글로벌 레인 ${globalPx} px (G 버튼으로 숨김)` : ''),
+                'info',
+              );
+            }
           }}
           title="세로 맞춤 — 트랙 높이를 창에 맞춰 한 번에 조절합니다. 최대 20개까지 한 화면에 들어가고, 그보다 많으면 나머지는 스크롤입니다 (되돌리기 한 번으로 복구)"
           className={'px-2 py-1 rounded text-[10px] font-mono tracking-wide border'
@@ -964,10 +983,12 @@ export default function EditWindow() {
            onMouseUp={endDrag} onMouseLeave={endDrag}>
         {/* Headers */}
         <div style={{ width: HEADER_WIDTH }} className="shrink-0 border-r border-zinc-800 bg-[#12121a]">
-          {globalLanes.section && <SectionLaneHeader />}
-          {globalLanes.chord && <ChordLaneHeader />}
-          {globalLanes.picture && <PictureLaneHeader />}
-          {globalLanes.tempo && <TempoTrackHeader session={session} />}
+          {globalLanes.section !== 'off' && <SectionLaneHeader />}
+          {globalLanes.chord !== 'off'
+            && <ChordLaneHeader collapsed={globalLanes.chord === 'collapsed'} />}
+          {globalLanes.picture !== 'off' && <PictureLaneHeader />}
+          {globalLanes.tempo !== 'off'
+            && <TempoTrackHeader session={session} collapsed={globalLanes.tempo === 'collapsed'} />}
           <div ref={rowsTop} style={{ height: rowView.padTop }} aria-hidden />
           {builtRows.map((row) => (row.kind === 'lane' ? (
             <AutomationLaneHeader key={row.key} track={row.track} lane={row.lane} />
@@ -1040,19 +1061,23 @@ export default function EditWindow() {
               </p>
             </div>
           )}
-          {globalLanes.section && (
+          {globalLanes.section !== 'off' && (
             <SectionLane viewport={{ scrollSec, pxPerSec, width: laneWidth }} />
           )}
-          {globalLanes.chord && (
-            <ChordLane viewport={{ scrollSec, pxPerSec, width: laneWidth }} />
+          {globalLanes.chord !== 'off' && (
+            <ChordLane
+              viewport={{ scrollSec, pxPerSec, width: laneWidth }}
+              collapsed={globalLanes.chord === 'collapsed'}
+            />
           )}
-          {globalLanes.picture && (
+          {globalLanes.picture !== 'off' && (
             <PictureLane viewport={{ scrollSec, pxPerSec, width: laneWidth }} />
           )}
-          {globalLanes.tempo && (
+          {globalLanes.tempo !== 'off' && (
             <TempoTrack
               session={session}
               viewport={{ scrollSec, pxPerSec, width: laneWidth }}
+              collapsed={globalLanes.tempo === 'collapsed'}
             />
           )}
           <div style={{ height: rowView.padTop }} aria-hidden />
@@ -1066,6 +1091,14 @@ export default function EditWindow() {
           ) : (
             <div
               key={row.key}
+              // The row's identity, in the DOM.  Probes used to find the
+              // track rows by taking the lane column's first children taller
+              // than 20 px, which stopped being the track rows the moment the
+              // global lanes grew a 26 px collapsed row — three smoke steps
+              // then dragged clips onto the section lane and reported the
+              // product broken.  A row that says which track it is cannot be
+              // mistaken for a row above it.
+              data-track-id={row.track.id}
               onMouseDown={(e) => onLaneDown(e, row.track)}
               onMouseMove={(e) => onRowMove(e, row.track)}
               onMouseLeave={() => setLaneHover(null)}

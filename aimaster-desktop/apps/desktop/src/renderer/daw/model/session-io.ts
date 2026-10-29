@@ -8,6 +8,7 @@
 import { DAW_SESSION_VERSION, type BusDef, type DawSession, type GroupDef, type Track } from './types.js';
 import { nextId } from './ids.js';
 import { migrateSession, needsMigration } from './session-migrate.js';
+import { repairSession } from './session-repair.js';
 
 export function serializeDawSession(session: DawSession): string {
   return JSON.stringify(session, null, 2);
@@ -36,11 +37,18 @@ export function deserializeDawSession(raw: string): ParseResult {
   // somebody made, and the only thing wrong with it is its age.
   const migrated = needsMigration(o) ? migrateSession(o) : { session: o, notes: [] };
   warnings.push(...migrated.notes);
-  const session = migrated.session as unknown as DawSession;
-  if (!session.tracks.some((t) => t.kind === 'master')) {
-    warnings.push('마스터 트랙이 없어 새로 만들었습니다.');
-  }
-  return { ok: true, session, warnings };
+  // Repaired, not asserted.  This used to be
+  //
+  //   const session = migrated.session as unknown as DawSession;
+  //
+  // and the two checks above — version in range, tracks is an array — were
+  // the only things anyone looked at.  A file whose tracks array held objects
+  // that were not tracks parsed with `ok: true` and crashed at the first
+  // consumer: `trackClips()` reading `.playlists.find` on undefined.  Same
+  // shape as the toFixed crash this app hot-fixed, through a different door.
+  const repaired = repairSession(migrated.session as Record<string, unknown>);
+  warnings.push(...repaired.notes);
+  return { ok: true, session: repaired.session, warnings };
 }
 
 // ── Import ────────────────────────────────────────────────────────────────────
