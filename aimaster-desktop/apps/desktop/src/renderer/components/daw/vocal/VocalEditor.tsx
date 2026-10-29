@@ -40,6 +40,9 @@ import type { ClipId, TrackId } from '../../../daw/model/types.js';
 const SEMITONE_PX = 14;
 const HEIGHT_PAD = 8;
 
+/** One empty list, not a fresh one per render — it feeds a memo's deps. */
+const NO_SEGMENTS: readonly VariSegment[] = [];
+
 export default function VocalEditor() {
   const session = useDawStore((s) => s.session);
   const apply = useDawStore((s) => s.apply);
@@ -75,7 +78,7 @@ export default function VocalEditor() {
     return track ? trackClips(track).find((c) => c.id === open.clipId) ?? null : null;
   }, [session, open]);
 
-  const segments = clip?.pitchSegments ?? [];
+  const segments = clip?.pitchSegments ?? NO_SEGMENTS;
   const range = useMemo(() => pitchRange(segments), [segments]);
   const height = (range.highPitch - range.lowPitch) * SEMITONE_PX + HEIGHT_PAD * 2;
   const lengthSec = clip?.durationSec ?? 0;

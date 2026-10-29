@@ -41,6 +41,11 @@ const hzToY = (hz: number, height: number, maxHz: number): number =>
 
 interface Box { x0: number; y0: number; x1: number; y1: number }
 
+/** The canvas is a fixed size: it was rebuilt as an object literal every
+ *  render and then listed field by field in a dependency array, which is
+ *  the shape `exhaustive-deps` warns about.  A constant is a constant. */
+const canvasSize = { width: 900, height: 340 } as const;
+
 export default function SpectralEditor() {
   const session = useDawStore((s) => s.session);
   const apply = useDawStore((s) => s.apply);
@@ -133,8 +138,6 @@ export default function SpectralEditor() {
     ctx.putImageData(image, 0, 0);
   }, [spec, maxHz, sampleRate]);
 
-  const canvasSize = { width: 900, height: 340 };
-
   const toRegion = useCallback((b: Box): SpectralRegion => {
     const { width, height } = canvasSize;
     const span = viewEndSec - viewStartSec;
@@ -144,7 +147,7 @@ export default function SpectralEditor() {
       lowHz: yToHz(Math.max(b.y0, b.y1), height, maxHz),
       highHz: yToHz(Math.min(b.y0, b.y1), height, maxHz),
     };
-  }, [viewStartSec, viewEndSec, maxHz, canvasSize.width, canvasSize.height]);
+  }, [viewStartSec, viewEndSec, maxHz]);
 
   const region = box ? toRegion(box) : null;
 

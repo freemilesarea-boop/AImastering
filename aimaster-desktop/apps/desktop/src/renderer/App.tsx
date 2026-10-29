@@ -12,6 +12,7 @@ import { useAuthStore } from './stores/authStore.js';
 import { useEntitlementStore } from './stores/entitlementStore.js';
 import { useDeviceStore } from './stores/deviceStore.js';
 import { isAccountAuthEnabled, isEntitlementGateEnabled } from './audio/account-auth-flag.js';
+import { entitlementGateDecision } from './audio/entitlement-gate.js';
 import MasteringPage from './pages/MasteringPage.js';
 import ResultPage   from './pages/ResultPage.js';
 import TweakPage    from './pages/TweakPage.js';
@@ -369,19 +370,23 @@ function AppInner() {
   const entStatus = useEntitlementStore((s) => s.status);
   const deviceAllowed = useDeviceStore((s) => s.deviceAllowed);   // Phase D2
   useEffect(() => {
-    if (!accountAuth) return;
-    const gateOn = isEntitlementGateEnabled();
-    let paid = false;
-    let plan = 'free';
-    let status = 'free';
-    if (gateOn && authStatus === 'signed-in' && entStatus === 'loaded' && entitlement) {
-      plan = entitlement.plan;
-      status = entitlement.status;
-      const notExpired = !entitlement.expiresAt || new Date(entitlement.expiresAt).getTime() > Date.now();
-      paid = status === 'active' && (plan === 'pro_monthly' || plan === 'pro_lifetime') && notExpired;
-    }
+    // The rule itself is `entitlement-gate.ts` — a function, so it can be
+    // tested without mounting React.  It used to be written out here, which
+    // is why nothing tested the one decision that says who may export.
+    const d = entitlementGateDecision({
+      accountAuth,
+      gateOn: isEntitlementGateEnabled(),
+      authStatus,
+      entStatus,
+      entitlement,
+      now: Date.now(),
+    });
+    // `push: false` means account auth is off: main keeps its default and the
+    // export gate stays exactly license-only.  Not the same as paid: false.
+    if (!d.push) return;
     // Gate value = paid (entitlementPaid) && deviceAllowed (folded in main).
-    void window.electronAPI?.invoke('entitlement:set', { paid, deviceAllowed, plan, status });
+    void window.electronAPI?.invoke('entitlement:set',
+      { paid: d.paid, deviceAllowed, plan: d.plan, status: d.status });
   }, [accountAuth, authStatus, entStatus, entitlement, deviceAllowed]);
 
   // Defensive redirects — bounce to home when a page is reached without

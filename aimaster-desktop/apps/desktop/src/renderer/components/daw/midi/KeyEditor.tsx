@@ -267,7 +267,7 @@ export default function KeyEditor() {
       }));
     };
     if (transient) applyT(mutate); else apply(mutate);
-  }, [open, apply, applyT, session]);
+  }, [open, apply, applyT, clock]);
 
   // ── Drawing ─────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -420,7 +420,7 @@ export default function KeyEditor() {
     }
   }, [notes, size, scale, showGuides, bottomPitch, pitchHeight, pxPerBeat, scrollBeat,
       selected, drag, gridBeat, tempo, toX, toY, part, playhead, rows, ghostNotes,
-      drumWidth]);
+      drumWidth, clock]);
 
   // ── Controller / velocity lane ──────────────────────────────────────────
   useEffect(() => {
@@ -571,7 +571,7 @@ export default function KeyEditor() {
     audition(note.pitch);
     // Returned so the caller can keep dragging it longer — see `onGridDown`.
     return note;
-  }, [toPitch, toBeat, gridBeat, notes, writeNotes, setSelection, tempo, audition]);
+  }, [toPitch, toBeat, gridBeat, notes, writeNotes, setSelection, audition]);
 
   const onGridDown = useCallback((e: React.MouseEvent) => {
     if (!part) return;
@@ -621,7 +621,7 @@ export default function KeyEditor() {
     } else {
       setDrag({ kind: 'move', noteIds: ids, startX: x, startY: y, originals });
     }
-  }, [part, noteAtPoint, tool, notes, writeNotes, setSelection, toBeat, toPitch,
+  }, [part, noteAtPoint, tool, notes, writeNotes, setSelection,
       placeNote, selected, selectedIds, toX, rows]);
 
   const onGridMove = useCallback((e: React.MouseEvent) => {
@@ -678,7 +678,7 @@ export default function KeyEditor() {
       writeNotes(next, true);
     }
   }, [drag, notes, pxPerBeat, pitchHeight, toX, toY, toBeat, toPitch, setSelection,
-      writeNotes, tempo, snapPitch, scale, rows, drumWidth, gridBeat, snapEnabled]);
+      writeNotes, snapPitch, scale, rows, drumWidth, gridBeat, snapEnabled]);
 
   const endDrag = useCallback(() => {
     if (drag && (drag.kind === 'move' || drag.kind === 'resize')) commit();
@@ -776,7 +776,7 @@ export default function KeyEditor() {
     const sounding = part ? notesAt(notes, timelineSecToBeat(clock, playhead)) : [];
     if (sounding.length < 2) return null;
     return detectChord(sounding.map((n) => n.pitch));
-  }, [notes, part, playhead]);
+  }, [notes, part, playhead, clock]);
 
   if (!open || !part || !track) {
     return (

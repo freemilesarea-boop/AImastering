@@ -6,16 +6,14 @@ import fs from 'node:fs';
 import { v4 as uuidv4 } from 'uuid';import {
   PythonBridge,
   analyzeFile,
+  engineEnvInfo,
   masterFile,
   runQC,
-  AppError,
-  classifyFFmpegError,
   outputDirNotWritable,
   pythonProcessFailed,
-  unknownError,
-  pathEncodingError,
 } from '@aimaster/audio-engine';
 import type {
+  EngineEnvInfo,
   MasteringOptions,
   LoudnessStats,
   PreviewRenderRequest,
@@ -25,6 +23,7 @@ import { log } from '../utils/logger.js';
 import { recordFailure } from '../utils/failureLog.js';
 import { recordPipelineWarning } from '../utils/supportBundle.js';
 import { validateAbsoluteFilePath } from '../utils/ipcValidation.js';
+import { appErrorFor } from './engine-error.js';
 import { applyBundledFfmpegEnv } from '../utils/ffmpegEnv.js';
 import { pythonFallbackMayStandIn } from '../offline/load-mastering-chain-node.js';
 import { findUp, PYTHON_ENTRY_REL } from '../utils/workspace-paths.js';
@@ -92,6 +91,9 @@ function resolvePaths(): { pythonPath: string; scriptPath: string } {
 
   return { pythonPath, scriptPath };
 }
+
+/** `undefined` = not asked yet, `null` = asked and could not tell. */
+let engineStatus: EngineEnvInfo['environment'] | null | undefined;
 
 function getBridge(): PythonBridge {
   if (bridge) return bridge;
@@ -216,49 +218,14 @@ function assertTmpWritable(): void {
  *
  * Electron IPC (structured-clone) only preserves standard Error.message/name.
  * Encoding the full AppError in message lets the renderer decode it faithfully.
+ *
+ * The decision itself lives in `engine-error.ts`, which imports no electron
+ * and is driven directly by a test — see the header there for the two branches
+ * that were wrong while they were in here.
  */
 function toAppError(err: unknown, filePath = ''): never {
-  let appErr: AppError;
+  const appErr = appErrorFor(err, filePath);
 
-  if (err instanceof AppError) {
-    appErr = err;
-  } else {
-    const msg = (err as Error).message ?? String(err);
-
-    // Spawn failure: binary not found
-    if (/ENOENT|spawn/i.test(msg)) {
-      appErr = pythonProcessFailed(
-        `Engine binary not found or failed to start: ${msg}`,
-        false,
-      );
-    }
-    // Python / JSON-RPC bridge errors
-    else {
-      const anyErr = err as Record<string, unknown>;
-      if (typeof anyErr['code'] === 'number') {
-        const rpcCode = anyErr['code'] as number;
-        appErr = pythonProcessFailed(`JSON-RPC code=${rpcCode}: ${msg}`, rpcCode === -32000);
-      }
-      // Path encoding
-      else if (/EINVAL|ENAMETOOLONG/i.test(msg) && filePath) {
-        appErr = pathEncodingError(filePath, msg);
-      }
-      // FFmpeg classification
-      else {
-        try {
-          throw classifyFFmpegError(err, false, filePath);
-        } catch (classified) {
-          if (classified instanceof AppError) {
-            appErr = classified;
-          } else {
-            appErr = unknownError(msg);
-          }
-        }
-      }
-    }
-  }
-
-  // Encode all AppError fields in Error.message so Electron IPC preserves them
   const serialized = new Error(
     JSON.stringify({
       __appError: true,
@@ -281,6 +248,37 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
     const reasonStr = typeof reason === 'string' ? reason : 'unknown';
     log.info('[audio:cancel] killing bridge', { reason: reasonStr });
     await killBridge();
+  });
+
+  // ── Can this engine read a waveform ─────────────────────────────────────
+  //
+  // `checkFFmpeg` has reported the encoder's health since the beginning and
+  // the engine had no equivalent, though it needed one more: a missing ffmpeg
+  // fails loudly at the first decode, while an engine whose numpy or
+  // soundfile cannot be imported GOES ON ANSWERING — `available: false`,
+  // every band at -120 dB, duration 0 — and the app shows that as a damaged
+  // file.  Two PyInstaller specs shipped exactly that; both reached READY and
+  // answered every request.  `env_info` has answered this question all along
+  // and was one of the six engine methods nothing in the app called.
+  //
+  // Lazy and cached: spawning the engine costs about four seconds, which does
+  // not belong in startup.  `null` means "could not ask", which is not a
+  // verdict — the renderer says nothing on null rather than warning wrongly.
+  ipc.handle('system:engine-status', async () => {
+    if (engineStatus !== undefined) return engineStatus;
+    try {
+      const info = await engineEnvInfo(getBridge());
+      engineStatus = info.environment ?? null;
+      const waveform = engineStatus?.waveform;
+      log.info('[engine-status]', { waveform });
+      if (waveform && waveform.available !== true) {
+        recordFailure('engine', 'env_info reports waveform analysis unavailable', { waveform });
+      }
+    } catch (err) {
+      log.error('[engine-status] env_info failed (app continues)', (err as Error).message);
+      engineStatus = null;
+    }
+    return engineStatus;
   });
 
   ipc.handle('audio:analyze', async (_e, filePath: unknown) => {
@@ -391,18 +389,28 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
   // reported bug: mix in the Studio, press 설정 저장, run the mastering, get
   // the original back with no sign anything went wrong.
   //
-  // So: a request that carries a `suiteConfig` is a request for THAT chain.
+  // So: a request that carries a CHAIN CONFIG is a request for THAT chain.
   // If it cannot be honoured, this refuses, and the renderer turns the
   // refusal into a visible error on the row.  An output nobody asked for is
-  // worse than no output.  Requests without a suiteConfig keep the old
-  // fallback.
+  // worse than no output.  Only a request that carries no config at all —
+  // nothing for the Python path to drop — still falls back.
   //
-  // Verified on-device, because nothing automated reaches this branch: it
-  // needs an Electron main process, so the selftests can only cover the
-  // pieces around it (`pythonFallbackMayStandIn`, and `renderSong` refusing
-  // a `chainConfigHonored: false` answer).  Driven through the real IPC in
-  // a running app, with a suite config carrying lowShelf +6 / air +6 /
-  // presence +4:
+  // This used to say "requests without a suiteConfig keep the old fallback",
+  // and `pythonFallbackMayStandIn` implemented exactly that: it checked the
+  // one key.  `OfflineChainConfig` is a union, and the other half of it —
+  // the 22 flat fields — read as "nothing to drop" while carrying +6 dB of
+  // shelf.  So did a config in a shape the predicate cannot parse at all,
+  // which is what a renderer built before the suiteConfig switch sends
+  // across an auto-update.  Measured both, and both came back `true`.
+  //
+  // Verified on-device, because it needs an Electron main process: the
+  // selftests can only cover the pieces around it
+  // (`pythonFallbackMayStandIn`, `flatConfigProblems`, and `renderSong`
+  // refusing a `chainConfigHonored: false` answer).  `pnpm smoke:packaged`
+  // now drives this channel in a PACKAGED app and judges the result by the
+  // output audio, so the branch is no longer reached only by hand.  Driven
+  // through the real IPC in a running app, with a suite config carrying
+  // lowShelf +6 / air +6 / presence +4:
   //
   //   engine present → ok: true, backend 'rust', fallbackUsed false,
   //                    chainConfigHonored true, renderMs 879,

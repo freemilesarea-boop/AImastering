@@ -74,7 +74,7 @@ export default function RecordStrip() {
   };
 
   return (
-    <div className="flex items-center gap-1.5 px-3 py-1 border-b border-zinc-800 bg-[#101017] flex-wrap"
+    <div className="flex items-center gap-1.5 px-3 py-1 border-b border-zinc-800 bg-[#101017] flex-nowrap overflow-x-auto [&>*]:shrink-0"
          style={{ fontFamily: premium.type.sans }}>
       <button
         onClick={() => (rolling ? void stop() : void start())}

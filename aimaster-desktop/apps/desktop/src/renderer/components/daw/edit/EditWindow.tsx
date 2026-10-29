@@ -7,7 +7,8 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { LAYER } from '../../../theme/layers.js';
-import { useDawStore, snapToGrid, snapMoveTo, type EditMode } from '../../../stores/dawStore.js';
+import {
+  useDawStore, snapToGrid, snapMoveTo, type EditMode } from '../../../stores/dawStore.js';
 import { followScrollSec, rulerTicks } from '../../../daw/model/viewport.js';
 import UniverseStrip from './UniverseStrip.js';
 import { formatLabel, DEFAULT_FPS, TIME_FORMATS } from '../../../daw/model/spot-time.js';
@@ -20,7 +21,12 @@ import { decodeForDisplay } from '../../../daw/engine/audio-cache.js';
 import {
   activePlaylist, clipAt, clipEnd, findTrack, sessionEndSec, trackClips,
 } from '../../../daw/model/session-ops.js';
-import { setClipFade, setOneClipGain, trackBand } from '../../../daw/edit/clip-edit.js';
+import {
+  clearRange,
+  clipTrackMoveRefusal, moveClipToTrack, setClipFade, setOneClipGain, trackBand } from '../../../daw/edit/clip-edit.js';
+import { wheelNav } from '../../../daw/edit/wheel-nav.js';
+import { openContextMenu } from '../../../stores/contextMenuStore.js';
+import { clipMenu, trackMenu } from '../surface-menus.js';
 import { describeGroup, moveClipWithGroup } from '../../../daw/edit/edit-groups.js';
 import { autoCrossfadeTrack } from '../../../daw/edit/auto-fade.js';
 import {
@@ -31,7 +37,8 @@ import {
   gainFromY, laneGrab, type LaneGrab,
 } from '../../../daw/model/lane-grab.js';
 import { fadeCurve } from '../../../daw/engine/clip-player.js';
-import type { FadeShape } from '../../../daw/model/types.js';
+import type {
+  Clip, FadeShape } from '../../../daw/model/types.js';
 import { useMidiEditorStore } from '../../../stores/midiEditorStore.js';
 import {
   collapsedOverviewClips, stackDepth, stackSummary, toggleCollapsed, unpackStack,
@@ -39,6 +46,9 @@ import {
 } from '../../../daw/model/stacks.js';
 import { premium } from '../../../theme/premium.js';
 import { laneWindow } from '../../../daw/model/lane-window.js';
+import {
+  globalLaneViews, globalLanesPx, type GlobalLaneViews,
+} from '../../../daw/model/global-lanes.js';
 import {
   addPlaylist, alternateLanes, cyclePlaylist, duplicatePlaylist, flattenComp,
   removePlaylist, setActivePlaylist,
@@ -80,7 +90,7 @@ import { trackDelayMs } from '../../../daw/model/track-delay.js';
 import { describeDelay } from '../../../daw/edit/track-delay-ops.js';
 import {
   TRACK_COLORS, clampTrackHeight, renameTrack, setTrackColor,
-  setTrackHeight,
+  setTrackHeight, setHeights, heightToFit, FIT_VISIBLE_ROWS,
 } from '../../../daw/model/track-header.js';
 import { deleteTracks } from '../../../ui/delete-tracks.js';
 
@@ -166,6 +176,11 @@ export default function EditWindow() {
   const laneRef = useRef<HTMLDivElement>(null);
   const [laneWidth, setLaneWidth] = useState(900);
   const [showUniverse, setShowUniverse] = useState(false);
+  // The four lanes above the tracks — sections, chords, picture, tempo — and
+  // whether they are worth 190 px of the scroller.  `null` is the default and
+  // means "the ones with something in them"; see `global-lanes.ts` for what
+  // the four of them were costing a session with seven tracks.
+  const [globalOverride, setGlobalOverride] = useState<boolean | null>(null);
   const [decodeTick, setDecodeTick] = useState(0);
   const [drag, setDrag] = useState<null | { anchorSec: number; anchorTrackId: string }>(null);
   // The row the pointer is over, as a ref rather than state: the row handler
@@ -173,9 +188,28 @@ export default function EditWindow() {
   // first.  A ref is already updated by the time the lane reads it; state
   // would be one event behind, which is one row behind for the whole drag.
   const bandTrackRef = useRef<string | null>(null);
+  // The reason a drop was last refused, so the toast fires once per reason
+  // instead of once per mouse-move.
+  const refusedDropRef = useRef<string | null>(null);
+  // The dragged clip's length, captured at mouse-down: the selection that
+  // follows the clip across lanes needs it, and reading it from the session
+  // mid-drag would read the transient copy being moved.
+  const clipDragLenRef = useRef(0);
+  // `notify` through a ref because the move handler is a useCallback that
+  // must not re-create on every toast — a new handler identity mid-drag
+  // detaches the listener the gesture is running on.
+  const onNotifyRef = useRef<(m: string, t?: 'info' | 'success' | 'warning' | 'error') => void>(() => {});
   // Clip drag: one gesture = one undo step, so it writes through
   // applyTransient and commits on mouse up.
   const [clipDrag, setClipDrag] = useState<null | {
+    /**
+     * The track the clip is on RIGHT NOW, not the one the drag started on.
+     *
+     * A vertical drag changes it mid-gesture, and every move after that has to
+     * lift the clip from where it actually is.  Holding the original track
+     * here would make the second lane change a no-op against a track the clip
+     * had already left.
+     */
     trackId: string; clipId: string; grabOffsetSec: number;
     /**
      * Where the clip started, captured at mouse-down and never updated.
@@ -253,9 +287,116 @@ export default function EditWindow() {
     return Math.max(0, scrollSec + (clientX - rect.left) / pxPerSec);
   }, [scrollSec, pxPerSec]);
 
+  /**
+   * Open the editor this clip's kind needs.
+   *
+   * Lifted out of the double-click handler so the context menu's
+   * "편집기에서 열기" is the same code rather than a second answer to the
+   * same question — a MIDI part goes to the Key Editor, an audio clip to the
+   * Region Lab with any chain it already carries loaded back.
+   */
+  const openClipEditor = useCallback((trackId: string, clip: Clip): void => {
+    if (clip.kind === 'midi') {
+      useMidiEditorStore.getState().openPart({ trackId, clipId: clip.id });
+      useDawStore.getState().setWindow('midi');
+      return;
+    }
+    const fx = clip.regionFx;
+    useRegionLabStore.getState().openLab(
+      { trackId, clipId: clip.id },
+      fx ? fx.inserts.map((i) => ({ ...i })) : [],
+      fx ? fx.tailMode : 'keep',
+    );
+  }, []);
+
+  /**
+   * Right-click in a lane: select what is under the pointer, then offer the
+   * menu for it.
+   *
+   * Selecting FIRST is why the menu is almost entirely command ids — the
+   * commands act on the selection, so they act on the thing that was
+   * clicked without the menu having to pass anything along.  It is also what
+   * every DAW does, and the reason a right-click on an unselected clip does
+   * not operate on whatever was selected before.
+   */
+  const onLaneContext = useCallback((e: React.MouseEvent, track: Track): void => {
+    const at = secAt(e.clientX);
+    const clip = clipAt(track, at);
+    setFocusedTrack(track.id);
+    if (!clip) {
+      // Empty lane: the track's own menu, because that is what is there.
+      openContextMenu(e, track.name, trackMenu({
+        onDelete: track.kind === 'master' ? null : () => void deleteTracks([track.id]),
+        onInserts: () => usePluginWindowStore.getState().toggleRack(track.id),
+        inStack: stackDepth(session, track.id) > 0,
+      }));
+      return;
+    }
+    setSelection({
+      startSec: clip.startSec, endSec: clipEnd(clip), trackIds: [track.id],
+    });
+    openContextMenu(e, clip.name || '클립', clipMenu({
+      kind: clip.kind === 'midi' ? 'midi' : 'audio',
+      onOpenEditor: () => openClipEditor(track.id, clip),
+      onDelete: () => apply((st) => clearRange(st, {
+        startSec: clip.startSec, endSec: clipEnd(clip), trackIds: [track.id],
+      })),
+    }));
+  }, [secAt, setFocusedTrack, setSelection, session, apply, openClipEditor]);
+
+  // ── Wheel navigation ──────────────────────────────────────────────────
+  //
+  // The two gestures every DAW has and this one did not: Cmd/Ctrl + wheel to
+  // zoom horizontally, Shift + wheel to scroll horizontally.  Before this the
+  // only way across a long song was the zoom buttons and the overview strip,
+  // which is three controls for the thing the hand is already on.
+  //
+  // Attached as a NATIVE listener with `{ passive: false }` rather than
+  // React's `onWheel`, because React registers wheel on the root as passive
+  // and `preventDefault()` inside an `onWheel` prop is therefore ignored.
+  //
+  // What that preventDefault is worth was measured rather than assumed, and
+  // the honest answer is less than it looks: with the listener made passive
+  // on purpose, Ctrl + wheel in this build did NOT page-zoom the window —
+  // Electron does not wire Chrome's wheel-zoom accelerator into a plain
+  // BrowserWindow, so the hazard the preventDefault guards against is not
+  // armed today.  It stays because it is the correct way to own a gesture
+  // (and because `setVisualZoomLevelLimits` is one line away from arming it),
+  // not because it is currently load-bearing.
+  //
+  // The arithmetic is `wheelNav`, which has no DOM in it and can be asked
+  // whether the time under the cursor actually held still.  What is left here
+  // is the part only a listener can do.
+  useEffect(() => {
+    const el = laneRef.current;
+    if (!el) return undefined;
+
+    const onWheel = (e: WheelEvent): void => {
+      const outcome = wheelNav({ scrollSec, pxPerSec }, {
+        deltaX: e.deltaX,
+        deltaY: e.deltaY,
+        zoomModifier: e.ctrlKey || e.metaKey,
+        shiftKey: e.shiftKey,
+        offsetPx: e.clientX - el.getBoundingClientRect().left,
+      });
+      // 'pass' is the plain vertical wheel: left alone so the row scroller
+      // above still scrolls a forty-track session.
+      if (outcome.kind === 'pass') return;
+      e.preventDefault();
+      if (outcome.kind === 'zoom') setPxPerSec(outcome.pxPerSec);
+      setScrollSec(outcome.scrollSec);
+    };
+
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [scrollSec, pxPerSec, setPxPerSec, setScrollSec]);
+
   // Collapsed stacks fold their members away, so the arrange window stays
   // readable at forty tracks.
   const rows = visibleTracks(session);
+  const globalLanes: GlobalLaneViews = useMemo(
+    () => globalLaneViews(session, globalOverride), [session, globalOverride]);
+  const globalPx = globalLanesPx(globalLanes);
 
   // Headers and lanes are two columns of the same list, so they are built ONCE
   // and both sides map over it.  Building them separately is how the two
@@ -294,9 +435,21 @@ export default function EditWindow() {
     const el = rowScroller.current;
     if (!el) return undefined;
     const read = (): void => {
-      // The fixed lanes above the tracks are always built, so the window is
-      // measured from where the track rows actually start.
-      const offset = rowsTop.current?.offsetTop ?? 0;
+      // The global lanes above the tracks are built inside this scroller, so
+      // the window is measured from where the track rows actually start.
+      //
+      // `rowsTop.offsetTop` ALONE is not that distance.  `offsetTop` is
+      // measured from the nearest POSITIONED ancestor, and this scroller is
+      // not positioned — so it came back 288 px when the rows began 190 px
+      // into the content, the extra 98 being the toolbar and the ruler
+      // outside the scroller.  Subtracting the scroller's own offset in the
+      // same ancestor is what makes it a distance inside the content; both
+      // are layout positions, so neither moves when the content scrolls.
+      //
+      // The error was masked by `LANE_OVERSCAN_PX` (240 > 98), which is the
+      // worst way for a measurement to be wrong: nothing to see until
+      // somebody shortens the overscan or makes the lanes taller.
+      const offset = (rowsTop.current?.offsetTop ?? 0) - el.offsetTop;
       setRowPort({ top: el.scrollTop - offset, height: el.clientHeight });
     };
     read();
@@ -307,13 +460,17 @@ export default function EditWindow() {
       el.removeEventListener('scroll', read);
       observer?.disconnect();
     };
-  }, []);
+    // `globalPx` is a dependency because showing or hiding a global lane
+    // moves the rows' origin, and a window measured from the old one builds
+    // the wrong rows until the next scroll.
+  }, [globalPx]);
   const rowHeights = useMemo(() => displayRows.map((r) => r.height), [displayRows]);
   const rowView = laneWindow(rowHeights, rowPort.top, rowPort.height);
   const builtRows = displayRows.slice(rowView.first, rowView.last);
 
   const recordStatus = useRecordingStore((s) => s.status);
   const notify = useAppStore((s) => s.notify);
+  onNotifyRef.current = notify;
   // A session with only a master track is not "empty timeline", it is "you
   // have nothing to work on yet" — and a blank grid says neither.
   const hasMaterial = session.tracks.some((t) => t.kind === 'audio' || t.kind === 'instrument');
@@ -410,6 +567,7 @@ export default function EditWindow() {
         // Spot mode: the position is known to the frame and the mouse cannot
         // express it, so clicking asks for the number instead of dragging.
         if (editMode === 'spot') { setSpotTarget({ trackId: track.id, clipId: clip.id }); return; }
+        clipDragLenRef.current = clip.durationSec;
         setClipDrag({
           trackId: track.id, clipId: clip.id,
           grabOffsetSec: raw - clip.startSec, fromSec: clip.startSec,
@@ -429,7 +587,8 @@ export default function EditWindow() {
     setSelection({ startSec: at, endSec: at, trackIds: [track.id] });
     setDrag({ anchorSec: at, anchorTrackId: track.id });
     bandTrackRef.current = track.id;
-  }, [secAt, setFocusedTrack, tool, setPxPerSec, pxPerSec, seek, setSelection, editMode, apply]);
+  }, [secAt, setFocusedTrack, tool, setPxPerSec, pxPerSec, seek, setSelection, editMode,
+      apply, setSpotTarget]);
 
   const onLaneMove = useCallback((e: React.MouseEvent) => {
     if (gainDrag) {
@@ -459,6 +618,36 @@ export default function EditWindow() {
         clipDrag.fromSec,
         Math.max(0, secAt(e.clientX) - clipDrag.grabOffsetSec),
       );
+      // ── Across lanes ────────────────────────────────────────────────────
+      //
+      // `bandTrackRef` is the row the pointer is over, recorded by every
+      // lane's own mousemove.  Using it rather than measuring y here means
+      // the virtualised row list stays the authority on which track is
+      // where — the arithmetic would have to re-derive heights, collapsed
+      // stacks and the global lanes above, and would be wrong the first time
+      // any of those changed.
+      const over = bandTrackRef.current;
+      if (over && over !== clipDrag.trackId) {
+        const refusal = clipTrackMoveRefusal(session, clipDrag.trackId, clipDrag.clipId, over);
+        if (refusal === null) {
+          applyTransient((s) =>
+            moveClipToTrack(s, clipDrag.trackId, clipDrag.clipId, over, target).session);
+          setClipDrag({ ...clipDrag, trackId: over });
+          setSelection({ startSec: target, endSec: target + clipDragLenRef.current, trackIds: [over] });
+          refusedDropRef.current = null;
+          return;
+        }
+        // Refused.  Said once per reason, not once per mouse-move — a drag
+        // held over a track it cannot land on fires this handler every few
+        // milliseconds, and sixty identical toasts is not an explanation.
+        if (refusedDropRef.current !== refusal) {
+          onNotifyRef.current(refusal, 'warning');
+          refusedDropRef.current = refusal;
+        }
+        // The horizontal half of the gesture still works: the clip follows
+        // the pointer in time on the lane it is already on, which is what it
+        // did before lanes could be crossed at all.
+      }
       // Grouped tracks move together.  A drag is the one edit that does not
       // go through the selection, so it is the one place that has to ask.
       applyTransient((s) => moveClipWithGroup(s, clipDrag.trackId, clipDrag.clipId, target));
@@ -496,6 +685,7 @@ export default function EditWindow() {
   const endDrag = useCallback(() => {
     if (gainDrag) { commitEdit(); setGainDrag(null); }
     if (clipDrag) {
+      refusedDropRef.current = null;
       // The drag is over, so this is the moment the overlap is real.  Doing
       // it during the drag would rewrite the fades on every mousemove and
       // leave a trail of them behind wherever the pointer passed.
@@ -552,7 +742,7 @@ export default function EditWindow() {
   return (
     <div className="relative flex-1 flex flex-col overflow-hidden bg-[#101018] text-zinc-200">
       {/* ── Toolbar ─────────────────────────────────────────────────────── */}
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-zinc-800 bg-[#15151d] flex-wrap">
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-zinc-800 bg-[#15151d] flex-nowrap overflow-x-auto [&>*]:shrink-0">
         <button
           onClick={() => setShowUniverse((v) => !v)}
           title="유니버스 — 곡 전체를 한 띠에 놓고, 지금 보고 있는 창을 끌어서 이동합니다"
@@ -560,6 +750,58 @@ export default function EditWindow() {
             ? 'bg-emerald-600/30 border-emerald-600/50 text-emerald-300'
             : 'bg-zinc-900 border-zinc-700 text-zinc-500 hover:text-zinc-300'}`}
         >UNIV</button>
+
+        {/* The global lanes, and the up-to-190 px they cost.  Three states
+            rather than two: AUTO shows the lanes that have something in them
+            whole and the rest as the single row that holds their `+`, which
+            is what a new session wants, and the other two are the user
+            overruling that in either direction.  OFF takes the rows too —
+            see `global-lanes.ts` for why that is the user's call to make. */}
+        <button
+          onClick={() => setGlobalOverride((v) => (v === null ? true : v === true ? false : null))}
+          title={'글로벌 레인(섹션·코드·픽처·템포) — AUTO: 내용이 있는 레인은 전체,'
+            + ' 빈 레인은 추가 버튼 한 줄(78 px) / ON: 모두 전체(190 px) / OFF: 모두 숨김'}
+          className={`px-2 py-1 rounded text-[10px] font-mono tracking-wide border ${globalOverride === true
+            ? 'bg-emerald-600/30 border-emerald-600/50 text-emerald-300'
+            : globalOverride === false
+              ? 'bg-zinc-800 border-zinc-600 text-zinc-400'
+              : 'bg-zinc-900 border-zinc-700 text-zinc-500 hover:text-zinc-300'}`}
+        >{globalOverride === null ? 'G:AUTO' : globalOverride ? 'G:ON' : 'G:OFF'}</button>
+
+        {/* Every track in the window at once.  The height is computed from
+            what the scroller actually measures, minus what the global lanes
+            and open automation lanes are already spending — see
+            `heightToFit`.  It goes through `apply`, so it is one undo. */}
+        <button
+          onClick={() => {
+            const automationPx = displayRows
+              .filter((r) => r.kind === 'lane').length * AUTOMATION_LANE_HEIGHT;
+            // Up to twenty on screen; a bigger session keeps a legible
+            // lane and scrolls for the rest.
+            const wanted = Math.min(rows.length, FIT_VISIBLE_ROWS);
+            const reserved = globalPx + automationPx;
+            const px = heightToFit(wanted, rowPort.height, reserved);
+            apply((st) => setHeights(st, rows.map((t) => t.id), px));
+
+            // What it actually managed.  `heightToFit` clamps at
+            // MIN_TRACK_HEIGHT, so on a short window the button used to
+            // promise twenty tracks in its own tooltip and quietly deliver
+            // seventeen.  The shortfall is named, with the thing in the way:
+            // the global lanes are the part of it the user has a switch for.
+            const room = Math.max(0, rowPort.height - reserved);
+            const got = Math.floor(room / px);
+            if (got < wanted) {
+              notify(
+                `${wanted}개 중 ${got}개까지 올라갑니다 — 트랙 높이 ${px} px 가 최소치입니다`
+                + (globalPx > 0 ? ` · 글로벌 레인 ${globalPx} px (G 버튼으로 숨김)` : ''),
+                'info',
+              );
+            }
+          }}
+          title="세로 맞춤 — 트랙 높이를 창에 맞춰 한 번에 조절합니다. 최대 20개까지 한 화면에 들어가고, 그보다 많으면 나머지는 스크롤입니다 (되돌리기 한 번으로 복구)"
+          className={'px-2 py-1 rounded text-[10px] font-mono tracking-wide border'
+            + ' bg-zinc-900 border-zinc-700 text-zinc-500 hover:text-zinc-300'}
+        >FIT</button>
 
         <div className="flex rounded-md overflow-hidden border border-zinc-700">
           {EDIT_MODES.map((m) => (
@@ -741,10 +983,12 @@ export default function EditWindow() {
            onMouseUp={endDrag} onMouseLeave={endDrag}>
         {/* Headers */}
         <div style={{ width: HEADER_WIDTH }} className="shrink-0 border-r border-zinc-800 bg-[#12121a]">
-          <SectionLaneHeader />
-          <ChordLaneHeader />
-          <PictureLaneHeader />
-          <TempoTrackHeader session={session} />
+          {globalLanes.section !== 'off' && <SectionLaneHeader />}
+          {globalLanes.chord !== 'off'
+            && <ChordLaneHeader collapsed={globalLanes.chord === 'collapsed'} />}
+          {globalLanes.picture !== 'off' && <PictureLaneHeader />}
+          {globalLanes.tempo !== 'off'
+            && <TempoTrackHeader session={session} collapsed={globalLanes.tempo === 'collapsed'} />}
           <div ref={rowsTop} style={{ height: rowView.padTop }} aria-hidden />
           {builtRows.map((row) => (row.kind === 'lane' ? (
             <AutomationLaneHeader key={row.key} track={row.track} lane={row.lane} />
@@ -762,6 +1006,15 @@ export default function EditWindow() {
               focused={focusedTrackId === row.track.id}
               onFocus={() => setFocusedTrack(row.track.id)}
               onDelete={row.track.kind === 'master' ? null : () => void deleteTracks([row.track.id])}
+              onContextMenu={(e) => {
+                setFocusedTrack(row.track.id);
+                openContextMenu(e, row.track.name, trackMenu({
+                  onDelete: row.track.kind === 'master'
+                    ? null : () => void deleteTracks([row.track.id]),
+                  onInserts: () => usePluginWindowStore.getState().toggleRack(row.track.id),
+                  inStack: stackDepth(session, row.track.id) > 0,
+                }));
+              }}
               onSolo={() => apply((s) => toggleSolo(s, row.track.id))}
               onMute={() => apply((s) => toggleMute(s, row.track.id))}
               onCyclePlaylist={(dir) => apply((s) => cyclePlaylist(s, row.track.id, dir))}
@@ -808,13 +1061,25 @@ export default function EditWindow() {
               </p>
             </div>
           )}
-          <SectionLane viewport={{ scrollSec, pxPerSec, width: laneWidth }} />
-          <ChordLane viewport={{ scrollSec, pxPerSec, width: laneWidth }} />
-          <PictureLane viewport={{ scrollSec, pxPerSec, width: laneWidth }} />
-          <TempoTrack
-            session={session}
-            viewport={{ scrollSec, pxPerSec, width: laneWidth }}
-          />
+          {globalLanes.section !== 'off' && (
+            <SectionLane viewport={{ scrollSec, pxPerSec, width: laneWidth }} />
+          )}
+          {globalLanes.chord !== 'off' && (
+            <ChordLane
+              viewport={{ scrollSec, pxPerSec, width: laneWidth }}
+              collapsed={globalLanes.chord === 'collapsed'}
+            />
+          )}
+          {globalLanes.picture !== 'off' && (
+            <PictureLane viewport={{ scrollSec, pxPerSec, width: laneWidth }} />
+          )}
+          {globalLanes.tempo !== 'off' && (
+            <TempoTrack
+              session={session}
+              viewport={{ scrollSec, pxPerSec, width: laneWidth }}
+              collapsed={globalLanes.tempo === 'collapsed'}
+            />
+          )}
           <div style={{ height: rowView.padTop }} aria-hidden />
           {builtRows.map((row) => (row.kind === 'lane' ? (
             <AutomationLaneCanvas
@@ -826,6 +1091,14 @@ export default function EditWindow() {
           ) : (
             <div
               key={row.key}
+              // The row's identity, in the DOM.  Probes used to find the
+              // track rows by taking the lane column's first children taller
+              // than 20 px, which stopped being the track rows the moment the
+              // global lanes grew a 26 px collapsed row — three smoke steps
+              // then dragged clips onto the section lane and reported the
+              // product broken.  A row that says which track it is cannot be
+              // mistaken for a row above it.
+              data-track-id={row.track.id}
               onMouseDown={(e) => onLaneDown(e, row.track)}
               onMouseMove={(e) => onRowMove(e, row.track)}
               onMouseLeave={() => setLaneHover(null)}
@@ -850,21 +1123,12 @@ export default function EditWindow() {
                   });
                   return;
                 }
-                if (clip.kind === 'midi') {
-                  useMidiEditorStore.getState().openPart({ trackId: row.track.id, clipId: clip.id });
-                  useDawStore.getState().setWindow('midi');
-                  return;
-                }
                 // Re-opening a piece that has already been processed loads its
                 // saved chain back, so changing one knob and applying again is
-                // an edit rather than a rebuild.
-                const fx = clip.regionFx;
-                useRegionLabStore.getState().openLab(
-                  { trackId: row.track.id, clipId: clip.id },
-                  fx ? fx.inserts.map((i) => ({ ...i })) : [],
-                  fx ? fx.tailMode : 'keep',
-                );
+                // an edit rather than a rebuild — see `openClipEditor`.
+                openClipEditor(row.track.id, clip);
               }}
+              onContextMenu={(e) => onLaneContext(e, row.track)}
               className="relative border-b border-zinc-900"
               // The cursor is the only thing telling you the scissors are
               // armed, or that the corner under the pointer is a fade handle —
@@ -1064,7 +1328,7 @@ function TrackHeader({
   track, editGroup, depth, summary, focused, onFocus, onDelete, onSolo, onMute, onCyclePlaylist,
   onPickTake, onAddTake, onDuplicateTake, onRemoveTake, onFlattenTakes,
   onToggleCollapse, onUnpack, onSmart, onInserts, onArm, recording,
-  onToggleAutomation, automationOpen, onRename, onColor, onResize,
+  onToggleAutomation, automationOpen, onRename, onColor, onResize, onContextMenu,
 }: {
   track: Track;
   editGroup: GroupDef | null;
@@ -1074,6 +1338,8 @@ function TrackHeader({
   onFocus: () => void;
   /** Null on the master, which is the output and not a channel. */
   onDelete: (() => void) | null;
+  /** The header's right-click menu, composed by the caller that owns the ops. */
+  onContextMenu: (e: React.MouseEvent) => void;
   onSolo: () => void;
   onMute: () => void;
   onCyclePlaylist: (dir: 1 | -1) => void;
@@ -1109,6 +1375,7 @@ function TrackHeader({
   return (
     <div
       onMouseDown={onFocus}
+      onContextMenu={onContextMenu}
       className={`relative px-2 py-1.5 border-b border-zinc-900 flex flex-col gap-1 ${focused ? 'bg-zinc-800/60' : ''}`}
       style={{
         height: track.height,

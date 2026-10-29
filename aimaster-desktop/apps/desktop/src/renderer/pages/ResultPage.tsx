@@ -72,11 +72,27 @@ const ENABLE_RESULT_WASM_ANALYSIS = true;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function fmt(n: number, d = 1) { return n.toFixed(d); }
+/**
+ * A measurement, or a dash when there is none.
+ *
+ * `null` here means the render path did not measure this value — not that it
+ * measured zero.  Printing 0.0 for an unmeasured loudness range is how a user
+ * comes to believe a master has no dynamics at all.
+ */
+function fmt(n: number | null | undefined, d = 1): string {
+  return typeof n === 'number' && Number.isFinite(n) ? n.toFixed(d) : '—';
+}
 
 // ── Arrow delta ───────────────────────────────────────────────────────────────
 
-function Delta({ before, after, unit }: { before: number; after: number; unit: string }) {
+function Delta({ before, after, unit }: {
+  before: number | null | undefined;
+  after: number | null | undefined;
+  unit: string;
+}) {
+  // No pair, no difference to show — the row still prints both cells.
+  if (typeof before !== 'number' || typeof after !== 'number'
+      || !Number.isFinite(before) || !Number.isFinite(after)) return null;
   const diff   = after - before;
   const absStr = Math.abs(diff).toFixed(1);
   const color  = diff > 0 ? 'text-emerald-400' : diff < 0 ? 'text-amber-400' : 'text-zinc-500';
@@ -99,19 +115,19 @@ function BeforeAfterCard() {
     {
       label:  'Integrated Loudness',
       before: analysis.loudness.integratedLufs,
-      after:  result.loudnessAfter.integratedLufs,
+      after:  result.loudnessAfter?.integratedLufs ?? null,
       unit:   'LUFS',
     },
     {
       label:  'True Peak',
       before: analysis.loudness.truePeakDbtp,
-      after:  result.loudnessAfter.truePeakDbtp,
+      after:  result.loudnessAfter?.truePeakDbtp ?? null,
       unit:   'dBTP',
     },
     {
       label:  'Loudness Range',
       before: analysis.loudness.lra,
-      after:  result.loudnessAfter.lra,
+      after:  result.loudnessAfter?.lra ?? null,
       unit:   'LU',
     },
   ];
@@ -555,14 +571,16 @@ function QCSummary() {
   const targetLufs = -14.5;
   const targetTp   = -1.0;
 
-  const lufsOk = Math.abs(after.integratedLufs - targetLufs) <= 1.0;
-  const tpOk   = after.truePeakDbtp <= targetTp;
+  // A check needs a measurement.  Without one the row says so rather than
+  // claiming a pass or a failure nobody measured.
+  const lufsOk = after !== null && Math.abs(after.integratedLufs - targetLufs) <= 1.0;
+  const tpOk   = after !== null && after.truePeakDbtp <= targetTp;
 
   const items = [
     { label: `-14.5 LUFS 달성`,  ok: lufsOk,
-      note: `${after.integratedLufs.toFixed(1)} LUFS` },
+      note: `${fmt(after?.integratedLufs)} LUFS` },
     { label: `True Peak -1 dBTP 이하`, ok: tpOk,
-      note: `${after.truePeakDbtp.toFixed(1)} dBTP` },
+      note: `${fmt(after?.truePeakDbtp)} dBTP` },
     { label: '처리 완료', ok: true, note: `${result.processingTimeSec.toFixed(1)}s` },
   ];
 
@@ -1155,7 +1173,7 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
   const setStyle      = useAudioStore((s) => s.setStyle);
   const updateOptions = useAudioStore((s) => s.updateOptions);
 
-  const rt = options.rt ?? {};
+  const rt = options.rt ?? NO_RT;
   const updateRt = useCallback((patch: Partial<NonNullable<MasteringOptions['rt']>>) => {
     updateOptions({ rt: { ...rt, ...patch } });
   }, [rt, updateOptions]);
@@ -1404,6 +1422,10 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
 
 // ── ResultPage ────────────────────────────────────────────────────────────────
 
+/** One empty realtime block, not a fresh one per render — it feeds the
+ *  dependency array of the callback that writes it back. */
+const NO_RT: NonNullable<MasteringOptions['rt']> = {};
+
 export default function ResultPage() {
   const setPage         = useAppStore((s) => s.setPage);
   const notify          = useAppStore((s) => s.notify);
@@ -1503,7 +1525,7 @@ export default function ResultPage() {
   const guided = isGuidedFlowEnabled();
   const guidedStyleKey = (options?.style ?? 'balanced') as string;
   const guidedIsKpop = guidedStyleKey === 'kpop_loud';
-  const guidedGainLu = masteringResult
+  const guidedGainLu = masteringResult && masteringResult.loudnessAfter
     ? (masteringResult.loudnessAfter.integratedLufs - masteringResult.loudnessBefore.integratedLufs)
     : 0;
 
@@ -1545,7 +1567,8 @@ export default function ResultPage() {
           <>
             <LoudnessDeltaBars
               origLufs={masteringResult.loudnessBefore.integratedLufs}
-              mastLufs={masteringResult.loudnessAfter.integratedLufs}
+              mastLufs={masteringResult.loudnessAfter?.integratedLufs
+                ?? masteringResult.loudnessBefore.integratedLufs}
               targetLufs={options.targetLufs}
               styleKey={guidedStyleKey}
             />
@@ -1602,7 +1625,8 @@ export default function ResultPage() {
               />
               <LoudnessDeltaBars
                 origLufs={masteringResult.loudnessBefore.integratedLufs}
-                mastLufs={masteringResult.loudnessAfter.integratedLufs}
+                mastLufs={masteringResult.loudnessAfter?.integratedLufs
+                  ?? masteringResult.loudnessBefore.integratedLufs}
                 targetLufs={options.targetLufs}
                 styleKey={guidedStyleKey}
               />

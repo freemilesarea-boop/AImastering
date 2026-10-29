@@ -32,7 +32,7 @@
  * not just level.  Run:  pnpm --filter @aimaster/desktop test:rack-macros
  */
 
-import { OfflineAudioContext } from 'node-web-audio-api';
+import { OfflineAudioContext } from './lib/offline-audio-context.js';
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 
 import { analyzeBuffer, clearAudioCache } from '../src/renderer/daw/engine/audio-cache.js';

@@ -22,13 +22,25 @@ from typing import Optional
 
 from app.utils.logger import log
 
+# Why the reason is kept and not just the flag: in a PyInstaller build a
+# missing module here is not "not installed" — it is a packaging mistake, and
+# the engine goes on answering OK with every band at -120 dB and
+# `available: false`, which the app shows as "레퍼런스 파일을 분석할 수
+# 없습니다".  Measured: an engine.spec that excluded `distutils` dropped the
+# cffi graph, `import soundfile` raised, and nothing anywhere said so.  The
+# text is carried so `env_info` can report it and a packaging run can fail on
+# it instead of shipping an engine that can only run ffmpeg.
+WAVEFORM_UNAVAILABLE_REASON: Optional[str] = None
+
 try:
     import numpy as np
     import soundfile as sf
     HAS_SF = True
-except ImportError:
+except ImportError as exc:
     HAS_SF = False
-    log("WARN", "soundfile/numpy not installed — waveform analysis will be skipped")
+    WAVEFORM_UNAVAILABLE_REASON = f"{type(exc).__name__}: {exc}"
+    log("WARN", f"soundfile/numpy unavailable — waveform analysis will be skipped: "
+                f"{WAVEFORM_UNAVAILABLE_REASON}")
 
 
 # ── Data model ────────────────────────────────────────────────────────────────

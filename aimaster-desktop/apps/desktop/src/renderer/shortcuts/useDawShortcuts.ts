@@ -14,7 +14,9 @@ import {
   useWorkspaceStore, getTransportElement, snapTime,
 } from '../stores/workspaceStore.js';
 import { resumeSharedContext } from '../audio/shared-audio-graph.js';
-import { BINDINGS } from './definitions.js';
+import { resolveBindings } from './key-overrides.js';
+import { setCommandMap } from './command-runner.js';
+import { useShortcutStore } from '../stores/shortcutStore.js';
 import { buildCommands, type CommandDeps, type DawBridge, type TransportApi } from './commands.js';
 import { buildDawCommands, buildDawOverrides } from './daw-commands.js';
 import { useDawStore } from '../stores/dawStore.js';
@@ -133,6 +135,24 @@ export function useDawShortcuts(): void {
 
   const commands = useMemo(() => buildCommands(deps, dawBridge), [deps, dawBridge]);
 
+  // The dispatch list, with the user's remaps applied.  Subscribed rather
+  // than read once, so changing a binding in the `?` overlay takes effect on
+  // the next keystroke instead of the next launch.
+  const overrides = useShortcutStore((s) => s.overrides);
+  const bindings = useMemo(() => resolveBindings(overrides), [overrides]);
+
+  // Publish the map so the context menu can run the SAME function a key runs.
+  // Cleared on unmount so a menu left open over a torn-down workspace reports
+  // "nothing to run" rather than calling into stale closures.
+  useEffect(() => {
+    setCommandMap(commands, (id, err) => {
+      // eslint-disable-next-line no-console
+      console.error(`[context-menu] ${id} failed:`, err);
+      useAppStore.getState().notify('명령 실행 중 오류가 발생했습니다', 'error');
+    });
+    return () => setCommandMap(null);
+  }, [commands]);
+
   // ── Keydown dispatch ────────────────────────────────────────────────────
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -152,7 +172,7 @@ export function useDawShortcuts(): void {
       if (typing) return;
 
       const platform = platformRef.current;
-      for (const { def, chord } of BINDINGS) {
+      for (const { def, chord } of bindings) {
         if (!matchesChord(e, chord, platform)) continue;
         // Let a focused button keep Space/Enter for activation.
         if ((chord.code === 'Space' || chord.code === 'Enter') && isButtonTarget(e.target)) return;
@@ -181,7 +201,7 @@ export function useDawShortcuts(): void {
 
     window.addEventListener('keydown', onKeyDown, { capture: true });
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true });
-  }, [commands]);
+  }, [commands, bindings]);
 
   // ── Undo history recorder ───────────────────────────────────────────────
   useEffect(() => {

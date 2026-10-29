@@ -5,6 +5,7 @@ Tests for v3.4.1 reference-guidance system:
   · reference_presets           — built-in preset list + auto-recommend
 """
 from __future__ import annotations
+from tests.conftest import ffmpeg_bin
 
 import pytest
 
@@ -201,7 +202,7 @@ def test_iterative_surfaces_reference_warnings(tmp_path):
     # Create a deliberately-bad reference: very quiet (~ -30 LUFS)
     ref_path = str(tmp_path / "bad_ref.wav")
     subprocess.run([
-        "ffmpeg", "-y", "-f", "lavfi",
+        ffmpeg_bin(), "-y", "-f", "lavfi",
         "-i", "anoisesrc=color=pink:duration=5",
         "-ar", "44100", "-acodec", "pcm_s24le", "-ac", "2",
         "-af", "volume=-30dB",
@@ -210,7 +211,7 @@ def test_iterative_surfaces_reference_warnings(tmp_path):
 
     in_path = str(tmp_path / "input.wav")
     subprocess.run([
-        "ffmpeg", "-y", "-f", "lavfi",
+        ffmpeg_bin(), "-y", "-f", "lavfi",
         "-i", "anoisesrc=color=pink:duration=10",
         "-ar", "44100", "-acodec", "pcm_s24le", "-ac", "2",
         "-af", "volume=-12dB",
@@ -237,7 +238,7 @@ def test_iterative_surfaces_reference_warnings(tmp_path):
 def _ffmpeg_available() -> bool:
     import subprocess
     try:
-        subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5)
+        subprocess.run([ffmpeg_bin(), "-version"], capture_output=True, timeout=5)
         return True
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False

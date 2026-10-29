@@ -20,6 +20,11 @@ import {
   effectiveFaderDb, toggleMute, toggleSolo, toggleSoloSafe, vcaChainDb,
 } from '../../../daw/model/mixer-math.js';
 import { describePath, computeDelayCompensation, insertLatencySamples, wouldFeedback } from '../../../daw/model/routing.js';
+import {
+  INSTRUMENT_CHAINS, chainSource, findInstrumentChain, rackFromChain,
+} from '../../../daw/model/instrument-chains.js';
+import { loadChainWithSends } from '../../../daw/model/chain-sends.js';
+import { loadRack } from '../../../daw/model/rack-preset.js';
 import { PLUGINS, defaultParams, pluginLatencySamples } from '../../../daw/engine/plugins.js';
 import { dawRuntime } from '../../../daw/engine/daw-runtime.js';
 import type { LiveLoudnessMetrics } from '../../../audio/loudnessStream.js';
@@ -28,10 +33,15 @@ import {
   type ChannelMeterReading,
 } from '../../../daw/model/channel-meter.js';
 
+import { SEND_LEVEL_MAX_DB, SEND_LEVEL_MIN_DB } from '../../../daw/model/types.js';
 import type {
   AutomationMode, AutomationTarget, DawSession, Track,
 } from '../../../daw/model/types.js';
 import { useAutomationStore } from '../../../stores/automationStore.js';
+import { useWorkspaceStore } from '../../../stores/workspaceStore.js';
+import { usePluginWindowStore } from '../../../stores/pluginWindowStore.js';
+import { openContextMenu } from '../../../stores/contextMenuStore.js';
+import { insertMenu, mixerMenu } from '../surface-menus.js';
 import { findLane, isWritingMode, pointValueAt } from '../../../daw/model/automation.js';
 import { ensureLane } from '../../../daw/edit/automation-lanes.js';
 import { stackDepth, isSummingStack } from '../../../daw/model/stacks.js';
@@ -211,6 +221,8 @@ function ChannelStrip({
 }) {
   const [insertsOpen, setInsertsOpen] = useState(false);
   const [sendsOpen, setSendsOpen] = useState(false);
+  const sendRouted = useWorkspaceStore((s) => s.chainSendRouting);
+  const toggleSendRouted = useWorkspaceStore((s) => s.toggleChainSendRouting);
   const isMaster = track.kind === 'master';
   const isVca    = track.kind === 'vca';
   const isFolder = track.kind === 'folder';
@@ -286,6 +298,10 @@ function ChannelStrip({
 
   return (
     <div
+      onContextMenu={(e) => openContextMenu(e, track.name, mixerMenu({
+        onInserts: () => usePluginWindowStore.getState().toggleRack(track.id),
+        isMaster,
+      }))}
       className={`w-[124px] shrink-0 border-r ${stripColor} flex flex-col`}
       style={{
         background: isFolder ? 'rgba(198,167,104,0.06)' : '#12121a',
@@ -349,10 +365,88 @@ function ChannelStrip({
         expanded={insertsOpen}
         onToggle={() => setInsertsOpen((v) => !v)}
       >
+        {/* The other door into the same devices.
+            The slot pickers below list all fifty by name, which answers
+            "which compressor" and not "does this need one".  Picking the
+            instrument fills the chain that instrument always wants, in
+            order, at settings that do something — see
+            `daw/model/instrument-chains.ts`. */}
+        {!isMaster && !isVca && (
+          <div className="flex items-center gap-0.5">
+          <LazySelect
+            value=""
+            label="악기 체인"
+            title={sendRouted
+              ? '악기를 고르면 공간계는 공용 Aux 로, 나머지는 인서트로 깔립니다 (기존 인서트는 교체)'
+              : '악기를 고르면 그 악기에 꼭 필요한 인서트가 순서대로 깔립니다 (기존 인서트는 교체)'}
+            onChange={(e) => {
+              const chain = findInstrumentChain(e.target.value);
+              if (!chain) return;
+              const problems: string[] = [];
+              // The SEND flag is the workspace's, not this strip's: the insert
+              // rack sets the same one, so turning it on there and loading a
+              // chain here routes rather than quietly building a second plate.
+              if (sendRouted) {
+                let message = '';
+                onApply((s) => {
+                  const result = loadChainWithSends(s, track.id, chain);
+                  problems.push(...result.problems);
+                  message = result.message;
+                  return result.session;
+                });
+                for (const problem of problems.slice(0, 3)) onNotify(problem, 'warning');
+                if (message) onNotify(`${message} · 설정은 ${chainSource(chain)}`);
+                return;
+              }
+              onApply((s) => {
+                const result = loadRack(s, track.id, rackFromChain(chain), 'replace');
+                problems.push(...result.problems);
+                return result.session;
+              });
+              for (const problem of problems.slice(0, 3)) onNotify(problem, 'warning');
+              onNotify(`${chain.label} 기본 체인 — ${chain.devices
+                .map((d) => pluginName(d.pluginId)).join(' → ')}`
+                + ` · 설정은 ${chainSource(chain)}`);
+            }}
+            className="w-full h-5 rounded text-[9px] px-1 border bg-zinc-900 border-zinc-700 text-zinc-300"
+          >
+            <option value="">악기 체인</option>
+            {INSTRUMENT_CHAINS.map((chain) => (
+              <option key={chain.id} value={chain.id}>{chain.label} · {chain.english}</option>
+            ))}
+          </LazySelect>
+          {/* The same workspace flag the insert rack sets.  Six voices sharing
+              one plate is the reason it exists; six plates is what happens
+              without it. */}
+          <button
+            onClick={toggleSendRouted}
+            title={'공간계(리버브 · 딜레이)를 공용 Aux 로 보냅니다 — 같은 기기의 Aux 가 있으면 함께 씁니다.\n'
+              + '센드 레벨은 프리셋의 mix 비율에서 계산합니다.'}
+            className={`w-8 h-5 rounded text-[8px] border shrink-0 ${sendRouted
+              ? 'bg-emerald-600/25 border-emerald-500/50 text-emerald-300'
+              : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
+          >SEND</button>
+          </div>
+        )}
         {slotsToShow(track.inserts.map((i) => i.slot), insertsOpen).map((slot) => {
           const insert = track.inserts.find((i) => i.slot === slot);
           return (
-            <div key={slot} className="flex items-center gap-0.5">
+            <div
+              key={slot}
+              onContextMenu={(e) => openContextMenu(e,
+                insert ? `${slotLetter(slot)} · ${pluginName(insert.pluginId)}` : `${slotLetter(slot)} · 빈 슬롯`,
+                insertMenu({
+                  pluginName: insert ? pluginName(insert.pluginId) : null,
+                  bypassed: insert?.bypass === true,
+                  onOpen: () => usePluginWindowStore.getState().open(track.id, slot),
+                  onToggleBypass: () => {
+                    if (insert) onApply((s) => setInsert(s, track.id, { ...insert, bypass: !insert.bypass }));
+                  },
+                  onRemove: () => onApply((s) => removeInsert(s, track.id, slot)),
+                  onInserts: () => usePluginWindowStore.getState().toggleRack(track.id),
+                }))}
+              className="flex items-center gap-0.5"
+            >
               {/* The letter, because a collapsed list still has to say WHERE a
                   device sits — "the compressor is in C" is how an engineer
                   remembers a chain. */}
@@ -448,7 +542,8 @@ function ChannelStrip({
               {send && (
                 <div className="flex items-center gap-1">
                   <input
-                    type="range" min={-60} max={12} step={0.5} value={send.levelDb}
+                    type="range" min={SEND_LEVEL_MIN_DB} max={SEND_LEVEL_MAX_DB}
+                    step={0.5} value={send.levelDb}
                     title={`레벨 ${send.levelDb.toFixed(1)} dB`}
                     onPointerDown={() => grab({ kind: 'sendLevel', sendId: send.id })}
                     onPointerUp={() => release({ kind: 'sendLevel', sendId: send.id })}

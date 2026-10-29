@@ -18,11 +18,19 @@
 // installed what it got: 586 samples of alignment on a 128-sample shaper,
 // and a compressor declaring no look-ahead at all.
 //
+// Then this file died a second time, in the stability section, and for a
+// reason that was not in the probe at all: `startRendering()` resolved with
+// null and `out.getChannelData(0)` threw.  That is the shim's own race
+// between two napi callbacks, not a measurement problem, and it is handled
+// once for every renderer in the suite in `lib/offline-audio-context.ts`.
+// The context here comes from there, which is why this file imports it from a
+// local path rather than from the package.
+//
 // Run: pnpm --filter @aimaster/desktop test:latency-probe
 
 export {};
 
-import { OfflineAudioContext } from 'node-web-audio-api';
+import { OfflineAudioContext } from './lib/offline-audio-context.js';
 import {
   dynamicsLatencySamples, oversample2xLatencySamples, oversampleLatencySamples,
   probeIsTrustworthy, probeRendererLatency, probedLatency,

@@ -17,6 +17,15 @@
 //     config through a ref-held node — a parameter change can no longer
 //     re-attach anything.
 //
+// All three are checked by `realtime-preview-selftest`.  The third was not,
+// for a while: that harness held the worklet and the store and said
+// re-enabling is "only defensible if the properties that make that loop
+// impossible are actually checked", with the hook's property claimed here
+// and measured nowhere.  It is now section 5 there — the hook takes the
+// config as an object and serialises it internally, so the property rests on
+// that serialisation being stable for equal state and sensitive to a real
+// edit, and both are measured.
+//
 // The kill switch is kept, because a crash source earns one: set
 // `VITE_LOUI_REALTIME_PREVIEW=false` at build time, `localStorage`
 // `loui.realtimePreview = 'false'`, or `window.__LOUI_REALTIME_PREVIEW__ =

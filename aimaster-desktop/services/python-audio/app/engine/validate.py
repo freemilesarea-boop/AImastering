@@ -3,6 +3,17 @@ Runtime validation for EnginePreset v1 dicts.
 
 Mirrors the rules in packages/shared-types/src/engine/validate.ts so the
 adapters agree on what counts as a valid preset.
+
+That sentence was a claim, not a fact, until it was measured.  Running both
+validators over the shipped presets and 75 mutations of them turned up eleven
+disagreements in six rules — a preset the Python engine would master happily
+and the TS engine could not load, or the other way round.  The matrix now runs
+as part of the suite (apps/desktop/scripts/engine-preset-selftest.ts), so this
+docstring is checked rather than trusted.
+
+Where the two differed, the rule with a consumer won: the TS side reads the
+per-band values and runs them, so its per-band rules are the contract and are
+enforced here too.
 """
 from __future__ import annotations
 
@@ -11,8 +22,13 @@ from typing import Any
 
 from .schema import ENGINE_PRESET_SCHEMA_ID
 
-_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$")
-_SLUG_RE = re.compile(r"^[A-Za-z0-9_-]{2,64}$")
+# `fullmatch`, not `match`: in Python `$` also matches just before a final
+# newline, so `re.match(r"^\d+\.\d+\.\d+$", "1.0.0\n")` SUCCEEDS while
+# JavaScript's `/^\d+\.\d+\.\d+$/.test("1.0.0\n")` does not.  Measured:
+# an id, a version and an engineApiMin with a trailing newline were accepted
+# here and refused by the TS reader.
+_SEMVER_RE = re.compile(r"\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?")
+_SLUG_RE = re.compile(r"[A-Za-z0-9_-]{2,64}")
 
 _VALID_MODULE_TYPES = {
     "source",
@@ -84,7 +100,7 @@ def _validate_module(errors: list[dict[str, str]], node: Any, path: str) -> None
         _err(errors, f"{path}/type", f"unknown module type: {t!r}")
         return
     mid = node.get("id")
-    if not isinstance(mid, str) or not _SLUG_RE.match(mid):
+    if not isinstance(mid, str) or not _SLUG_RE.fullmatch(mid):
         _err(errors, f"{path}/id", "id must be a slug (2-64 chars, [A-Za-z0-9_-])")
 
     if t in ("source", "sink"):
@@ -100,6 +116,8 @@ def _validate_module(errors: list[dict[str, str]], node: Any, path: str) -> None
             if not isinstance(b, dict):
                 _err(errors, bp, "band must be object")
                 continue
+            if not isinstance(b.get("id"), str):
+                _err(errors, f"{bp}/id", "band id must be a string")
             if b.get("filterType") not in ("low_shelf", "high_shelf", "peak", "high_pass", "low_pass"):
                 _err(errors, f"{bp}/filterType", f"unknown filterType: {b.get('filterType')!r}")
             _range(errors, b.get("freqHz"), f"{bp}/freqHz", 1, 96000)
@@ -108,7 +126,10 @@ def _validate_module(errors: list[dict[str, str]], node: Any, path: str) -> None
 
     if t == "dynamic-eq":
         _range(errors, node.get("intensity"), f"{path}/intensity", 0, 2)
-        bands = node.get("bands", [])
+        # No default: `node.get("bands", [])` used to turn a preset that had
+        # forgotten its bands into a valid module that does nothing, which the
+        # TS reader refuses outright.
+        bands = node.get("bands")
         if not isinstance(bands, list):
             _err(errors, f"{path}/bands", "bands must be array")
             return
@@ -125,7 +146,7 @@ def _validate_module(errors: list[dict[str, str]], node: Any, path: str) -> None
         return
 
     if t == "multiband-eq":
-        bands = node.get("bands", [])
+        bands = node.get("bands")
         if not isinstance(bands, list):
             _err(errors, f"{path}/bands", "bands must be array")
             return
@@ -136,6 +157,7 @@ def _validate_module(errors: list[dict[str, str]], node: Any, path: str) -> None
             if b.get("id") not in ("low", "mid", "vocal", "high"):
                 _err(errors, f"{bp}/id", "must be low|mid|vocal|high")
             _range(errors, b.get("centreHz"), f"{bp}/centreHz", 20, 20000)
+            _range(errors, b.get("q"), f"{bp}/q", 0.1, 10)
             _range(errors, b.get("gainDb"), f"{bp}/gainDb", -12, 12)
         return
 
@@ -196,15 +218,22 @@ def validate_preset(data: Any) -> list[dict[str, str]]:
     if data.get("$schema") != ENGINE_PRESET_SCHEMA_ID:
         _err(errors, "/$schema", f"$schema must equal {ENGINE_PRESET_SCHEMA_ID}")
 
-    if not isinstance(data.get("id"), str) or not _SLUG_RE.match(data["id"]):
+    if not isinstance(data.get("id"), str) or not _SLUG_RE.fullmatch(data["id"]):
         _err(errors, "/id", "id must be a slug")
     if not isinstance(data.get("name"), str) or not data["name"]:
         _err(errors, "/name", "name must be non-empty string")
-    if not isinstance(data.get("version"), str) or not _SEMVER_RE.match(data["version"]):
+    if not isinstance(data.get("version"), str) or not _SEMVER_RE.fullmatch(data["version"]):
         _err(errors, "/version", "version must be semver")
 
     compat = data.get("compatibility")
-    if not isinstance(compat, dict) or not _SEMVER_RE.match(compat.get("engineApiMin", "")):
+    if not isinstance(compat, dict):
+        # Split from the semver check so the pointer names what is actually
+        # missing: an error at `/compatibility/engineApiMin` for a preset that
+        # has no `compatibility` at all sends the reader looking for a field
+        # inside an object that is not there.  The TS validator says
+        # `/compatibility`; both now do.
+        _err(errors, "/compatibility", "compatibility object required")
+    elif not _SEMVER_RE.fullmatch(compat.get("engineApiMin", "")):
         _err(errors, "/compatibility/engineApiMin", "must be semver")
 
     if "meta" in data and not isinstance(data["meta"], dict):

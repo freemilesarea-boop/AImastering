@@ -35,6 +35,11 @@ const GROUPS: Array<{ title: string; macros: MacroId[] }> = [
   { title: 'Space',    macros: ['width', 'depth'] },
 ];
 
+/** One empty rack, not a fresh one per render: the literal was feeding a
+ *  memo's dependency array, so a track with no macros recomputed it on
+ *  every render. */
+const NO_RACK: MacroRack = { enabled: false, values: {}, overrides: {} };
+
 export default function SmartControlPanel() {
   const trackId = useDawStore((s) => s.smartTrackId);
   const close   = useDawStore((s) => s.openSmartControls);
@@ -46,7 +51,7 @@ export default function SmartControlPanel() {
   const [view, setView] = useState<View>('controls');
 
   const track = trackId ? findTrack(session, trackId) : undefined;
-  const rack: MacroRack = track?.macros ?? { enabled: false, values: {}, overrides: {} };
+  const rack: MacroRack = track?.macros ?? NO_RACK;
   const resolved = useMemo(() => materializeRack(rack), [rack]);
 
   if (!track || !trackId) return null;
