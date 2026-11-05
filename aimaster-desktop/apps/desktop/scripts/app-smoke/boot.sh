@@ -81,6 +81,28 @@ node esbuild.main.cjs --dev > "$WORK/esbuild.log" 2>&1 || {
   echo "main bundle FAILED"; tail -5 "$WORK/esbuild.log"; exit 1; }
 echo "main     built"
 
+# The renderer's BUILT assets, which the dev app still reads from disk.
+#
+# The UI comes from vite, but the worklets and the wasm do not: main answers
+# `loui:read-worklet-asset` by reading `dist/renderer/...`, so a checkout that
+# has never been built has nothing there.  On this machine the directory
+# happened to exist from earlier builds; on a fresh CI runner the step
+# "every worklet asset the preview needs is servable" failed with four ENOENTs
+# and looked like a product defect.
+#
+# Built when missing or older than the source, by the same question the vite
+# check above asks, because a stale worklet is the same lie as a stale module
+# graph.
+ASSET="dist/renderer/loui-mastering-wasm.nomodules.wasm"
+if [ ! -f "$ASSET" ] \
+  || [ -n "$(find src public -type f -newer "$ASSET" -print -quit 2>/dev/null)" ]; then
+  echo "renderer assets missing or stale — building them"
+  npx vite build > "$WORK/vite-build.log" 2>&1 || {
+    echo "renderer build FAILED"; tail -5 "$WORK/vite-build.log"; exit 1; }
+fi
+[ -f "$ASSET" ] || { echo "no $ASSET after building the renderer"; exit 1; }
+echo "assets   $(ls dist/renderer/*.worklet.js dist/renderer/*.wasm 2>/dev/null | wc -l) worklet/wasm files"
+
 # A vite that is OLDER than the source it serves is the quiet version of the
 # CDP hazard below, and it cost three runs to find.  The dev server keeps a
 # module graph; after a large edit it can serve a MIXED one, and two copies of

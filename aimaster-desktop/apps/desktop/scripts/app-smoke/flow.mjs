@@ -16,11 +16,25 @@
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { chromium } from 'playwright-core';
 
 const PORT = process.argv[2] ?? '9333';
 const WORK = process.argv[3] ?? '/tmp/smoke';
-const FF = process.env.AIMASTER_FFMPEG ?? 'ffmpeg';
+/**
+ * ffmpeg, resolved the way the app resolves it.
+ *
+ * This was `process.env.AIMASTER_FFMPEG ?? 'ffmpeg'`, and `boot.sh` exports
+ * that variable to the ELECTRON process only — this file is a separate node
+ * process, so it always fell through to a bare `ffmpeg` on PATH.  The
+ * development container has one, the CI runner does not, and the single
+ * fixture that needs it came out zero bytes.  This project SHIPS ffmpeg
+ * rather than finding it, so the flow asks the same package the app does.
+ */
+const FF = process.env.AIMASTER_FFMPEG ?? (() => {
+  try { return createRequire(import.meta.url)('ffmpeg-static'); }
+  catch { return 'ffmpeg'; }
+})();
 const SR = 48_000;
 
 let step = 0;
@@ -746,6 +760,25 @@ try {
     const built = spawnSync(FF, ['-hide_banner', '-loglevel', 'error', '-y',
       '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
       '-ar', '22050', '-ac', '1', '-acodec', 'pcm_s16le', mono], { encoding: 'utf8' });
+    const monoBytes = fs.existsSync(mono) ? fs.statSync(mono).size : 0;
+
+    // Asked BEFORE the engine is.  The `built.status` check used to live in
+    // the assertion below, which is after the `page.evaluate` — so when the
+    // fixture failed, `audio:analyze` threw on a zero-byte file and took the
+    // whole run with it, thirty seconds later, with the engine's words.  The
+    // tool gets checked before its output is used, or the harness reports the
+    // product broken.
+    if (built.status !== 0 || monoBytes === 0) {
+      expect(
+        false,
+        'the 22 kHz mono fixture exists before the engine is asked about it',
+        `${FF} exited ${String(built.status)}`
+          + `${built.error ? ` (${built.error.message})` : ''} leaving ${monoBytes} bytes`
+          + ` — ${(built.stderr ?? '').trim().slice(0, 160) || 'no stderr'}`,
+      );
+      fs.rmSync(mono, { force: true });
+      throw new Error('the mono fixture could not be written — see the step above');
+    }
 
     const shown = await page.evaluate(async (monoPath) => {
       const api = window.electronAPI;
@@ -769,10 +802,10 @@ try {
     }, mono);
 
     expect(
-      built.status === 0 && shown.codes.includes('MONO_INPUT')
+      shown.codes.includes('MONO_INPUT')
         && shown.codes.includes('NON_STANDARD_SAMPLE_RATE'),
       'the engine says what is wrong with a mono 22 kHz file',
-      built.status === 0 ? shown.codes.join(', ') : `could not build the file: ${built.stderr}`,
+      `${monoBytes} byte fixture → ${shown.codes.join(', ')}`,
     );
     expect(
       shown.lines === shown.codes.length && /22050|모노/.test(shown.rendered),
