@@ -24,10 +24,15 @@
  *
  * ── No new dependency ───────────────────────────────────────────────────────
  *
- * It speaks CDP directly over Node 22's built-in WebSocket and fetch.  The
- * whole sweep is `Runtime.evaluate`; nothing here needs a driver.  Playwright
- * would have meant either a 300 MB install for browsers we do not use, or
- * playwright-core as a dependency for one script.
+ * It speaks CDP directly over a WebSocket and fetch.  The whole sweep is
+ * `Runtime.evaluate`; nothing here needs a driver.
+ *
+ * The socket is Node's own global when there is one and `ws` when there is
+ * not, and that `when there is not` is the CI runner: the global landed in
+ * Node 22, this repository's workflows pin Node 20, and the first CI run of
+ * this script died in one second with `WebSocket is not defined`.  `ws` was
+ * already in the tree as somebody else's transitive dependency, which is not
+ * the same as being allowed to import it, so it is declared.
  *
  * ── Running it ──────────────────────────────────────────────────────────────
  *
@@ -57,6 +62,9 @@ import { existsSync, openSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
+
+/** Node 22 has one; Node 20, which CI pins, does not. */
+const WS = globalThis.WebSocket ?? (await import('ws')).WebSocket;
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 const APP = path.resolve(HERE, '..');
@@ -160,7 +168,7 @@ async function pageTarget() {
 }
 
 function connect(wsUrl) {
-  const ws = new WebSocket(wsUrl);
+  const ws = new WS(wsUrl);
   const pending = new Map();
   let nextId = 1;
   const open = new Promise((res, rej) => {

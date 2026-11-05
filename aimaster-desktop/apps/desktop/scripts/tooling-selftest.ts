@@ -150,6 +150,48 @@ check(
   );
 }
 
+// ── Every package these harnesses import is one they are allowed to ──────
+//
+// Three rounds of CI were spent on this one shape.  `playwright` came from an
+// absolute path on one container; `ws` was somebody else's transitive
+// dependency and vanished on Node 20, where the global does not exist;
+// `@electron/asar` was reachable only because electron-builder happened to
+// hoist it.  A package that resolves is not the same as a package that is
+// declared, and the difference only shows up on another machine.
+{
+  const harnesses = [
+    'scripts/ui-hit-test.mjs',
+    'scripts/app-smoke/flow.mjs',
+    'scripts/app-smoke/flow-packaged.mjs',
+  ];
+  const pkg = JSON.parse(read('package.json')) as {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  };
+  const declared = new Set([
+    ...Object.keys(pkg.dependencies ?? {}),
+    ...Object.keys(pkg.devDependencies ?? {}),
+  ]);
+  const undeclared: string[] = [];
+  for (const f of harnesses) {
+    const src = read(f);
+    for (const m of src.matchAll(/(?:from|import\()\s*'([^']+)'/g)) {
+      const spec = m[1]!;
+      if (spec.startsWith('.') || spec.startsWith('/') || spec.startsWith('node:')) continue;
+      const name = spec.startsWith('@')
+        ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0]!;
+      if (!declared.has(name)) undeclared.push(`${f.split('/').pop()!} → ${name}`);
+    }
+  }
+  check(
+    'every package the three harnesses import is declared in package.json',
+    undeclared.length === 0,
+    undeclared.length === 0
+      ? `${harnesses.length} harnesses, all imports declared`
+      : `undeclared: ${[...new Set(undeclared)].join(', ')}`,
+  );
+}
+
 // ── The rule that catches stale closures stays on ────────────────────────
 {
   const rc = read('.eslintrc.cjs');
