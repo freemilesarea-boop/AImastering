@@ -273,13 +273,42 @@ try {
         : `system:engine-status threw: ${appSaysEngine.e}`,
     );
 
+    // ── What the engine binary carries ─────────────────────────────────
+    //
+    // This was a size cap alone, at 32 MB, and the first CI run of this flow
+    // failed it at 38.23 MB.  The spec was not the cause: the same spec, the
+    // same pinned numpy and soundfile and the same PyInstaller rebuilt the
+    // engine at 27.52 MB in the development container.  The difference is the
+    // INTERPRETER the build runs on — a distribution python3.11 here, the
+    // hosted-toolcache build on the runner — and the binary embeds it.
+    //
+    // So a byte count was measuring the interpreter and reporting it as a
+    // regression.  What the step is named for is a build-time TAIL, and that
+    // is a question about contents: numpy's test suite, setuptools with
+    // pkg_resources behind it, and the OpenSSL that arrived through
+    // setuptools' email/http/urllib in a process that opens no socket.  Those
+    // are asked for by name, which no interpreter can shift.
+    //
+    // The size is still reported, and still capped — far enough above both
+    // measured interpreters (27.52 and 38.23 MB) that it catches a doubling
+    // rather than a toolchain.
     const engineMb = fs.statSync(engineBin).size / 1e6;
-    const ENGINE_CAP_MB = 32;
+    const ENGINE_CAP_MB = 45;
+    const bin = fs.readFileSync(engineBin);
+    const TAIL_MARKERS = ['pkg_resources', 'setuptools', 'numpy/tests', 'OpenSSL', '_ssl'];
+    const found = TAIL_MARKERS.filter((m) => bin.includes(Buffer.from(m)));
+    expect(
+      found.length === 0,
+      'and the engine binary carries no build-time tail',
+      found.length === 0
+        ? `none of ${TAIL_MARKERS.join(', ')} is in it, at ${engineMb.toFixed(2)} MB`
+        : `${found.join(', ')} is back in it (${engineMb.toFixed(2)} MB)`,
+    );
     expect(
       engineMb < ENGINE_CAP_MB,
-      'and the engine binary carries no build-time tail',
-      `${engineMb.toFixed(2)} MB (cap ${ENGINE_CAP_MB} MB — it was 37.95 MB with numpy's tests, `
-      + 'setuptools and OpenSSL inside)',
+      'and it is the size an engine is, not the size a bundled toolchain is',
+      `${engineMb.toFixed(2)} MB (cap ${ENGINE_CAP_MB} — measured 27.52 MB on a`
+      + " distribution python3.11 and 38.23 MB on the runner's toolcache build)",
     );
   }
 

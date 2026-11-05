@@ -156,7 +156,7 @@ jobs:
       #
       # Until now this job stopped at the selftests, and the app smoke
       # (74 steps of real mouse and keyboard), the control hit-test (838
-      # controls across 19 views) and the packaged smoke (21 steps inside the
+      # controls across 19 views) and the packaged smoke (22 steps inside the
       # asar) ran only when someone ran them by hand.  That is the same
       # standing the selftests had before they were added above, and the
       # comment there already says what it is worth.
@@ -315,18 +315,12 @@ jobs:
         working-directory: aimaster-desktop/apps/desktop
         run: ls -lah out/
 
-      # The packaged app, from inside the asar — worklet assets served out of
-      # it, the separation runtime found by the path main tries first, the
-      # asar under its size cap, and a Studio render that really ran on the
-      # Rust chain resolved from <resources>.  It goes here because it needs
-      # `out/linux-unpacked`, which the packaging step above produces.
-      #
-      # `boot-packaged.sh` refuses an app.asar older than the source it should
-      # contain, so this step cannot pass against a stale package.
-      - name: Packaged smoke (21 steps, from inside the asar)
-        working-directory: aimaster-desktop/apps/desktop
-        run: pnpm -s smoke:packaged
-
+      # Uploaded BEFORE the smoke judges it, deliberately.  The first CI run
+      # of the packaged smoke failed, and because the upload sat after it
+      # there was no installer to open and no engine binary to look inside —
+      # the diagnosis had to be rebuilt from the log.  The job still fails, so
+      # `release-draft` still cannot publish; what changes is that the thing
+      # that failed is in hand.
       - name: Upload Linux artifacts (AppImage + deb)
         uses: actions/upload-artifact@v4
         with:
@@ -337,6 +331,18 @@ jobs:
             aimaster-desktop/apps/desktop/out/latest-linux.yml
           if-no-files-found: error
           retention-days: 30
+
+      # The packaged app, from inside the asar — worklet assets served out of
+      # it, the separation runtime found by the path main tries first, the
+      # asar under its size cap, and a Studio render that really ran on the
+      # Rust chain resolved from <resources>.  It goes here because it needs
+      # `out/linux-unpacked`, which the packaging step above produces.
+      #
+      # `boot-packaged.sh` refuses an app.asar older than the source it should
+      # contain, so this step cannot pass against a stale package.
+      - name: Packaged smoke (22 steps, from inside the asar)
+        working-directory: aimaster-desktop/apps/desktop
+        run: pnpm -s smoke:packaged
 
 
   # ── macOS (dmg + zip) — one job PER ARCH on a matching-arch runner ───────────
