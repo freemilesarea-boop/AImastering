@@ -501,14 +501,24 @@ async function main() {
     console.error(`electron is not installed at ${electronBin} — run pnpm install`);
     process.exit(2);
   }
-  // Root on Linux cannot use the sandbox; a normal desktop user can and should.
-  const sandbox = linux && typeof process.getuid === 'function' && process.getuid() === 0
-    ? ['--no-sandbox'] : [];
+  // `--no-sandbox` on Linux, always, which `app-smoke/boot.sh` has done from
+  // the start.  This used to be "only when running as root", and the two
+  // harnesses then disagreed about the same app: root in this container took
+  // the flag, the CI runner's non-root `runner` did not, and Electron's
+  // bundled chrome-sandbox helper is not installed setuid by a node_modules
+  // install — so the app never came up and this script waited ninety seconds
+  // for a debugger that was never going to appear.  Nothing this sweep
+  // measures — where a control is, and what is on top of it — is affected by
+  // the sandbox, and the harness that drives the product already runs without
+  // it.  One answer for both.
+  const sandbox = linux ? ['--no-sandbox'] : [];
   console.log(`electron with CDP on ${CDP_PORT} …`);
+  const electronLog = path.join(tmpdir(), `ui-hit-test-electron-${process.pid}.log`);
   bg(electronBin, [...sandbox, `--remote-debugging-port=${CDP_PORT}`, '.'], {
     cwd: APP,
     env: { ...env, VITE_DEV_SERVER_URL: VITE_URL },
-  });
+  }, electronLog);
+  console.log(`electron  log at ${electronLog}`);
   // The debugger is the LAST thing to come up, so it is the first thing
   // blamed.  Twice in this container the real cause was the display — a
   // stale lock with no server behind it — and the message sent the reader to
@@ -520,7 +530,11 @@ async function main() {
       : displayIsDead(display) ? `and ${display} is not answering either — the display is the`
         + ' likelier cause (a stale /tmp/.X*-lock with no server behind it does this)'
         : `while ${display} answers, so the display is not the cause`;
-    throw new Error(`${err instanceof Error ? err.message : String(err)} — ${where}`);
+    // And what the app itself said, which is the half the display answer
+    // cannot supply: a sandbox it cannot use, a missing library, a crash on
+    // boot.  Discarding this cost a CI round.
+    throw new Error(`${err instanceof Error ? err.message : String(err)} — ${where}`
+      + ` — electron said: ${tailOf(electronLog)}`);
   }
 
   const target = await pageTarget();

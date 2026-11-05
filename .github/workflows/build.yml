@@ -227,6 +227,7 @@ jobs:
             /tmp/loui-smoke/*.log
             /tmp/loui-pkg-smoke/*.log
             /tmp/ui-hit-test-vite-*.log
+            /tmp/ui-hit-test-electron-*.log
           if-no-files-found: ignore
 
       # v3.4.5 — bake AUTO_UPDATE_ENABLED into the main bundle.
