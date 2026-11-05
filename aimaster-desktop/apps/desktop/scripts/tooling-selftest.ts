@@ -41,6 +41,7 @@ const DESKTOP = path.resolve(__dirname, '..');
 const read = (p: string): string => readFileSync(path.join(DESKTOP, p), 'utf8');
 
 const boot = read('scripts/app-smoke/boot.sh');
+const bootPkg = read('scripts/app-smoke/boot-packaged.sh');
 const hit = read('scripts/ui-hit-test.mjs');
 
 console.log('\n=== the tools that check the app ===\n');
@@ -106,6 +107,20 @@ check(
     && /kill -9 "\$VITE_PID"/.test(boot),
   'a mixed module graph gave the UI one store and the harness another:'
     + ' 25 steps failed naming the product, 69/69 on a fresh server',
+);
+
+// ── Nor a PACKAGE older than the code it was built from ──────────────────
+//
+// The packaged boot said it in prose — "a stale .AppImage looks exactly like
+// a fresh one" — and checked nothing.  At the 2026-11-05 feature check the
+// app.asar on disk was four days and one bug-fix commit older than HEAD, so
+// `smoke:packaged` would have reported 21/21 for a build with none of the
+// session repair in it.  Refused rather than rebuilt: `pnpm dist` is minutes,
+// and a boot script that silently starts a package build is unpredictable.
+check(
+  'boot-packaged.sh refuses an app.asar older than the source it should contain',
+  /-newer "\$ASAR"/.test(bootPkg) && /run 'pnpm dist' first; 21\/21 on a stale package/.test(bootPkg),
+  'it names the file that changed after packaging, and exits 1',
 );
 
 // ── The rule that catches stale closures stays on ────────────────────────

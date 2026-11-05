@@ -29,6 +29,27 @@ SRC="$PWD/out/linux-unpacked"
 [ -x "$SRC/@aimasterdesktop" ] || {
   echo "no packaged app at $SRC — run 'pnpm dist' first"; exit 1; }
 
+# Is the package NEWER than the code it is supposed to be?
+#
+# The comment further down already says it — "a stale .AppImage looks exactly
+# like a fresh one" — and then nothing checked.  This script would happily
+# measure an app.asar built four days and one bug-fix commit ago and report
+# 21/21 for code that is not in it.  The dev boot had the same hole through
+# vite's module graph and it cost three runs to find.
+#
+# Refused rather than rebuilt: `pnpm dist` is minutes, and a boot script that
+# silently starts a package build is a boot script nobody can predict.
+ASAR="$SRC/resources/app.asar"
+[ -f "$ASAR" ] || { echo "no app.asar at $ASAR — run 'pnpm dist' first"; exit 1; }
+NEWER="$(find src electron esbuild.main.cjs package.json -newer "$ASAR" \
+  -not -path '*/node_modules/*' -print -quit 2>/dev/null)"
+if [ -n "$NEWER" ]; then
+  echo "app.asar is OLDER than the source — $NEWER changed after it was packaged"
+  echo "         run 'pnpm dist' first; 21/21 on a stale package means nothing"
+  exit 1
+fi
+echo "package  app.asar is newer than src/ ($(date -r "$ASAR" '+%Y-%m-%d %H:%M'))"
+
 mkdir -p "$WORK"
 INSTALL="$WORK/installed"
 rm -rf "$INSTALL"
