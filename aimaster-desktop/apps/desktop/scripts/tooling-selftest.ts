@@ -123,6 +123,33 @@ check(
   'it names the file that changed after packaging, and exits 1',
 );
 
+// ── And neither flow is tied to one machine ──────────────────────────────
+//
+// Both app flows imported playwright by absolute path —
+// `/opt/node22/lib/node_modules/playwright/index.mjs` — which is a path on
+// one development container.  They could not run on a CI runner at all, and
+// `require.resolve('playwright')` on that same container already answered a
+// DIFFERENT path, so the import was one image update away from breaking here
+// too.  It is a devDependency now.
+{
+  const flows = ['scripts/app-smoke/flow.mjs', 'scripts/app-smoke/flow-packaged.mjs'];
+  const pkg = JSON.parse(read('package.json')) as {
+    devDependencies?: Record<string, string>;
+  };
+  const absolute = flows.filter((f) => /from '\/[^']+'/.test(read(f)));
+  check(
+    'neither app flow imports anything by absolute path',
+    absolute.length === 0,
+    absolute.length === 0 ? flows.length + ' flow(s) clean' : absolute.join(', '),
+  );
+  check(
+    'and the driver they do import is a declared dependency',
+    typeof pkg.devDependencies?.['playwright-core'] === 'string'
+      && flows.every((f) => /from 'playwright-core'/.test(read(f))),
+    `playwright-core ${pkg.devDependencies?.['playwright-core'] ?? '(not declared)'}`,
+  );
+}
+
 // ── The rule that catches stale closures stays on ────────────────────────
 {
   const rc = read('.eslintrc.cjs');

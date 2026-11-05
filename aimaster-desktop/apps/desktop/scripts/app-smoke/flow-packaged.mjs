@@ -24,7 +24,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
+import { chromium } from 'playwright-core';
 import asarApi from '@electron/asar';
 
 const PORT = process.argv[2] ?? '9444';

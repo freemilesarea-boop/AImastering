@@ -152,6 +152,70 @@ jobs:
         working-directory: aimaster-desktop/apps/desktop
         run: pnpm -s test
 
+      # ── The three layers that drive the real app ────────────────────────
+      #
+      # Until now this job stopped at the selftests, and the app smoke
+      # (74 steps of real mouse and keyboard), the control hit-test (838
+      # controls across 19 views) and the packaged smoke (21 steps inside the
+      # asar) ran only when someone ran them by hand.  That is the same
+      # standing the selftests had before they were added above, and the
+      # comment there already says what it is worth.
+      #
+      # It is not a theoretical gap.  Three defects found in the 3.8.0 work
+      # came from these three layers and from nowhere else: a `flex-1` spacer
+      # in a 168 px column that made buttons unclickable where they were
+      # drawn, a probe that picked the section lane as a track row, and a dev
+      # server serving a mixed module graph so the UI and the harness held
+      # different stores.  None of the three is visible to a typecheck, a lint
+      # or a selftest.
+      #
+      # Xvfb because the app needs a display, and `x11-utils` for `xdpyinfo`:
+      # without it both boot paths fall back to matching the Xvfb PROCESS by
+      # name, which is the weaker question (a process can be up with its
+      # socket gone).  The Electron runtime libraries are named differently
+      # across Ubuntu releases, so the alternatives are tried in turn rather
+      # than assumed.
+      - name: Install a display and Electron's runtime libraries
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb x11-utils
+          sudo apt-get install -y -qq libgbm1 libnss3 libatk-bridge2.0-0 libgtk-3-0 || true
+          sudo apt-get install -y -qq libasound2t64 || sudo apt-get install -y -qq libasound2 || true
+          xdpyinfo -version 2>&1 | head -1 || true
+
+      - name: App smoke (74 steps, real mouse and keyboard)
+        working-directory: aimaster-desktop/apps/desktop
+        run: pnpm -s smoke:flow
+
+      - name: Control hit-test (every control's centre is its own)
+        working-directory: aimaster-desktop/apps/desktop
+        run: node scripts/ui-hit-test.mjs
+
+      # The logs the two boots write, which are the only way to tell a missing
+      # library from a failed assertion once the runner is gone.
+      # Both boots leave their app running on purpose — the flows attach to
+      # them — and two Electron instances plus two vite servers on a two-core
+      # runner is CPU the packaging step below is about to want.  By PID from
+      # the port in its own argv, because `pkill -f` would match this step.
+      - name: Stop the apps the smokes left running
+        if: always()
+        run: |
+          ps -eo pid,args --no-headers | grep -F -- 'remote-debugging-port=' \
+            | grep -v grep | awk '{print $1}' | xargs -r kill -9 || true
+          ps -eo pid,args --no-headers | grep -F 'bin/vite' \
+            | grep -v grep | awk '{print $1}' | xargs -r kill -9 || true
+
+      - name: Upload smoke logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs-linux
+          path: |
+            /tmp/loui-smoke/*.log
+            /tmp/loui-pkg-smoke/*.log
+          if-no-files-found: ignore
+
       # v3.4.5 — bake AUTO_UPDATE_ENABLED into the main bundle.
       # Tag push (refs/tags/v*) → true → installer will check GitHub Releases.
       # Branch / workflow_dispatch artefact → false → updater stays silent.
@@ -236,6 +300,18 @@ jobs:
       - name: List build outputs
         working-directory: aimaster-desktop/apps/desktop
         run: ls -lah out/
+
+      # The packaged app, from inside the asar — worklet assets served out of
+      # it, the separation runtime found by the path main tries first, the
+      # asar under its size cap, and a Studio render that really ran on the
+      # Rust chain resolved from <resources>.  It goes here because it needs
+      # `out/linux-unpacked`, which the packaging step above produces.
+      #
+      # `boot-packaged.sh` refuses an app.asar older than the source it should
+      # contain, so this step cannot pass against a stale package.
+      - name: Packaged smoke (21 steps, from inside the asar)
+        working-directory: aimaster-desktop/apps/desktop
+        run: pnpm -s smoke:packaged
 
       - name: Upload Linux artifacts (AppImage + deb)
         uses: actions/upload-artifact@v4

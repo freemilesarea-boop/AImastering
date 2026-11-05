@@ -3,11 +3,20 @@
 //   node scripts/app-smoke/flow.mjs [cdp-port] [workdir]
 //
 // See README.md for why this exists and what it deliberately does not do.
+//
+// `playwright-core`, as a real devDependency, and not `playwright`.  Both
+// files used to import it by absolute path —
+// `/opt/node22/lib/node_modules/playwright/index.mjs` — which exists on one
+// development container and nowhere else, so these two flows could not run on
+// a CI runner at all, and would break here the day that image moved.
+// `playwright-core` is the half that drives a browser over CDP; the
+// `playwright` wrapper's extra job is downloading browsers, and the browser
+// here is the app.
 
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
-import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
+import { chromium } from 'playwright-core';
 
 const PORT = process.argv[2] ?? '9333';
 const WORK = process.argv[3] ?? '/tmp/smoke';

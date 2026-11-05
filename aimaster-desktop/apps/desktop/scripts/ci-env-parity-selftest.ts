@@ -159,6 +159,41 @@ check(
   linuxSteps.filter((s) => s.run).map((s) => String(s.name ?? '?')).join(' · '),
 );
 
+// ── The three layers that drive the real app ─────────────────────────────
+//
+// The selftests were added to CI with the argument that a suite nobody runs
+// has the standing of not existing.  The same was then true of the app smoke,
+// the control hit-test and the packaged smoke for every release after them:
+// they ran when someone remembered.  They run here now, and this is what
+// stops them drifting back out — including the apt step, because without a
+// display the smoke step fails in a way that invites deleting the smoke step.
+{
+  const linux = jobs['build-linux']?.steps ?? [];
+  const runs = linux.map((st) => String(st.run ?? '')).join('\n');
+  const wanted: [string, RegExp][] = [
+    ['the app smoke', /pnpm -s smoke:flow/],
+    ['the control hit-test', /node scripts\/ui-hit-test\.mjs/],
+    ['the packaged smoke', /pnpm -s smoke:packaged/],
+    ['a display for them to run on', /apt-get install -y -qq xvfb x11-utils/],
+  ];
+  const absent = wanted.filter(([, re]) => !re.test(runs)).map(([what]) => what);
+  check(
+    'build-linux runs the three layers that need a real app, not only the suite',
+    absent.length === 0,
+    absent.length === 0
+      ? `${linux.length} steps, all four present`
+      : `missing: ${absent.join(', ')}`,
+  );
+  // Order is part of it: the packaged smoke reads `out/linux-unpacked`, which
+  // does not exist until the packaging step has run.
+  const at = (re: RegExp): number => linux.findIndex((st) => re.test(String(st.run ?? '')));
+  check(
+    'and the packaged smoke runs after the step that produces the package',
+    at(/pnpm -s smoke:packaged/) > at(/electron-builder --linux/),
+    `packaging at step ${at(/electron-builder --linux/)}, packaged smoke at ${at(/pnpm -s smoke:packaged/)}`,
+  );
+}
+
 // And does the step still say how many it runs?
 //
 // The name read "Test (226 selftests…)" while the suite had grown past 230.
