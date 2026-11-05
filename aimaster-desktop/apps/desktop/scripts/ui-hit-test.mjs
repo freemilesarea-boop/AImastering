@@ -469,7 +469,17 @@ async function main() {
 
   const env = { ...noProxy, ...(display ? { DISPLAY: display } : {}) };
 
-  if (await reachable(`http://127.0.0.1:${VITE_PORT}/`)) {
+  // The URL the APP will be given, probed as the app will reach it.
+  //
+  // These two were different: the wait asked `http://127.0.0.1:5199/` and
+  // Electron was handed `http://localhost:5199`.  On this machine those are
+  // the same address; on a CI runner `localhost` resolves to ::1 first, vite
+  // bound there, and the IPv4 probe was refused for ninety seconds while
+  // vite's own log said `ready in 157 ms`.  Waiting for something other than
+  // what you are about to use is its own bug, and it took the log tail added
+  // in the same commit to see it.
+  const VITE_URL = `http://localhost:${VITE_PORT}`;
+  if (await reachable(`${VITE_URL}/`)) {
     console.log(`using the dev server already on ${VITE_PORT}`);
   } else {
     console.log(`vite on ${VITE_PORT} …`);
@@ -478,7 +488,7 @@ async function main() {
       { cwd: APP, env }, viteLog);
     try {
       await until(`the dev server on ${VITE_PORT}`,
-        () => reachable(`http://127.0.0.1:${VITE_PORT}/`));
+        () => reachable(`${VITE_URL}/`));
     } catch (err) {
       throw new Error(`${err instanceof Error ? err.message : String(err)} — vite said: `
         + tailOf(viteLog));
@@ -497,7 +507,7 @@ async function main() {
   console.log(`electron with CDP on ${CDP_PORT} …`);
   bg(electronBin, [...sandbox, `--remote-debugging-port=${CDP_PORT}`, '.'], {
     cwd: APP,
-    env: { ...env, VITE_DEV_SERVER_URL: `http://localhost:${VITE_PORT}` },
+    env: { ...env, VITE_DEV_SERVER_URL: VITE_URL },
   });
   // The debugger is the LAST thing to come up, so it is the first thing
   // blamed.  Twice in this container the real cause was the display — a
