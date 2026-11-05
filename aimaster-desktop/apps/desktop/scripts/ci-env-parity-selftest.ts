@@ -192,6 +192,17 @@ check(
     at(/pnpm -s smoke:packaged/) > at(/electron-builder --linux/),
     `packaging at step ${at(/electron-builder --linux/)}, packaged smoke at ${at(/pnpm -s smoke:packaged/)}`,
   );
+  // Measured on the first CI run of these steps: the hit-test brings up a
+  // SECOND dev server, and with the smoke's app and server still alive on a
+  // two-core runner it did not answer inside ninety seconds.  The kill step
+  // between them is why it does now.
+  const stop = at(/remote-debugging-port=/);
+  check(
+    'and the hit-test starts into a machine the smoke is no longer using',
+    stop > at(/pnpm -s smoke:flow/) && stop < at(/node scripts\/ui-hit-test\.mjs/),
+    `smoke at ${at(/pnpm -s smoke:flow/)}, stop at ${stop},`
+      + ` hit-test at ${at(/node scripts\/ui-hit-test\.mjs/)}`,
+  );
 }
 
 // And does the step still say how many it runs?

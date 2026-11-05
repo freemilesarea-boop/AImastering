@@ -53,7 +53,8 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, openSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 
@@ -73,11 +74,47 @@ const DISPLAY_NUM = process.env.UI_HIT_TEST_DISPLAY ?? ':98';
 const KEEP = process.argv.includes('--keep');
 
 const children = [];
-function bg(cmd, args, opts = {}) {
-  const child = spawn(cmd, args, { stdio: 'ignore', detached: true, ...opts });
+/**
+ * Start a child in the background, keeping what it says.
+ *
+ * `stdio: 'ignore'` threw it away, and the first CI run paid for that: vite
+ * did not come up inside ninety seconds and the only thing this script could
+ * report was "timed out waiting for the dev server on 5199" — with vite's own
+ * reason discarded.  A log costs nothing and is the difference between a
+ * diagnosis and a guess.
+ */
+function bg(cmd, args, opts = {}, logPath) {
+  const out = logPath ? openSync(logPath, 'a') : 'ignore';
+  const child = spawn(cmd, args, {
+    stdio: logPath ? ['ignore', out, out] : 'ignore', detached: true, ...opts,
+  });
   child.unref();
   children.push(child);
   return child;
+}
+
+/**
+ * vite colours its output, and the escape that does it is a control
+ * character, which `no-control-regex` rightly refuses in a literal.  Built
+ * from its code point instead of suppressing the rule.
+ */
+const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+
+/**
+ * The last few MEANINGFUL lines of a log.
+ *
+ * Stack frames are dropped, because they are what a crashing dev server ends
+ * with and never what it failed for: the first version of this tail returned
+ * six `at .../esbuild/lib/main.js` lines while "Cannot find config file" sat
+ * just above them.
+ */
+function tailOf(file, lines = 6) {
+  try {
+    const all = readFileSync(file, 'utf8').trimEnd().split('\n')
+      .map((l) => l.replace(ANSI, '').trimEnd())
+      .filter((l) => l.trim() !== '' && !/^\s*at /.test(l));
+    return all.slice(-lines).join(' | ').slice(0, 400) || '(the log says nothing)';
+  } catch { return '(no log was written)'; }
 }
 function stopAll() {
   for (const c of children) {
@@ -436,9 +473,17 @@ async function main() {
     console.log(`using the dev server already on ${VITE_PORT}`);
   } else {
     console.log(`vite on ${VITE_PORT} …`);
-    bg('pnpm', ['exec', 'vite', '--port', String(VITE_PORT), '--strictPort'], { cwd: APP, env });
-    await until(`the dev server on ${VITE_PORT}`,
-      () => reachable(`http://127.0.0.1:${VITE_PORT}/`));
+    const viteLog = path.join(tmpdir(), `ui-hit-test-vite-${process.pid}.log`);
+    bg('pnpm', ['exec', 'vite', '--port', String(VITE_PORT), '--strictPort'],
+      { cwd: APP, env }, viteLog);
+    try {
+      await until(`the dev server on ${VITE_PORT}`,
+        () => reachable(`http://127.0.0.1:${VITE_PORT}/`));
+    } catch (err) {
+      throw new Error(`${err instanceof Error ? err.message : String(err)} — vite said: `
+        + tailOf(viteLog));
+    }
+    console.log(`vite      log at ${viteLog}`);
   }
 
   const electronBin = path.resolve(APP, '../../node_modules/electron/dist/electron');

@@ -188,17 +188,27 @@ jobs:
         working-directory: aimaster-desktop/apps/desktop
         run: pnpm -s smoke:flow
 
+      # Each boot leaves its app and its dev server running on purpose — the
+      # flows attach to them — so the next tool starts into a machine that is
+      # already busy.  On a two-core runner that is not a tidiness point: the
+      # hit-test brings up a SECOND vite on another port, and with the smoke's
+      # app and server still alive it did not answer inside ninety seconds.
+      # By PID from each process's own argv, because `pkill -f` would match
+      # this step.
+      - name: Stop the app the smoke left running
+        run: |
+          ps -eo pid,args --no-headers | grep -F -- 'remote-debugging-port=' \
+            | grep -v grep | awk '{print $1}' | xargs -r kill -9 || true
+          ps -eo pid,args --no-headers | grep -F 'bin/vite' \
+            | grep -v grep | awk '{print $1}' | xargs -r kill -9 || true
+          sleep 2
+
       - name: Control hit-test (every control's centre is its own)
         working-directory: aimaster-desktop/apps/desktop
         run: node scripts/ui-hit-test.mjs
 
-      # The logs the two boots write, which are the only way to tell a missing
-      # library from a failed assertion once the runner is gone.
-      # Both boots leave their app running on purpose — the flows attach to
-      # them — and two Electron instances plus two vite servers on a two-core
-      # runner is CPU the packaging step below is about to want.  By PID from
-      # the port in its own argv, because `pkill -f` would match this step.
-      - name: Stop the apps the smokes left running
+      # And again after it, so the packaging step below gets both cores.
+      - name: Stop the app the hit-test left running
         if: always()
         run: |
           ps -eo pid,args --no-headers | grep -F -- 'remote-debugging-port=' \
@@ -206,6 +216,8 @@ jobs:
           ps -eo pid,args --no-headers | grep -F 'bin/vite' \
             | grep -v grep | awk '{print $1}' | xargs -r kill -9 || true
 
+      # The logs the two boots write, which are the only way to tell a missing
+      # library from a failed assertion once the runner is gone.
       - name: Upload smoke logs (on failure)
         if: failure()
         uses: actions/upload-artifact@v4
@@ -214,6 +226,7 @@ jobs:
           path: |
             /tmp/loui-smoke/*.log
             /tmp/loui-pkg-smoke/*.log
+            /tmp/ui-hit-test-vite-*.log
           if-no-files-found: ignore
 
       # v3.4.5 — bake AUTO_UPDATE_ENABLED into the main bundle.
