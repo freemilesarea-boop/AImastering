@@ -81,6 +81,9 @@ const VITE_PORT = Number(process.env.UI_HIT_TEST_VITE_PORT ?? 5199);
 const DISPLAY_NUM = process.env.UI_HIT_TEST_DISPLAY ?? ':98';
 const KEEP = process.argv.includes('--keep');
 
+/** Controls the sweep declined to judge, with how many views each sat out. */
+const skipped = new Map();
+
 const children = [];
 /**
  * Start a child in the background, keeping what it says.
@@ -216,6 +219,7 @@ function connect(wsUrl) {
 
 const PROBE = `
   const out = [];
+  const offscreen = [];
   let probed = 0;
   const vis = (el) => {
     const s = getComputedStyle(el);
@@ -230,7 +234,11 @@ const PROBE = `
     if (r.width < 1 || r.height < 1) continue;
     // Off-screen is a different defect and a scrollable panel makes it a
     // non-defect; this one is only about who owns the pixel.
-    if (r.right < 0 || r.bottom < 0 || r.left > innerWidth || r.top > innerHeight) continue;
+    if (r.right < 0 || r.bottom < 0 || r.left > innerWidth || r.top > innerHeight) {
+      offscreen.push(label(el) + ' @' + Math.round(r.left) + ',' + Math.round(r.top)
+        + ' ' + Math.round(r.width) + 'x' + Math.round(r.height));
+      continue;
+    }
     probed++;
     const cx = Math.min(innerWidth - 1, Math.max(0, r.left + r.width / 2));
     const cy = Math.min(innerHeight - 1, Math.max(0, r.top + r.height / 2));
@@ -244,7 +252,7 @@ const PROBE = `
         .replace(/\\s+/g, ' ').slice(0, 44) : 'none',
     });
   }
-  return { covered: out, probed };
+  return { covered: out, probed, offscreen, win: innerWidth + 'x' + innerHeight };
 `;
 
 // ── Driving the app ───────────────────────────────────────────────────────────
@@ -302,15 +310,21 @@ async function sweep(cdp) {
    * user cannot reach by waiting.
    */
   const look = async (view) => {
-    let { covered, probed } = await cdp.evaluate(PROBE);
+    let { covered, probed, offscreen, win } = await cdp.evaluate(PROBE);
     if (covered.length > 0) {
       await sleep(4000);
-      ({ covered, probed } = await cdp.evaluate(PROBE));
+      ({ covered, probed, offscreen, win } = await cdp.evaluate(PROBE));
     }
     probedTotal += probed;
     for (const c of covered) findings.push({ view, ...c });
     const mark = covered.length === 0 ? 'clean' : `${covered.length} COVERED`;
-    console.log(`  ${view.padEnd(20)} ${String(probed).padStart(3)} probed   ${mark}`);
+    console.log(`  ${view.padEnd(20)} ${String(probed).padStart(3)} probed   ${mark}`
+      + `   ${win}${offscreen.length ? ` · ${offscreen.length} off-screen` : ''}`);
+    // Counted, not judged.  A control outside the viewport is a different
+    // defect from a covered one, and in a scrollable panel it is no defect at
+    // all — but a SILENT skip is how sixteen of them sat past the right edge
+    // of a 1520 px window in every view but HOME without anything saying so.
+    for (const o of offscreen) skipped.set(o, (skipped.get(o) ?? 0) + 1);
     for (const c of covered) {
       console.log(`       "${c.what}" at ${c.box}\n         under ${c.blocker}`);
     }
@@ -404,7 +418,16 @@ function haveXvfb() {
 function displayIsDead(display) {
   const run = (cmd) => spawnSync('sh', ['-c', cmd], { encoding: 'utf8' }).status === 0;
   if (run('command -v xdpyinfo')) return !run(`xdpyinfo -display ${display} > /dev/null 2>&1`);
-  return !run(`pgrep -f "Xvfb ${display} " > /dev/null 2>&1`);
+  // No xdpyinfo: the PROCESS alone answers too early.  It exists for a moment
+  // before it has created its socket, so the poll below that waits for the
+  // server to come up was satisfied by a process that was not listening yet,
+  // and Electron started against it and exited with "Missing X server or
+  // $DISPLAY".  Measured here, on a machine without x11-utils, after a
+  // leftover socket with no process behind it had been cleared.  `boot.sh`
+  // asks for the socket too, in the same situation, for the same reason.
+  const n = display.replace(':', '');
+  return !(run(`pgrep -f "Xvfb ${display} " > /dev/null 2>&1`)
+    && existsSync(`/tmp/.X11-unix/X${n}`));
 }
 
 /**
@@ -562,6 +585,12 @@ async function main() {
   const { findings, probedTotal } = await sweep(cdp);
   cdp.close();
 
+  if (skipped.size > 0) {
+    console.log(`\n${skipped.size} control(s) were outside the window and not judged:`);
+    for (const [what, views] of [...skipped.entries()].sort((a, b) => b[1] - a[1])) {
+      console.log(`  ${what}   (in ${views} view${views === 1 ? '' : 's'})`);
+    }
+  }
   console.log(`\n${probedTotal} controls probed across ${WINDOW_MODES.length + POPULATED.length + 1} views`);
   if (probedTotal < 200) {
     console.error(`only ${probedTotal} controls probed — the sweep did not see the app`);
