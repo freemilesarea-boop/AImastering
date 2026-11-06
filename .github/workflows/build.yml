@@ -359,7 +359,7 @@ jobs:
   # @ffprobe-installer resolve to the host arch, so the only robust fix is to
   # build each arch on a runner OF that arch:
   #     x64   → macos-15-intel (Intel)    → native x86_64 engine/ffmpeg/ffprobe
-  #     arm64 → macos-14 (Apple Silicon)  → native arm64
+  #     arm64 → macos-15 (Apple Silicon)  → native arm64
   # NOTE: macos-13 (the previous Intel label) was retired 2025-12-04.  GitHub's
   # official x86_64 migration label is macos-15-intel — a STANDARD (free for
   # public repos) Intel runner, supported until the x86_64 image is retired in
@@ -377,7 +377,15 @@ jobs:
           - arch: x64
             runner: macos-15-intel   # Intel (x86_64) — macos-13 retired 2025-12-04
           - arch: arm64
-            runner: macos-14   # Apple Silicon runner
+            # macos-15, the same way the x64 entry above is pinned: on
+            # 2026-11-06 this job was cancelled with zero steps one second
+            # after starting, twice in a row, having succeeded on macos-14 in
+            # two minutes the day before — the shape of a runner image that is
+            # no longer served.  x64 on macos-15-intel kept working through
+            # all three runs.  If this label is ever wrong about the
+            # architecture, the pre- and post-package gates below say so
+            # rather than shipping an x64 app under an arm64 name.
+            runner: macos-15   # Apple Silicon — macos-14 stopped being served 2026-11-06
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
