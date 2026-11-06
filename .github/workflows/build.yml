@@ -136,9 +136,11 @@ jobs:
       # What this does NOT do is run the whole Python suite.  `test:python-suite`
       # inside the chain asserts that pytest still COLLECTS its 551 tests and
       # that none of them skips itself, and it runs the 30
-      # commercial-reference tests; the fourteen minutes of DSP tests stay
-      # opt-in (`cd services/python-audio && python3 -m pytest -q`) and are run
-      # by no job here.  Saying otherwise in this step's name is what the
+      # commercial-reference tests; the DSP tests themselves are run by
+      # `python-dsp-nightly.yml`, nightly, because they are minutes rather than
+      # seconds — measured 551 passed in 6m05s with the shipped ffmpeg pair, in
+      # the development container.  "Fourteen minutes" stood here until that
+      # was measured; nothing had run them to find out.  Saying otherwise in this step's name is what the
       # previous version of this comment did.
       #
       # Measured on this repository's 4-core container: 1,713 s (28.5 min), of
@@ -148,7 +150,7 @@ jobs:
       #
       # It needs the built engine (test:python-suite spawns it) and the ffmpeg
       # pair, so it sits after both are in public/bin — i.e. here, not earlier.
-      - name: Test (234 selftests, including the Python engine's collection)
+      - name: Test (235 selftests, including the Python engine's collection)
         working-directory: aimaster-desktop/apps/desktop
         run: pnpm -s test
 

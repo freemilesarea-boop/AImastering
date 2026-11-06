@@ -54,6 +54,7 @@
     "test:session-slot": "tsx scripts/session-slot-selftest.ts",
     "test:multitrack": "tsx scripts/multitrack-selftest.ts",
     "test:record": "tsx scripts/record-selftest.ts",
+    "test:recording-store": "tsx scripts/recording-store-selftest.ts",
     "test:run-preset": "tsx scripts/run-preset-selftest.ts",
     "test:instrument-level": "tsx scripts/instrument-level-selftest.ts",
     "test:poly-synth": "tsx scripts/poly-synth-selftest.ts",

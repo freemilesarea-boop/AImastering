@@ -60,6 +60,7 @@
   "warp",
   "restore",
   "record",
+  "recording-store",
   "session-slot",
   "multitrack",
   "control-surface",

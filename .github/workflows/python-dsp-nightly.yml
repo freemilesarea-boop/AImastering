@@ -1,0 +1,94 @@
+# The DSP suite that ran nowhere.
+#
+# `test:python-suite`, inside the main suite, asks pytest to PLAN the whole
+# suite — 551 tests collected, none of them skipping itself — in under two
+# seconds, and then runs the 30 commercial-reference tests.  That check exists
+# because the suite once reported `496 passed, 30 skipped` and the skip was the
+# file every mastering target is derived from.
+#
+# Planning is not running.  The 551 tests themselves ran only when somebody
+# ran them by hand, which is the standing the main suite had before it was
+# added to build.yml, and the standing the app smoke had before 2026-11-05.
+#
+# Measured before this workflow was written, in the development container with
+# the shipped ffmpeg pair on AIMASTER_FFMPEG/AIMASTER_FFPROBE:
+#
+#     551 passed in 365.08s (0:06:05)   ·   0 skipped
+#
+# Six minutes, not the fourteen the comment in build.yml still quotes — and
+# zero skips only because the ffmpeg pair was there, so this job installs the
+# node dependencies for the sole purpose of resolving the ffmpeg this project
+# SHIPS rather than finding one on PATH.  A two-core runner is slower than that
+# container, which is why this is nightly and not a step in every build.
+name: Python DSP suite (nightly)
+
+on:
+  schedule:
+    # 18:37 UTC = 03:37 KST, which is the night for the people who read it.
+    # Not on the hour: GitHub's scheduler is busiest at :00 and delays runs.
+    - cron: '37 18 * * *'
+  workflow_dispatch:
+
+jobs:
+  dsp:
+    runs-on: ubuntu-latest
+    # The measurement above is 6 minutes; this is room for a slower runner,
+    # not room for a hang.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        run: npm install -g pnpm@9
+
+      - name: Install Python dependencies
+        working-directory: aimaster-desktop/services/python-audio
+        run: |
+          set -e
+          python3 -V
+          python3 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt
+
+      # Only for `ffmpeg-static` and `@ffprobe-installer`: the 30
+      # commercial-reference tests skip themselves when AIMASTER_FFMPEG is
+      # unset, and a suite that skips the file the targets come from is the
+      # exact failure `python-suite-selftest` was written for.
+      - name: Install Node dependencies (for the shipped ffmpeg pair)
+        working-directory: aimaster-desktop
+        run: pnpm install --frozen-lockfile
+
+      - name: Run the DSP suite
+        working-directory: aimaster-desktop/services/python-audio
+        run: |
+          set -e
+          FF="$(node -p "require('ffmpeg-static')")"
+          FP="$(node -p "require('@ffprobe-installer/ffprobe').path")"
+          [ -x "$FF" ] || { echo "no ffmpeg at $FF"; exit 1; }
+          [ -x "$FP" ] || { echo "no ffprobe at $FP"; exit 1; }
+          echo "ffmpeg  $FF"
+          echo "ffprobe $FP"
+          AIMASTER_FFMPEG="$FF" AIMASTER_FFPROBE="$FP" \
+            .venv/bin/python -m pytest -q --durations=10
+
+      # A nightly whose failure nobody sees is the thing this workflow exists
+      # to stop, so the report is kept whichever way the run went.
+      - name: Upload the pytest report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-dsp-report
+          path: |
+            aimaster-desktop/services/python-audio/.pytest_cache/**
+          if-no-files-found: ignore
+          retention-days: 14

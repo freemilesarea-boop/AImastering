@@ -205,6 +205,33 @@ check(
   );
 }
 
+// ── And the DSP suite has a job that runs it ─────────────────────────────
+//
+// `test:python-suite` asks pytest to PLAN the suite and runs the 30
+// commercial-reference tests.  Planning is not running, and the 551 tests ran
+// nowhere until `python-dsp-nightly.yml`.  Held here so they do not go back to
+// running nowhere — including the ffmpeg pair, because without it the 30 tests
+// the planning check exists for skip themselves.
+{
+  const nightlyPath = path.join(REPO, '.github', 'workflows', 'python-dsp-nightly.yml');
+  const exists = fs.existsSync(nightlyPath);
+  const nightly = exists ? fs.readFileSync(nightlyPath, 'utf8') : '';
+  const wants: [string, RegExp][] = [
+    ['a schedule', /^\s*- cron: '/m],
+    ['pytest over the whole suite', /python -m pytest -q/],
+    ['the shipped ffmpeg pair', /AIMASTER_FFMPEG="\$FF" AIMASTER_FFPROBE="\$FP"/],
+    ['a timeout, so a hang is not a day', /timeout-minutes:/],
+  ];
+  const missing = exists ? wants.filter(([, re]) => !re.test(nightly)).map(([w]) => w) : ['the file'];
+  check(
+    'the DSP suite is run by a nightly job, with the ffmpeg pair it needs',
+    missing.length === 0,
+    missing.length === 0
+      ? 'python-dsp-nightly.yml: schedule, pytest, ffmpeg pair, timeout'
+      : `missing: ${missing.join(', ')}`,
+  );
+}
+
 // And does the step still say how many it runs?
 //
 // The name read "Test (226 selftests…)" while the suite had grown past 230.
