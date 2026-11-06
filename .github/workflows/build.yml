@@ -177,14 +177,33 @@ jobs:
       # socket gone).  The Electron runtime libraries are named differently
       # across Ubuntu releases, so the alternatives are tried in turn rather
       # than assumed.
+      # A Korean font, because this app's UI is Korean and the runner has none.
+      #
+      # Measured by comparing the hit-test's own boxes between the runner and
+      # the development container, same 1520x915 window:
+      #
+      #   마스터링으로 →   102 px here   →   74 px on the runner
+      #   세션 가져오기     87 px        →   61 px
+      #   세션 저장         65 px        →   48 px
+      #   + Aux (Latin)     48 px        →   52 px
+      #
+      # Every Korean label about a quarter narrower, Latin slightly wider:
+      # glyph fallback.  The chrome's action row ended at x=2813 here and
+      # x=2492 there — 321 px shorter — which is why the runner probed one
+      # MORE control in all eighteen views that have that row (856 vs 838):
+      # one button crossed inside the window.  A sweep that judges a layout no
+      # Korean user will see is judging a different app, so the runner gets
+      # the font this machine resolves Korean with, by name.
       - name: Install a display and Electron's runtime libraries
         run: |
           set -e
           sudo apt-get update -qq
-          sudo apt-get install -y -qq xvfb x11-utils
+          sudo apt-get install -y -qq xvfb x11-utils fonts-wqy-zenhei
           sudo apt-get install -y -qq libgbm1 libnss3 libatk-bridge2.0-0 libgtk-3-0 || true
           sudo apt-get install -y -qq libasound2t64 || sudo apt-get install -y -qq libasound2 || true
           xdpyinfo -version 2>&1 | head -1 || true
+          echo "korean-capable fonts: $(fc-list :lang=ko | wc -l)"
+          fc-match -f '%{file}\n' ':lang=ko' || true
 
       - name: App smoke (74 steps, real mouse and keyboard)
         working-directory: aimaster-desktop/apps/desktop

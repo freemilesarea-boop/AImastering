@@ -175,6 +175,10 @@ check(
     ['the control hit-test', /node scripts\/ui-hit-test\.mjs/],
     ['the packaged smoke', /pnpm -s smoke:packaged/],
     ['a display for them to run on', /apt-get install -y -qq xvfb x11-utils/],
+    // Load-bearing for the layout, not decoration: without it Korean labels
+    // render a quarter narrower on the runner and the sweep judges a window
+    // no Korean user sees.
+    ['a Korean font, so the layout is the one that ships', /fonts-wqy-zenhei/],
   ];
   const absent = wanted.filter(([, re]) => !re.test(runs)).map(([what]) => what);
   check(
