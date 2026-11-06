@@ -5,7 +5,7 @@
 // owns the chrome (transport, track creation, bounce/freeze); the windows own
 // their own interaction.
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
@@ -36,7 +36,10 @@ import PluginWindowLayer from '../components/daw/plugin/PluginWindowLayer.js';
 import RegionLab from '../components/daw/region/RegionLab.js';
 
 import { runCommand } from '../shortcuts/command-runner.js';
-import type { CommandId } from '../shortcuts/definitions.js';
+import { findShortcut, type CommandId } from '../shortcuts/definitions.js';
+import { describeSpec, effectiveChords, type Overrides } from '../shortcuts/key-overrides.js';
+import { detectPlatform, type Platform } from '../shortcuts/keys.js';
+import { useShortcutStore } from '../stores/shortcutStore.js';
 import { shouldAdoptQueue } from '../daw/model/import-audio.js';
 import { describeImport, importIntoSession } from '../daw/edit/session-import.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
@@ -46,6 +49,7 @@ import { usePanelWindowStore } from '../stores/panelWindowStore.js';
 import { DAW_PANELS, type DawWindow } from '../daw/model/view-window.js';
 import LayoutMenu from '../components/daw/LayoutMenu.js';
 import { setSessionTempo } from '../daw/model/tempo-reanchor.js';
+import { commandTitle } from '../shortcuts/command-title.js';
 
 function fmt(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) return '0:00.000';
@@ -117,6 +121,10 @@ function EngineWarningBar() {
 }
 
 export default function DawPage() {
+  // A tooltip asks the keymap rather than spelling a chord out, so it
+  // follows a remap and shows the key this platform prints.
+  const chordOverrides = useShortcutStore((s) => s.overrides);
+  const chordPlatform = useMemo(() => detectPlatform(), []);
   const setPage      = useAppStore((s) => s.setPage);
   const notify       = useAppStore((s) => s.notify);
   const session      = useDawStore((s) => s.session);
@@ -138,7 +146,6 @@ export default function DawPage() {
   const metronomeOn  = useDawStore((s) => s.metronomeOn);
   const loopEnabled  = useDawStore((s) => s.loopEnabled);
   const toggleLoop   = useDawStore((s) => s.toggleLoop);
-  const focusedTrackId = useDawStore((s) => s.focusedTrackId);
   // Both of these live in the store rather than here because the actions that
   // drive them are commands now, and a command cannot reach a page's
   // useState — see the note on `busy` in dawStore.
@@ -249,10 +256,6 @@ export default function DawPage() {
    * button that silently does nothing is the failure this app keeps refusing.
    * Say it instead.
    */
-  const fire = useCallback((id: CommandId) => {
-    if (!runCommand(id)) notify('아직 준비되지 않았습니다 — 잠시 후 다시 눌러주세요', 'warning');
-  }, [notify]);
-
   const templatesOpen = useDawStore((s) => s.templatesOpen);
   const setTemplatesOpen = useDawStore((s) => s.setTemplatesOpen);
 
@@ -297,21 +300,22 @@ export default function DawPage() {
         <LayoutMenu />
 
         <button onClick={() => { dawRuntime.ensure(session.sampleRate); seek(0); }}
-          title="처음으로 (Home)"
+          title={commandTitle('transport.returnToZero', chordOverrides, chordPlatform, '처음으로')}
           className="h-7 px-2 rounded bg-zinc-900 border border-zinc-700 text-zinc-400 text-[11px]">⏮</button>
         <button onClick={() => { dawRuntime.ensure(session.sampleRate); togglePlay(); }}
-          title="재생 / 정지 (Space)"
+          title={commandTitle('transport.playPause', chordOverrides, chordPlatform, '재생 / 정지')}
           className={`h-7 px-3 rounded border text-[11px] ${isPlaying
             ? 'bg-emerald-600/25 border-emerald-500/50 text-emerald-300'
             : 'bg-zinc-900 border-zinc-700 text-zinc-300'}`}>{isPlaying ? '❚❚' : '▶'}</button>
-        <button onClick={() => useVideoStore.getState().toggle()} title="픽처 창 (Shift+Alt+P)"
+        <button onClick={() => useVideoStore.getState().toggle()} title={commandTitle('daw.togglePicture', chordOverrides, chordPlatform, '픽처 창')}
           className="h-7 px-2 rounded bg-zinc-900 border border-zinc-700 text-zinc-400 text-[11px]">PIC</button>
         <button onClick={() => useDawStore.getState().toggleMetronome()}
-          title="메트로놈 (C) — 템포 맵을 따라갑니다"
+          title={commandTitle('transport.metronome', chordOverrides, chordPlatform,
+                    '메트로놈 · 템포 맵을 따라갑니다')}
           className={`h-7 px-2 rounded border text-[11px] ${metronomeOn
             ? 'bg-amber-600/25 border-amber-500/50 text-amber-300'
             : 'bg-zinc-900 border-zinc-700 text-zinc-400'}`}>♩</button>
-        <button onClick={toggleLoop} title="루프 (Numpad /)"
+        <button onClick={toggleLoop} title={commandTitle('transport.toggleLoop', chordOverrides, chordPlatform, '루프')}
           className={`h-7 px-2 rounded border text-[11px] ${loopEnabled
             ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'
             : 'bg-zinc-900 border-zinc-700 text-zinc-400'}`}>LOOP</button>
@@ -345,60 +349,60 @@ export default function DawPage() {
         <ToolbarButton
           onClick={() => setTool(tool === 'split' ? 'select' : 'split')}
           accent={tool === 'split'}
+          // Not `cmd`: the key SELECTS the split tool and this button TOGGLES
+          // it, so naming the chord here would promise something else.
+          title="클립을 자르는 도구를 켜고 끕니다 — 도구는 숫자키로도 전환됩니다"
         >✂ 가위</ToolbarButton>
 
-        <ToolbarButton onClick={handleImportAudio}>오디오 추가</ToolbarButton>
+        <ToolbarButton onClick={handleImportAudio}
+                       title="오디오 파일을 플레이헤드 위치에 트랙으로 추가">오디오 추가</ToolbarButton>
         {queue.length > 0 && (
-          <ToolbarButton onClick={() => void importQueue()}>
+          <ToolbarButton onClick={() => void importQueue()}
+                         title="홈 화면 대기열에 있는 곡을 이 세션으로 가져옵니다">
             홈 트랙 가져오기 ({queue.length})
           </ToolbarButton>
         )}
-        <ToolbarButton onClick={() => useDawStore.getState().addTrackHere('audio')}>
-          + 트랙
-        </ToolbarButton>
-        <ToolbarButton onClick={handleAddInstrument}>+ 인스트루먼트</ToolbarButton>
-        <ToolbarButton onClick={() => fire('daw.importMidi')}>MIDI 가져오기</ToolbarButton>
-        <ToolbarButton onClick={() => fire('daw.addAux')}>+ Aux</ToolbarButton>
-        <ToolbarButton onClick={() => fire('daw.addVca')}>+ VCA</ToolbarButton>
+        <ToolbarButton cmd="daw.newTrack">+ 트랙</ToolbarButton>
+        <ToolbarButton onClick={handleAddInstrument}
+                       title="악기 트랙을 추가하고 랙을 엽니다">+ 인스트루먼트</ToolbarButton>
+        <ToolbarButton cmd="daw.importMidi">MIDI 가져오기</ToolbarButton>
+        <ToolbarButton cmd="daw.addAux">+ Aux</ToolbarButton>
+        <ToolbarButton cmd="daw.addVca">+ VCA</ToolbarButton>
 
         <span className="w-px h-5 bg-zinc-800 mx-1" />
 
-        <ToolbarButton onClick={() => {
-          const id = focusedTrackId ?? session.tracks.find((t) => t.kind !== 'master')?.id ?? null;
-          if (!id) { notify('트랙이 없습니다', 'warning'); return; }
-          useDawStore.getState().openSmartControls(id);
-        }}>스마트 컨트롤</ToolbarButton>
-        <ToolbarButton onClick={() => fire('daw.createStack')}>스택 만들기</ToolbarButton>
+        <ToolbarButton cmd="daw.smartControls">스마트 컨트롤</ToolbarButton>
+        <ToolbarButton cmd="daw.createStack">스택 만들기</ToolbarButton>
 
         <span className="w-px h-5 bg-zinc-800 mx-1" />
 
-        <ToolbarButton onClick={() => fire('daw.freeze')}>프리즈</ToolbarButton>
-        <ToolbarButton onClick={() => fire('daw.commit')}>커밋</ToolbarButton>
-        <ToolbarButton onClick={() => fire('daw.bounce')}>바운스</ToolbarButton>
+        <ToolbarButton cmd="daw.freeze">프리즈</ToolbarButton>
+        <ToolbarButton cmd="daw.commit">커밋</ToolbarButton>
+        <ToolbarButton cmd="daw.bounce">바운스</ToolbarButton>
         {/* The seam this app is actually for: mix here, master there, one
             press.  Highlighted because it is the finish line, and placed next
             to 바운스 because that is where someone goes looking for "I am
             done" — the difference being that this one does not ask for a
             folder or count as an export. */}
-        <ToolbarButton onClick={() => fire('daw.sendToMastering')} accent>
+        <ToolbarButton cmd="daw.sendToMastering" accent>
           마스터링으로 →
         </ToolbarButton>
-        <ToolbarButton onClick={() => fire('daw.exportStems')}>스템</ToolbarButton>
+        <ToolbarButton cmd="daw.exportStems">스템</ToolbarButton>
 
         <span className="w-px h-5 bg-zinc-800 mx-1" />
 
-        <ToolbarButton onClick={() => fire('daw.templates')}>템플릿</ToolbarButton>
+        <ToolbarButton cmd="daw.templates">템플릿</ToolbarButton>
 
         <span className="w-px h-5 bg-zinc-800 mx-1" />
 
-        <ToolbarButton onClick={() => fire('file.save')}>세션 저장</ToolbarButton>
-        <ToolbarButton onClick={() => fire('file.openSession')}>세션 열기</ToolbarButton>
-        <ToolbarButton onClick={() => fire('daw.importSession')}>세션 가져오기</ToolbarButton>
+        <ToolbarButton cmd="file.save">세션 저장</ToolbarButton>
+        <ToolbarButton cmd="file.openSession">세션 열기</ToolbarButton>
+        <ToolbarButton cmd="daw.importSession">세션 가져오기</ToolbarButton>
 
         <span className="w-px h-5 bg-zinc-800 mx-1" />
 
-        <ToolbarButton onClick={() => fire('daw.importAaf')}>AAF 가져오기</ToolbarButton>
-        <ToolbarButton onClick={() => fire('daw.exportAaf')}>AAF 내보내기</ToolbarButton>
+        <ToolbarButton cmd="daw.importAaf">AAF 가져오기</ToolbarButton>
+        <ToolbarButton cmd="daw.exportAaf">AAF 내보내기</ToolbarButton>
 
         <div className="flex-1" />
         {busy && <span className="text-[11px] text-amber-400">{busy}</span>}
@@ -435,17 +439,63 @@ export default function DawPage() {
   );
 }
 
+/**
+ * Run a command by id from a doorway that is not the keyboard.
+ *
+ * `runCommand` answers false when the command map has not been published yet —
+ * the keyboard layer mounts with this page, so that window is brief, but a
+ * button that silently does nothing is the failure this app keeps refusing.
+ *
+ * Module level, not a hook, so `ToolbarButton` can take a command id and be
+ * the thing that runs it: the id was being written twice, once to run and
+ * once to label.
+ */
+function runOrSay(id: CommandId): void {
+  if (!runCommand(id)) {
+    useAppStore.getState().notify('아직 준비되지 않았습니다 — 잠시 후 다시 눌러주세요', 'warning');
+  }
+}
+
+/**
+ * What to put in a button's tooltip: the command's own name and its key.
+ *
+ * Read through `effectiveChords`, so a student who remapped 프리즈 sees THEIR
+ * key here — the same function the right-click menus use, which have shown
+ * their chords since they were built.  The toolbar was the one surface that
+ * never said a word about the keyboard, and it is the surface a beginner
+ * actually uses.
+ */
+function buttonHint(id: CommandId, overrides: Overrides, platform: Platform): string | undefined {
+  const def = findShortcut(id);
+  if (!def) return undefined;
+  const first = effectiveChords(def, overrides)[0];
+  return first === undefined ? def.label : `${def.label} — ${describeSpec(first, platform)}`;
+}
+
 function ToolbarButton(
-  { onClick, children, accent }:
-  { onClick: () => void; children: React.ReactNode; accent?: boolean },
+  { onClick, children, accent, cmd, title }:
+  {
+    onClick?: () => void;
+    children: React.ReactNode;
+    accent?: boolean;
+    /** The command this button is, when it is one — it then runs and labels itself. */
+    cmd?: CommandId;
+    /** For a button that is not a command: say what it does anyway. */
+    title?: string;
+  },
 ) {
+  const overrides = useShortcutStore((s) => s.overrides);
+  const platform = useMemo(() => detectPlatform(), []);
+  const hint = cmd === undefined ? title : buttonHint(cmd, overrides, platform);
+  const press = cmd === undefined ? onClick : () => runOrSay(cmd);
   // One button in this row is the finish line and the rest are tools.  The
   // accent is the app's own gold rather than a new colour, so the row still
   // reads as one row.
   if (accent === true) {
     return (
       <button
-        onClick={onClick}
+        onClick={press}
+        title={hint}
         className="h-7 px-2.5 rounded text-[11px] transition-colors"
         style={{
           background: 'rgba(198,167,104,0.16)',
@@ -457,7 +507,8 @@ function ToolbarButton(
   }
   return (
     <button
-      onClick={onClick}
+      onClick={press}
+      title={hint}
       className="h-7 px-2 rounded bg-zinc-900 border border-zinc-700 text-zinc-400
                  text-[11px] hover:text-zinc-200 hover:border-zinc-600 transition-colors"
     >{children}</button>

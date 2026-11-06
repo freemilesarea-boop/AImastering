@@ -93,6 +93,9 @@ import {
   setTrackHeight, setHeights, heightToFit, FIT_VISIBLE_ROWS,
 } from '../../../daw/model/track-header.js';
 import { deleteTracks } from '../../../ui/delete-tracks.js';
+import { commandTitle } from '../../../shortcuts/command-title.js';
+import { detectPlatform } from '../../../shortcuts/keys.js';
+import { useShortcutStore } from '../../../stores/shortcutStore.js';
 
 const HEADER_WIDTH = 168;
 const RULER_HEIGHT = 26;
@@ -123,6 +126,10 @@ const MODE_LABELS: Record<EditMode, string> = {
 };
 
 export default function EditWindow() {
+  // A tooltip asks the keymap rather than spelling a chord out, so it
+  // follows a remap and shows the key this platform prints.
+  const chordOverrides = useShortcutStore((s) => s.overrides);
+  const chordPlatform = useMemo(() => detectPlatform(), []);
   const session      = useDawStore((s) => s.session);
   const selection    = useDawStore((s) => s.selection);
   const setSelection = useDawStore((s) => s.setSelection);
@@ -861,7 +868,7 @@ export default function EditWindow() {
 
         <button
           onClick={toggleTab}
-          title="Tab to Transient (Cmd+Alt+Tab)"
+          title={commandTitle('daw.toggleTabToTransient', chordOverrides, chordPlatform, 'Tab to Transient')}
           className={`px-2 py-1 rounded text-[10px] border transition-colors ${
             tabToTransient
               ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'
@@ -872,7 +879,7 @@ export default function EditWindow() {
           onClick={() => setRulerFormat(
             TIME_FORMATS[(TIME_FORMATS.indexOf(rulerFormat) + 1) % TIME_FORMATS.length] ?? 'barsBeats',
           )}
-          title="눈금자 단위 (Shift+R)"
+          title={commandTitle('daw.cycleRulerFormat', chordOverrides, chordPlatform, '눈금자 단위')}
           className="px-2 py-1 rounded text-[10px] border bg-zinc-900 border-zinc-700 text-zinc-400"
         >{formatLabel(rulerFormat)}</button>
 
@@ -896,7 +903,7 @@ export default function EditWindow() {
 
         <button
           onClick={() => setLinkSelection(!linkSelection)}
-          title="편집 선택이 루프 구간을 따라갑니다 (Shift+Alt+L)"
+          title={commandTitle('daw.toggleLinkSelection', chordOverrides, chordPlatform, '편집 선택이 루프 구간을 따라갑니다')}
           className={`px-2 py-1 rounded text-[10px] border transition-colors ${
             linkSelection
               ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'
@@ -915,7 +922,7 @@ export default function EditWindow() {
 
         <button
           onClick={() => setFollowPlayhead(!followPlayhead)}
-          title="재생헤드 따라가기 (L)"
+          title={commandTitle('daw.toggleFollowPlayhead', chordOverrides, chordPlatform, '재생헤드 따라가기')}
           className={`px-2 py-1 rounded text-[10px] border transition-colors ${
             followPlayhead
               ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'
@@ -1360,6 +1367,10 @@ function TrackHeader({
   onColor: (hex: string) => void;
   onResize: (px: number) => void;
 }) {
+  // Its own, because this is a separate component: the delete and arm
+  // buttons here used to write their chords out by hand.
+  const chordOverrides = useShortcutStore((s) => s.overrides);
+  const chordPlatform = useMemo(() => detectPlatform(), []);
   const [renaming, setRenaming] = useState(false);
   const [picking, setPicking] = useState(false);
   const [takeMenu, setTakeMenu] = useState(false);
@@ -1485,9 +1496,9 @@ function TrackHeader({
         {onDelete && (
           <button
             onClick={(e) => { e.stopPropagation(); onDelete(); }}
-            title={isFolder
-              ? '이 스택을 지웁니다 — 안의 트랙은 남습니다 (Mod+Backspace)'
-              : '이 트랙을 지웁니다 (Mod+Backspace)'}
+            title={commandTitle('daw.deleteTracks', chordOverrides, chordPlatform, isFolder
+              ? '이 스택을 지웁니다 — 안의 트랙은 남습니다'
+              : '이 트랙을 지웁니다')}
             className="hit-target text-[11px] leading-none w-4 h-4 rounded shrink-0 flex items-center
                        justify-center text-zinc-600 hover:text-red-300 transition-colors"
             style={{ border: '1px solid rgba(255,255,255,0.14)' }}
@@ -1502,7 +1513,8 @@ function TrackHeader({
         {(track.kind === 'audio' || track.kind === 'instrument') && (
           <button
             onClick={(e) => { e.stopPropagation(); onArm(); }}
-            title={track.recordArm ? '녹음 무장 해제' : '녹음 무장 (R)'}
+            title={commandTitle('daw.toggleArm', chordOverrides, chordPlatform,
+                                track.recordArm ? '녹음 무장 해제' : '녹음 무장')}
             className={`w-5 h-5 rounded text-[9px] border ${track.recordArm
               ? (recording
                 ? 'bg-red-600 border-red-400 text-white animate-pulse'

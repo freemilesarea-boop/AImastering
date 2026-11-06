@@ -96,7 +96,7 @@ export type CommandId =
   | 'daw.trackDelayEarlier' | 'daw.trackDelayLater' | 'daw.trackDelayClear'
   | 'daw.pictureBack' | 'daw.pictureForward' | 'daw.pictureToPlayhead'
   | 'daw.spotClip'
-  | 'daw.showRestore' | 'daw.declick' | 'daw.showStems'
+  | 'daw.showRestore' | 'daw.declick' | 'daw.showStems' | 'daw.palette'
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
   | 'daw.clearSlide' | 'daw.flam'
@@ -578,6 +578,14 @@ export const SHORTCUTS: ShortcutDef[] = [
   // or clicking it.  Reachable, but the odd one out for no reason.
   { id: 'daw.showStems', group: 'daw', label: '스템 분리 (Stem Separation)', chords: ['Alt+Shift+H'],
     note: '트랙을 보컬 · 드럼 · 베이스 · 그 외로 분리합니다 — 분리 모델 선택', available: true },
+
+  // 241 commands, every one with a key, and the hard part is not pressing the
+  // key — it is knowing which of the 241 you want.  Mod+P because it is free:
+  // Mod+K is 반복 and Mod+Shift+P is 펀치 구간, the two a palette usually takes,
+  // and this app has nothing to print.
+  { id: 'daw.palette', group: 'daw', label: '명령 팔레트', chords: ['Mod+P'],
+    note: '이름 · 설명 · 키로 명령을 찾아 Enter 로 실행합니다 — 각 줄에 그 명령의 키가 함께 나옵니다',
+    available: true },
   { id: 'daw.declick', group: 'daw', label: '클립 디클릭', chords: ['Mod+Shift+K'],
     note: '커서 아래 클립의 클릭을 찾아 전부 복원', available: true },
   { id: 'daw.showSpectral', group: 'daw', label: 'Spectral Repair', chords: ['Mod+Alt+G'],

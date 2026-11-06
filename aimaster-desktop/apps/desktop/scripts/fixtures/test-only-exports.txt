@@ -246,4 +246,3 @@ src/renderer/daw/model/warp.ts::clipSourceSpan
 src/renderer/daw/model/warp.ts::rateAt
 src/renderer/daw/model/workspace-view.ts::clearZoom
 src/renderer/daw/model/workspace-view.ts::filledZoomSlots
-src/renderer/shortcuts/definitions.ts::findShortcut

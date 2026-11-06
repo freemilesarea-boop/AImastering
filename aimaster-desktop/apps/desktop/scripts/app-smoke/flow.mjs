@@ -1657,15 +1657,22 @@ try {
       const ko = await import('/shortcuts/key-overrides.ts');
       const ss = await import('/stores/shortcutStore.ts');
       const daw = await import('/stores/dawStore.ts');
-      // Find a chord nothing holds, the same way the selftest does.
-      // The whole alphabet across three modifier sets: of 78 candidates only
-      // nine are free, so a narrower search finds nothing and reads as the
-      // feature being broken.  Measured — the first draft of this probe
-      // searched twenty and all twenty were taken.
+      // Find a chord nothing holds, the same way the selftest does — and with
+      // the same search, because the narrow one ran out.  Letters across three
+      // modifier sets left nine of 78 free when this was written; six new
+      // chrome bindings and two new commands later it was down to two, and
+      // the selftest that needed four of them died with "could not find 4
+      // free chord(s)", which reads as remapping being broken and is not.
+      // Four families and the digits and brackets: 63 of 172 are free.
       let spare = null;
-      for (const mods of ['Mod+Alt+Shift+', 'Mod+Alt+', 'Alt+Shift+']) {
-        for (const letter of 'QWERTYUIOPASDFGHJKLZXCVBNM'.split('')) {
-          const spec = `${mods}Key${letter}`;
+      const keys = [
+        ...'QWERTYUIOPASDFGHJKLZXCVBNM'.split('').map((l) => `Key${l}`),
+        ...'0123456789'.split('').map((d) => `Digit${d}`),
+        'BracketLeft', 'BracketRight', 'Semicolon', 'Quote', 'Comma', 'Period', 'Slash',
+      ];
+      for (const mods of ['Mod+Alt+Shift+', 'Mod+Alt+', 'Alt+Shift+', 'Mod+Shift+']) {
+        for (const key of keys) {
+          const spec = `${mods}${key}`;
           if (ko.conflictOf(spec, 'file.new', ko.loadOverrides()) === null) { spare = spec; break; }
         }
         if (spare) break;
@@ -1680,13 +1687,16 @@ try {
     if (remap.error || remap.ok !== true) {
       expect(false, 'a binding can be remapped', remap.error ?? remap.reason ?? 'refused');
     } else {
-      // Press the new chord with real keys.
+      // Press the new chord with real keys.  The code goes through AS IT IS
+      // (KeyQ, Digit0, BracketLeft are all names Playwright knows): the old
+      // line stripped "Key" off and put it back, which worked only while the
+      // search could return nothing but letters — and it no longer can.
       const chord = remap.spare.split('+');
-      const key = chord[chord.length - 1].replace('Key', '');
+      const code = chord[chord.length - 1];
       if (chord.includes('Mod')) await page.keyboard.down('Control');
       if (chord.includes('Alt')) await page.keyboard.down('Alt');
       if (chord.includes('Shift')) await page.keyboard.down('Shift');
-      await page.keyboard.press(`Key${key}`);
+      await page.keyboard.press(code);
       if (chord.includes('Shift')) await page.keyboard.up('Shift');
       if (chord.includes('Alt')) await page.keyboard.up('Alt');
       if (chord.includes('Mod')) await page.keyboard.up('Control');

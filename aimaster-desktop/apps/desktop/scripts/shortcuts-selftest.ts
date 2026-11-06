@@ -12,15 +12,20 @@
 
 import {
   parseChord, matchesChord, normalizeKeyToken, formatChord, keyLabel,
-  type KeyEventLike,
+  type KeyEventLike, type Platform,
 } from '../src/renderer/shortcuts/keys.js';
 import { readFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { SHORTCUTS, BINDINGS, findShortcut, type CommandId } from '../src/renderer/shortcuts/definitions.js';
 import { buildCommands, buildSession, type CommandDeps, type AudioSnapshot } from '../src/renderer/shortcuts/commands.js';
 import type { SaveDepth, SaveDither } from '../src/renderer/audio/save-format.js';
+import { searchCommands } from '../src/renderer/shortcuts/command-search.js';
 import {
-  useWorkspaceStore, snapTime, registerTransportElement,
+  resetHints, takeHintTurn, MAX_HINTS_PER_COMMAND,
+} from '../src/renderer/shortcuts/chord-hints.js';
+import { describeSpec, NO_OVERRIDES, type Overrides } from '../src/renderer/shortcuts/key-overrides.js';
+import {
+  useWorkspaceStore, snapTime, registerTransportElement, panelsSharingSlot,
 } from '../src/renderer/stores/workspaceStore.js';
 import {
   initHistory, record, undo, redo, canUndo, canRedo, HISTORY_LIMIT,
@@ -642,6 +647,152 @@ check('and the DAW override still zooms the way it is named', () => {
     'zoomInH no longer multiplies pxPerSec');
   assert(/'view\.zoomOutH':\s*\(\)\s*=>\s*\{[^}]*pxPerSec\s*\//.test(dc),
     'zoomOutH no longer divides pxPerSec');
+});
+
+// ── Teaching the keyboard ────────────────────────────────────────────────────
+
+check('the palette and the "?" overlay search the same way', () => {
+  // One function, two surfaces.  A second copy is how the two would start
+  // disagreeing about whether a remapped key is findable — the duplication
+  // that bit the session save, the WAV export and the MIDI import.
+  const help = readFileSync('src/renderer/components/daw/DawShortcutHelp.tsx', 'utf8');
+  const palette = readFileSync('src/renderer/components/daw/DawCommandPalette.tsx', 'utf8');
+  for (const [name, src] of [['help', help], ['palette', palette]] as const) {
+    assert(/searchCommands\(/.test(src), `${name} calls searchCommands`);
+    assert(!/\.note\.toLowerCase\(\)\.includes/.test(src),
+      `${name} does not carry its own copy of the matcher`);
+  }
+});
+
+check('a command is found by its name, its note and the key as printed', () => {
+  const platform: Platform = 'win';
+  const freeze = findShortcut('daw.freeze')!;
+  const byName = searchCommands('프리즈', NO_OVERRIDES, platform);
+  assert(byName.some((d) => d.id === 'daw.freeze'), 'by name');
+
+  const printed = describeSpec(freeze.chords[0]!, platform);
+  const byKey = searchCommands(printed, NO_OVERRIDES, platform);
+  assert(byKey.some((d) => d.id === 'daw.freeze'), `by the key as printed (${printed})`);
+
+  // The note is the sentence under the row, and it is what somebody who does
+  // not know the app's word for a thing will type.
+  const byNote = searchCommands('인서트를', NO_OVERRIDES, platform);
+  assert(byNote.length > 0, 'by words from the note');
+
+  eq(searchCommands('', NO_OVERRIDES, platform).length, SHORTCUTS.length, 'an empty query is everything');
+  eq(searchCommands('프리즈', NO_OVERRIDES, platform, 1).length, 1, 'the limit is honoured');
+});
+
+check('a remapped command is found by the key it has now, not the one it had', () => {
+  const platform: Platform = 'win';
+  const freeze = findShortcut('daw.freeze')!;
+  const was = describeSpec(freeze.chords[0]!, platform);
+  const overrides: Overrides = Object.freeze({ 'daw.freeze': ['Mod+Alt+Shift+KeyV'] });
+  const now = describeSpec('Mod+Alt+Shift+KeyV', platform);
+
+  assert(searchCommands(now, overrides, platform).some((d) => d.id === 'daw.freeze'),
+    `found by the new key (${now})`);
+  assert(!searchCommands(was, overrides, platform).some((d) => d.id === 'daw.freeze'),
+    `no longer found by the old one (${was})`);
+});
+
+check('every command id the toolbar names is a real one', () => {
+  // A typo here is a button that does nothing AND has no tooltip, which is
+  // two silent failures for the price of one.
+  const page = readFileSync('src/renderer/pages/DawPage.tsx', 'utf8');
+  const ids = [...page.matchAll(/<ToolbarButton cmd="([^"]+)"/g)].map((m) => m[1]!);
+  assert(ids.length >= 15, `the toolbar names ${ids.length} commands`);
+  for (const id of ids) {
+    assert(findShortcut(id as CommandId) !== undefined, `${id} is in the table`);
+  }
+});
+
+check('no tooltip spells a chord out by hand', () => {
+  // Twenty-two of them did.  Two ways wrong: "(Mod+Alt+D)" shows the person
+  // the word "Mod", which is a token from this codebase and not a key on
+  // anybody's keyboard; and all of them were frozen text, so the moment a
+  // student remapped the command the tooltip told them the wrong key with
+  // complete confidence — worse than saying nothing.
+  //
+  // One of them named a key bound to NOTHING: 가로 확대 is KeyF, the way 가로
+  // 축소 next to it is KeyG, and both its tooltip and its face said H.  A
+  // student pressing H got silence.
+  //
+  // So tooltips ask the keymap (`commandTitle`), and this check keeps it that
+  // way.  A mouse gesture is still allowed to be written out — "Alt+클릭" is
+  // not a chord and the keymap has nothing to say about it.
+  const files = execSync('grep -rl \'title="\' src/renderer --include=*.tsx', { encoding: 'utf8' })
+    .trim().split('\n');
+  const chordish = [
+    /(?:Mod|Cmd|Ctrl)\+/,          // the modifier spelled as a token
+    /⌘|⌥/,                         // or as a glyph
+    /Alt\+(?![가-힣])/,             // Alt+KEY, but not Alt+클릭
+    /\((?:Home|End|Space|Tab|Enter|Esc|Escape|Del|Delete|Numpad[^)]*|F\d+|[A-Z])\)/,
+  ];
+  const offenders: string[] = [];
+  for (const f of files) {
+    const src = readFileSync(f, 'utf8');
+    // Three forms, because the one this check first missed was the third:
+    // a conditional inside title={...} with the chord in both branches.  The
+    // app itself gave it away — four "×" buttons still saying (Mod+Backspace)
+    // while this check reported none.
+    const texts = [
+      ...[...src.matchAll(/title="([^"]*)"/g)].map((m) => m[1]!),
+      ...[...src.matchAll(/title=\{'([^']*)'\}/g)].map((m) => m[1]!),
+      ...[...src.matchAll(/title=\{(?:(?!\}\s*$)[\s\S]){0,400}?\}/g)].map((m) => m[0]),
+    ];
+    for (const text of texts) {
+      // `commandTitle(...)` naming a command id is the right answer, not an
+      // offender: ids like 'daw.open' contain no chord, and the chord it
+      // renders comes from the keymap at run time.
+      const bare = text.replace(/commandTitle\([^)]*\)/g, '');
+      if (chordish.some((re) => re.test(bare))) {
+        offenders.push(`${f.replace('src/renderer/', '')}: "${bare.slice(0, 56).trim()}"`);
+      }
+    }
+  }
+  assert(offenders.length === 0,
+    `${offenders.length} tooltip(s) write a key out instead of asking the keymap:\n    `
+    + offenders.join('\n    '));
+});
+
+check('a key hint stops after three showings and remembers that it did', () => {
+  // The count lives in localStorage so the fourth session does not start the
+  // three over again; Node has no such thing, so give it one.
+  const mem = new Map<string, string>();
+  (globalThis as unknown as { localStorage: unknown }).localStorage = {
+    getItem: (k: string) => mem.get(k) ?? null,
+    setItem: (k: string, v: string) => { mem.set(k, v); },
+    removeItem: (k: string) => { mem.delete(k); },
+    clear: () => { mem.clear(); },
+    key: () => null,
+    length: 0,
+  };
+  resetHints();
+  for (let i = 1; i <= MAX_HINTS_PER_COMMAND; i++) {
+    assert(takeHintTurn('daw.freeze'), `showing ${i} is allowed`);
+  }
+  assert(!takeHintTurn('daw.freeze'), 'and the fourth is not');
+  assert(!takeHintTurn('daw.freeze'), 'nor the fifth — the refusal did not count itself');
+  // One command reaching its limit must not silence another.
+  assert(takeHintTurn('daw.commit'), 'a different command still gets its turn');
+  // And the overlay's "키 힌트 다시 보기" really brings them back.
+  resetHints();
+  assert(takeHintTurn('daw.freeze'), 'after a reset the hints come back');
+});
+
+check('the palette and the shortcut list cannot be open at once', () => {
+  // Two full-screen overlays at the same z-index are one overlay with
+  // clickable buttons hidden under it — the slot mechanism exists for this.
+  eq(panelsSharingSlot('palette').join(), 'help', 'opening the palette closes the list');
+  eq(panelsSharingSlot('help').join(), 'palette', 'and the other way round');
+
+  const ws = useWorkspaceStore.getState();
+  ws.setPanel('help', true);
+  ws.setPanel('palette', true);
+  assert(useWorkspaceStore.getState().panels.palette, 'the palette is open');
+  assert(!useWorkspaceStore.getState().panels.help, 'and the list closed itself');
+  useWorkspaceStore.getState().setPanel('palette', false);
 });
 
 // Nothing is counted until every async body has finished — the summary used to

@@ -15,7 +15,11 @@
 // menu-capable surface each time the command map is rebuilt — which is every
 // time the session changes.
 
-import type { CommandId } from './definitions.js';
+import { findShortcut, type CommandId } from './definitions.js';
+import { describeSpec, effectiveChords, loadOverrides } from './key-overrides.js';
+import { detectPlatform } from './keys.js';
+import { takeHintTurn } from './chord-hints.js';
+import { useAppStore } from '../stores/appStore.js';
 
 export type CommandMap = Partial<Record<CommandId, () => void | Promise<void>>>;
 
@@ -58,5 +62,28 @@ export function runCommand(id: CommandId): boolean {
   } catch (err) {
     onError?.(id, err);
   }
+  teachTheKey(id);
   return true;
+}
+
+/**
+ * Tell whoever just clicked that the thing they clicked has a key.
+ *
+ * HERE rather than in the button, the menu and the palette separately, because
+ * this function is already the one doorway all three go through — and the
+ * keyboard dispatcher is NOT one of them: it calls the command map directly.
+ * So the hint reaches exactly the people who have not found the key yet, and
+ * never the person who just used it.
+ *
+ * The chord is read through `effectiveChords`, so a student who remapped it is
+ * taught their own key and not the factory one.  Three times per command and
+ * then silence — see chord-hints.ts.
+ */
+function teachTheKey(id: CommandId): void {
+  const def = findShortcut(id);
+  if (!def) return;
+  const spec = effectiveChords(def, loadOverrides())[0];
+  if (spec === undefined) return;
+  if (!takeHintTurn(id)) return;
+  useAppStore.getState().showChordHint(def.label, describeSpec(spec, detectPlatform()));
 }

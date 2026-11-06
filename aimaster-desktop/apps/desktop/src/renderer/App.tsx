@@ -88,6 +88,37 @@ function Toast() {
   );
 }
 
+// ── "그 버튼에는 키가 있습니다" ──────────────────────────────────────────────
+
+/**
+ * The key of the command that was just clicked.
+ *
+ * Above the message, not inside it.  The notifier has one slot and the command
+ * needs it to say what happened; a hint that took that slot would cut the
+ * message short, which is a defect this app already measured once at 0.2 s
+ * against 3.5 s.  So this is its own small surface, it never blocks a click,
+ * and it stops after three showings per command (chord-hints.ts).
+ */
+function ChordHint() {
+  const hint = useAppStoreNotification((s) => s.chordHint);
+  if (!hint) return null;
+
+  return (
+    <div key={hint.id} style={{ zIndex: LAYER.notification }}
+         className="fixed animate-in-fast pointer-events-none
+                    bottom-20 left-1/2 -translate-x-1/2
+                    flex items-center gap-2 px-3 py-1.5 rounded-lg
+                    border border-zinc-700 bg-zinc-900/95 shadow-lg">
+      <span className="text-[11px] text-zinc-500">{hint.label}</span>
+      <span className="font-mono text-[11px] px-1.5 py-0.5 rounded
+                       border border-emerald-700/60 bg-emerald-600/15 text-emerald-300">
+        {hint.chord}
+      </span>
+      <span className="text-[10px] text-zinc-600">다음엔 이 키로</span>
+    </div>
+  );
+}
+
 // ── Preload 미노출 시 fallback UI ────────────────────────────────────────────
 // Python / IPC 없어도 앱 제목·업로드 영역·스타일 선택·실행 버튼이 표시됩니다.
 
@@ -477,6 +508,7 @@ function AppInner() {
 
       {/* Toast notifications */}
       <Toast />
+      <ChordHint />
       {/* Electron has no window.prompt — see ui/text-prompt.ts. */}
       <TextPromptDialog />
       <ConfirmDialog />

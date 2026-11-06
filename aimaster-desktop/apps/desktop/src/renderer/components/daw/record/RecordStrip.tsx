@@ -20,8 +20,15 @@ import { premium } from '../../../theme/premium.js';
 import { describeInput, resolveTrackInput, trackInputRef } from '../../../daw/model/track-input.js';
 import { describePatch, patchOptions } from '../../../daw/model/input-channels.js';
 import { LATENCY_LABELS, describeLatency } from '../../../daw/model/input-latency.js';
+import { commandTitle } from '../../../shortcuts/command-title.js';
+import { detectPlatform } from '../../../shortcuts/keys.js';
+import { useShortcutStore } from '../../../stores/shortcutStore.js';
 
 export default function RecordStrip() {
+  // A tooltip asks the keymap rather than spelling a chord out, so it
+  // follows a remap and shows the key this platform prints.
+  const chordOverrides = useShortcutStore((s) => s.overrides);
+  const chordPlatform = useMemo(() => detectPlatform(), []);
   const session = useDawStore((s) => s.session);
   const playheadSec = useDawStore((s) => s.playheadSec);
   const selection = useDawStore((s) => s.selection);
@@ -79,7 +86,12 @@ export default function RecordStrip() {
       <button
         onClick={() => (rolling ? void stop() : void start())}
         disabled={!rolling && !readiness.ok}
-        title={rolling ? '녹음 정지' : (readiness.reason ?? '녹음 시작 (Numpad *)')}
+        // `daw.record` rather than `transport.record`, which this tooltip used
+        // to name: both start recording in the workspace, but one is Mod+R and
+        // the other is Numpad *, and a student's laptop often has no numpad.
+        title={rolling ? '녹음 정지'
+          : (readiness.reason
+             ?? commandTitle('daw.record', chordOverrides, chordPlatform, '녹음 시작'))}
         className="h-7 px-3 rounded border text-[11px] flex items-center gap-1.5"
         style={{
           background: rolling ? '#C03030' : readiness.ok ? 'rgba(192,48,48,0.22)' : premium.surface.well,
@@ -102,7 +114,8 @@ export default function RecordStrip() {
           so the way to answer it cannot be hidden behind arming. */}
       <button
         onClick={() => useWorkspaceStore.getState().togglePanel('deviceSetup')}
-        title="디바이스 셋업 (F4) — 오디오 · MIDI 장치와, 소리가 안 나는 이유"
+        title={commandTitle('window.deviceSetup', chordOverrides, chordPlatform,
+                    '디바이스 셋업 — 오디오 · MIDI 장치와, 소리가 안 나는 이유')}
         className="h-5 px-2 rounded-sm shrink-0"
         style={{
           fontSize: 9.5, letterSpacing: '0.06em',

@@ -6,7 +6,7 @@
 // mixer engine re-syncs on every change, so a fader move is audible on the
 // next block.
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useDawStore } from '../../../stores/dawStore.js';
 import { useAppStore } from '../../../stores/appStore.js';
 import {
@@ -53,10 +53,17 @@ import { MAX_TRACK_DELAY_MS, delayMechanism, trackDelayMs } from '../../../daw/m
 import { describeDelay, setTrackDelay } from '../../../daw/edit/track-delay-ops.js';
 import SnapshotPanel from './SnapshotPanel.js';
 import { deleteTracks } from '../../../ui/delete-tracks.js';
+import { commandTitle } from '../../../shortcuts/command-title.js';
+import { detectPlatform } from '../../../shortcuts/keys.js';
+import { useShortcutStore } from '../../../stores/shortcutStore.js';
 
 const AUTOMATION_MODES: AutomationMode[] = ['off', 'read', 'touch', 'latch', 'write', 'trim'];
 
 export default function MixWindow() {
+  // A tooltip asks the keymap rather than spelling a chord out, so it
+  // follows a remap and shows the key this platform prints.
+  const chordOverrides = useShortcutStore((s) => s.overrides);
+  const chordPlatform = useMemo(() => detectPlatform(), []);
   const session = useDawStore((s) => s.session);
   const apply   = useDawStore((s) => s.apply);
   const notify  = useAppStore((s) => s.notify);
@@ -124,7 +131,7 @@ export default function MixWindow() {
         >버스 {session.buses.length}</button>
         <button
           onClick={() => setSnapshotsOpen(!snapshotsOpen)}
-          title="저장해 둔 믹스로 되돌리기 (Mod+Alt+Shift+K)"
+          title={commandTitle('daw.mixSnapshotPanel', chordOverrides, chordPlatform, '저장해 둔 믹스로 되돌리기')}
           className={`px-2 py-0.5 rounded text-[10px] border ${snapshotsOpen
             ? 'border-zinc-600 bg-zinc-800 text-zinc-200'
             : 'border-zinc-700 bg-zinc-900 text-zinc-400'}`}

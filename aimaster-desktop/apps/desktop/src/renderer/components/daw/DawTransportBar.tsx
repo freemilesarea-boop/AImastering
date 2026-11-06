@@ -16,6 +16,9 @@ import { useWaveformPeaks } from '../../hooks/useWaveformPeaks.js';
 import { resumeSharedContext } from '../../audio/shared-audio-graph.js';
 import { fmtTime } from '../../shortcuts/commands.js';
 import { visibleWindow, ratioInWindow, timeAtRatio } from './transport-view.js';
+import { commandTitle } from '../../shortcuts/command-title.js';
+import { detectPlatform } from '../../shortcuts/keys.js';
+import { useShortcutStore } from '../../stores/shortcutStore.js';
 
 const BUCKETS = 900;
 
@@ -46,6 +49,10 @@ function IconButton({
 }
 
 export default function DawTransportBar() {
+  // A tooltip asks the keymap rather than spelling a chord out, so it
+  // follows a remap and shows the key this platform prints.
+  const chordOverrides = useShortcutStore((s) => s.overrides);
+  const chordPlatform = useMemo(() => detectPlatform(), []);
   const notify = useAppStore((s) => s.notify);
   const options = useAudioStore((s) => s.options);
   const updateOptions = useAudioStore((s) => s.updateOptions);
@@ -197,20 +204,20 @@ export default function DawTransportBar() {
     >
       {/* ── Row 1: transport + state readouts ───────────────────────────── */}
       <div className="flex items-center gap-1.5 flex-wrap">
-        <IconButton title="재생 위치 0점 (Home / Numpad .)"
+        <IconButton title={commandTitle('transport.returnToZero', chordOverrides, chordPlatform, '재생 위치 0점')}
           onClick={() => seek(loopEnabled ? loop.startSec : 0)}>⏮</IconButton>
-        <IconButton title="재생 / 정지 (Space)" active={isPlaying} onClick={togglePlay}>
+        <IconButton title={commandTitle('transport.playPause', chordOverrides, chordPlatform, '재생 / 정지')} active={isPlaying} onClick={togglePlay}>
           {isPlaying ? '❚❚' : '▶'}
         </IconButton>
         <IconButton title="정지" onClick={() => { getTransportElement()?.pause(); seek(loopEnabled ? loop.startSec : 0); }}>■</IconButton>
-        <IconButton title="루프 on/off (Numpad /)" active={loopEnabled}
+        <IconButton title={commandTitle('transport.toggleLoop', chordOverrides, chordPlatform, '루프 on/off')} active={loopEnabled}
           onClick={() => useWorkspaceStore.getState().toggleLoop()}>LOOP</IconButton>
-        <IconButton title="좌측 루프 포인터 (Numpad 1)" onClick={() => seek(loop.startSec)}>L◂</IconButton>
-        <IconButton title="우측 루프 포인터 (Numpad 2)" onClick={() => seek(loop.endSec)}>▸R</IconButton>
+        <IconButton title={commandTitle('transport.gotoLoopStart', chordOverrides, chordPlatform, '좌측 루프 포인터')} onClick={() => seek(loop.startSec)}>L◂</IconButton>
+        <IconButton title={commandTitle('transport.gotoLoopEnd', chordOverrides, chordPlatform, '우측 루프 포인터')} onClick={() => seek(loop.endSec)}>▸R</IconButton>
 
         <span className="w-px h-5 bg-zinc-800 mx-1" />
 
-        <IconButton title="솔로 — 원본(마스터 체인 바이패스) (S) · Alt+클릭으로 전체 해제"
+        <IconButton title={commandTitle('track.solo', chordOverrides, chordPlatform, '솔로 — 원본(마스터 체인 바이패스) · Alt+클릭으로 전체 해제')}
           active={rtBypass}
           onClick={(e) => {
             const rt = options.rt ?? {};
@@ -222,7 +229,7 @@ export default function DawTransportBar() {
             }
             updateOptions({ rt: { ...rt, masterBypass: !rtBypass } });
           }}>S</IconButton>
-        <IconButton title="뮤트 (M) · Alt+클릭으로 전체 해제" active={muted} danger
+        <IconButton title={commandTitle('track.mute', chordOverrides, chordPlatform, '뮤트 · Alt+클릭으로 전체 해제')} active={muted} danger
           onClick={(e) => {
             const ws = useWorkspaceStore.getState();
             if (e.altKey) {
@@ -233,17 +240,17 @@ export default function DawTransportBar() {
             }
             ws.setMuted(!ws.muted);
           }}>M</IconButton>
-        <IconButton title="스냅 on/off (J)" active={snapEnabled} onClick={() => toggleSnap()}>
+        <IconButton title={commandTitle('edit.toggleSnap', chordOverrides, chordPlatform, '스냅 on/off')} active={snapEnabled} onClick={() => toggleSnap()}>
           SNAP
         </IconButton>
 
         <span className="w-px h-5 bg-zinc-800 mx-1" />
 
-        <IconButton title="가로 축소 (G)" onClick={() => useWorkspaceStore.getState().zoomOutH()}>G −</IconButton>
-        <IconButton title="가로 확대 (H)" onClick={() => useWorkspaceStore.getState().zoomInH()}>H +</IconButton>
+        <IconButton title={commandTitle('view.zoomOutH', chordOverrides, chordPlatform, '가로 축소')} onClick={() => useWorkspaceStore.getState().zoomOutH()}>G −</IconButton>
+        <IconButton title={commandTitle('view.zoomInH', chordOverrides, chordPlatform, '가로 확대')} onClick={() => useWorkspaceStore.getState().zoomInH()}>F +</IconButton>
         <span className="text-[10px] font-mono text-zinc-600 px-1">×{zoomH}</span>
-        <IconButton title="세로 축소 (Shift+G)" onClick={() => useWorkspaceStore.getState().zoomOutV()}>⇕ −</IconButton>
-        <IconButton title="세로 확대 (Shift+H)" onClick={() => useWorkspaceStore.getState().zoomInV()}>⇕ +</IconButton>
+        <IconButton title={commandTitle('view.zoomOutV', chordOverrides, chordPlatform, '세로 축소')} onClick={() => useWorkspaceStore.getState().zoomOutV()}>⇕ −</IconButton>
+        <IconButton title={commandTitle('view.zoomInV', chordOverrides, chordPlatform, '세로 확대')} onClick={() => useWorkspaceStore.getState().zoomInV()}>⇕ +</IconButton>
         <span className="text-[10px] font-mono text-zinc-600 px-1">×{zoomV.toFixed(1)}</span>
 
         <div className="flex-1" />

@@ -203,7 +203,7 @@ export type DawCommandId =
   | 'daw.trackDelayEarlier' | 'daw.trackDelayLater' | 'daw.trackDelayClear'
   | 'daw.pictureBack' | 'daw.pictureForward' | 'daw.pictureToPlayhead'
   | 'daw.spotClip'
-  | 'daw.showRestore' | 'daw.declick' | 'daw.showStems'
+  | 'daw.showRestore' | 'daw.declick' | 'daw.showStems' | 'daw.palette'
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
   | 'daw.clearSlide' | 'daw.flam'
@@ -2417,6 +2417,12 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     'daw.showStems': () => {
       daw().setWindow('stems');
       notify('스템 분리');
+    },
+
+    // No toast: the palette appearing IS the feedback, and a message about it
+    // would be the first thing the palette covers.
+    'daw.palette': () => {
+      useWorkspaceStore.getState().togglePanel('palette');
     },
 
     'daw.declick': async () => {

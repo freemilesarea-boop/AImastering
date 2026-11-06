@@ -34,7 +34,7 @@ export const TOOL_LABELS: Record<ToolId, string> = {
 export type PanelId =
   | 'transport' | 'mixConsole' | 'bottomZone' | 'inspector'
   | 'rightRack' | 'mediaBay' | 'vstEditor' | 'help' | 'surface'
-  | 'controlRoom' | 'provenance' | 'deviceSetup';
+  | 'controlRoom' | 'provenance' | 'deviceSetup' | 'palette';
 
 /**
  * Panels that occupy the same corner of the screen.
@@ -47,6 +47,10 @@ export type PanelId =
 export const PANEL_SLOTS: readonly (readonly PanelId[])[] = [
   // The right-hand MIDI window: control surface bindings and device setup.
   ['surface', 'deviceSetup'],
+  // Both of these are full-screen overlays at the same z-index, which is the
+  // exact arrangement the note above is about: whichever lost the DOM order
+  // would still have clickable buttons under the other one.
+  ['help', 'palette'],
 ];
 
 /** Which panels have to close for `opening` to be the only one in its slot. */
@@ -226,6 +230,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     mediaBay:   false,
     vstEditor:  false,
     help:       false,
+    palette:    false,
     surface:    false,
     deviceSetup: false,
   },

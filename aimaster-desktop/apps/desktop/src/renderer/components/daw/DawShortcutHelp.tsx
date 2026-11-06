@@ -13,11 +13,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { LAYER } from '../../theme/layers.js';
 import {
-  SHORTCUTS, GROUP_TITLES, type CommandId, type ShortcutGroupId, type ShortcutDef,
+  SHORTCUTS, GROUP_TITLES, type CommandId, type ShortcutGroupId,
 } from '../../shortcuts/definitions.js';
 import {
   describeSpec, effectiveChords, isOverridden, specFromEvent,
 } from '../../shortcuts/key-overrides.js';
+import { searchCommands } from '../../shortcuts/command-search.js';
+import { resetHints } from '../../shortcuts/chord-hints.js';
 import { detectPlatform } from '../../shortcuts/keys.js';
 import { useWorkspaceStore } from '../../stores/workspaceStore.js';
 import { useShortcutStore } from '../../stores/shortcutStore.js';
@@ -75,17 +77,11 @@ export default function DawShortcutHelp() {
     return () => window.removeEventListener('keydown', onKey, { capture: true });
   }, [capturing, platform, setChords, notify]);
 
-  const needle = filter.trim().toLowerCase();
-  const matches = (s: ShortcutDef): boolean => {
-    if (!needle) return true;
-    if (s.label.toLowerCase().includes(needle)) return true;
-    if (s.note.toLowerCase().includes(needle)) return true;
-    return effectiveChords(s, overrides)
-      .some((c) => describeSpec(c, platform).toLowerCase().includes(needle));
-  };
-
+  // The same search the command palette runs — one function, two surfaces.
+  // A second copy here is how the two would start disagreeing about whether a
+  // remapped key is findable.
   const changedCount = Object.keys(overrides).length;
-  const shown = SHORTCUTS.filter(matches);
+  const shown = searchCommands(filter, overrides, platform);
 
   return (
     <div
@@ -123,6 +119,20 @@ export default function DawShortcutHelp() {
           <span className="text-[10px] text-zinc-600 shrink-0">
             {shown.length} / {SHORTCUTS.length}
           </span>
+          {/* The chip that says "다음엔 이 키로" after a click stops after three
+              showings per command, on purpose — a hint that keeps arriving
+              gets dismissed without being read.  But a shared classroom
+              machine has already used up somebody else's three, and a student
+              who wants them back has nowhere to ask.  Here. */}
+          <button
+            onClick={() => {
+              resetHints();
+              notify('키 힌트를 다시 보여줍니다 — 버튼을 누를 때 그 명령의 키가 세 번까지 떠요', 'success');
+            }}
+            title="버튼이나 메뉴로 명령을 실행했을 때 그 명령의 단축키를 다시 알려줍니다"
+            className="shrink-0 h-7 px-2 rounded-lg border border-zinc-700 text-[10px]
+                       text-zinc-400 hover:text-zinc-200 hover:border-zinc-600"
+          >키 힌트 다시 보기</button>
           {changedCount > 0 && (
             <button
               onClick={() => {
