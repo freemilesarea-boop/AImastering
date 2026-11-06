@@ -64,9 +64,13 @@ jobs:
       # commercial-reference tests skip themselves when AIMASTER_FFMPEG is
       # unset, and a suite that skips the file the targets come from is the
       # exact failure `python-suite-selftest` was written for.
+      # `--no-frozen-lockfile`, as all three jobs in build.yml use: a nightly
+      # that refuses to start where the real builds install fine would report
+      # a DSP failure for a lockfile, and this job's whole purpose is to say
+      # something true about the DSP tests.
       - name: Install Node dependencies (for the shipped ffmpeg pair)
         working-directory: aimaster-desktop
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
 
       - name: Run the DSP suite
         working-directory: aimaster-desktop/services/python-audio
