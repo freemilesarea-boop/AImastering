@@ -125,7 +125,6 @@ export interface DawState {
   addTrackHere: (kind: 'audio' | 'aux' | 'vca') => void;
 
   playheadSec: number;
-  setPlayhead: (sec: number) => void;
   isPlaying: boolean;
   play: () => void;
   stop: () => void;
@@ -247,6 +246,28 @@ export interface DawState {
   historyOpen: boolean;
   setHistoryOpen: (open: boolean) => void;
 
+  /**
+   * Whether the session-template panel is on screen.
+   *
+   * Here rather than in DawPage's own useState because the keyboard has to be
+   * able to open it: a page-local flag is reachable from the button beside it
+   * and from nothing else, which is how this panel ended up behind a
+   * horizontal scroll with no other way in.
+   */
+  templatesOpen: boolean;
+  setTemplatesOpen: (open: boolean) => void;
+
+  /**
+   * What the chrome row says while a long import is running, or null.
+   *
+   * In the store for the same reason as `templatesOpen`: the imports that
+   * raise it are commands now, and a command cannot reach a page's useState.
+   * A button that showed "MIDI 읽는 중…" and a key that showed nothing would
+   * be the same action telling two different stories.
+   */
+  busy: string | null;
+  setBusy: (message: string | null) => void;
+
   /** Whether the file pool is on screen. */
   poolOpen: boolean;
   setPoolOpen: (open: boolean) => void;
@@ -299,7 +320,6 @@ export interface DawState {
    */
   snapshots: MixSnapshot[];
   addSnapshot: (snapshot: MixSnapshot) => void;
-  setSnapshots: (snapshots: MixSnapshot[]) => void;
   /** Throw one away.  The cap drops the oldest; this is the deliberate one. */
   dropSnapshot: (id: string) => void;
 
@@ -614,6 +634,10 @@ export const useDawStore = create<DawState>((set, get) => ({
   setRenameTarget: (renameTarget) => set({ renameTarget }),
   historyOpen: false,
   setHistoryOpen: (historyOpen) => set({ historyOpen }),
+  templatesOpen: false,
+  setTemplatesOpen: (templatesOpen) => set({ templatesOpen }),
+  busy: null,
+  setBusy: (busy) => set({ busy }),
   poolOpen: false,
   setPoolOpen: (poolOpen) => set({ poolOpen }),
   fadeTarget: null,
@@ -704,7 +728,6 @@ export const useDawStore = create<DawState>((set, get) => ({
 
   snapshots: [],
   addSnapshot: (snapshot) => set((s) => ({ snapshots: pushSnapshot(s.snapshots, snapshot) })),
-  setSnapshots: (snapshots) => set({ snapshots }),
   dropSnapshot: (id) => set((s) => ({ snapshots: removeSnapshot(s.snapshots, id) })),
 
   snapshotsOpen: false,
@@ -732,7 +755,6 @@ export const useDawStore = create<DawState>((set, get) => ({
   },
 
   playheadSec: 0,
-  setPlayhead: (sec) => set({ playheadSec: Math.max(0, sec) }),
   isPlaying: false,
 
   play: () => {

@@ -109,6 +109,10 @@ export function useDawShortcuts(): void {
       },
       workspace: () => useWorkspaceStore.getState(),
       transport,
+      saveFormat: () => {
+        const s = useAudioStore.getState();
+        return { depth: s.saveDepth, dither: s.saveDither };
+      },
       invoke: (channel, ...args) => {
         const api = window.electronAPI;
         if (!api) return Promise.reject(new Error('electronAPI unavailable'));

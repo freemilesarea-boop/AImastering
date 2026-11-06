@@ -35,8 +35,10 @@ async function main(): Promise<void> {
   const { useAppStore, NOTIFY_MS } = await import('../src/renderer/stores/appStore.js');
   const { useDawStore } = await import('../src/renderer/stores/dawStore.js');
   const { useRecordingStore } = await import('../src/renderer/stores/recordingStore.js');
-  const { buildDawCommands } = await import('../src/renderer/shortcuts/daw-commands.js');
-  const { createTrack, addTrack, findTrack } = await import('../src/renderer/daw/model/session-ops.js');
+  const { buildDawCommands, buildDawOverrides } = await import('../src/renderer/shortcuts/daw-commands.js');
+  const { SHORTCUTS } = await import('../src/renderer/shortcuts/definitions.js');
+  const { lastManualSaveMs } = await import('../src/renderer/daw/model/manual-save.js');
+  const { createTrack, addTrack, findTrack, addFile, createClip, updateClips } = await import('../src/renderer/daw/model/session-ops.js');
 
   console.log('\n=== ONE MESSAGE DOES NOT CUT ANOTHER SHORT ===\n');
 
@@ -120,6 +122,160 @@ async function main(): Promise<void> {
       'disarming is announced as disarming',
       said.length === 1 && said[0]!.includes('무장 해제'),
       said[0] ?? '(said nothing)',
+    );
+  }
+
+  // ── SAVING BY HAND DOES BOTH HALVES, WHICHEVER DOORWAY ──────────────────
+  //
+  // There were two implementations and each did half.  The button took the
+  // name from the file the person had just chosen (not doing that is why the
+  // mastering list read "Untitled Session.wav") and never told the autosave
+  // driver, so the recovery file stayed and the next launch could offer an
+  // older copy under a crash banner that was not true.  The key told the
+  // driver and never took the name.  One implementation now, and this is the
+  // check that keeps it one: both halves, from the id the button runs.
+  {
+    console.log('\n=== SAVING BY HAND DOES BOTH HALVES ===\n');
+    // The manual-save record has to survive a restart — the staleness rule
+    // asks at startup about a run that already ended — so it lives in
+    // localStorage, which Node does not have: the first run of this check
+    // read back null and blamed the product, which was right all along.
+    // Give it a store so the record is observable.
+    const mem = new Map<string, string>();
+    (globalThis as unknown as { localStorage: unknown }).localStorage = {
+      getItem: (k: string) => mem.get(k) ?? null,
+      setItem: (k: string, v: string) => { mem.set(k, v); },
+      removeItem: (k: string) => { mem.delete(k); },
+      clear: () => { mem.clear(); },
+      key: () => null,
+      length: 0,
+    };
+    const said: string[] = [];
+    const overrides = buildDawOverrides({
+      notify: (m: string) => { said.push(m); },
+      openWorkspace: () => { /* not what is being tested */ },
+      daw: () => useDawStore.getState(),
+      // What the save dialog returns: the person typed a new name for it.
+      invoke: async (channel: string) => (channel === 'session:save' ? '/tmp/Night Drive.louisession' : null),
+    });
+    const id = useDawStore.getState().session.id;
+    const before = useDawStore.getState().session.name;
+    await (overrides['file.save'] as () => Promise<void>)();
+    check('the chosen file name becomes the session name',
+      useDawStore.getState().session.name === 'Night Drive',
+      `${before} → ${useDawStore.getState().session.name}`);
+    check('and the autosave driver is told, so no stale recovery copy is offered',
+      lastManualSaveMs(id) !== null,
+      `lastManualSaveMs=${lastManualSaveMs(id) === null ? 'null' : 'recorded'}`);
+    check('and it says the save landed',
+      said.some((m) => m.includes('저장 완료')), said.join(' | ') || '(silent)');
+
+    // A cancelled dialog must do neither.
+    const quiet = buildDawOverrides({
+      notify: (m: string) => { said.push(m); },
+      openWorkspace: () => { /* not what is being tested */ },
+      daw: () => useDawStore.getState(),
+      invoke: async () => null,
+    });
+    useDawStore.getState().apply((sess) => ({ ...sess, name: 'Night Drive' }));
+    const n0 = said.length;
+    await (quiet['file.save'] as () => Promise<void>)();
+    check('a cancelled save renames nothing and claims nothing',
+      useDawStore.getState().session.name === 'Night Drive' && said.length === n0,
+      `name=${useDawStore.getState().session.name} · said ${said.length - n0} more`);
+  }
+
+  // ── THE THREE DIALOG COMMANDS ASK FOR THE RIGHT THING ───────────────────
+  //
+  // These three moved out of DawPage so a key could reach them, and the move
+  // is the kind that goes wrong quietly: a wrong channel name opens no dialog
+  // and reports nothing, which looks exactly like a cancelled one.  So each is
+  // run with a fake IPC that answers "the user cancelled" and asked what it
+  // requested.  The cancel path is worth pinning too: two of them say nothing
+  // (nothing happened) and the export says so, and that difference is easy to
+  // lose.  Verified separately in the app for the three that need no dialog —
+  // Alt+Shift+B added an aux track, Alt+Shift+W a VCA, Alt+Shift+Y toggled the
+  // template panel.  A frozen contextBridge object cannot be stubbed in the
+  // app, which is why these three are here instead.
+  {
+    console.log('\n=== THE THREE DIALOG COMMANDS ASK FOR THE RIGHT THING ===\n');
+    const cases = [
+      { id: 'daw.importMidi', channel: 'file:open-dialog-midi', speaksOnCancel: false },
+      { id: 'daw.importAaf', channel: 'daw:aaf-open', speaksOnCancel: false },
+      { id: 'daw.exportAaf', channel: 'daw:aaf-save', speaksOnCancel: true },
+    ] as const;
+    // An AAF of nothing is refused before any dialog — correctly, and the
+    // first run of this block proved it by failing.  So give the session one
+    // real clip, which is what "export this edit" means.
+    {
+      const track = createTrack('Vox', 'audio');
+      useDawStore.getState().apply((sess) => {
+        let next = addTrack(sess, track);
+        next = addFile(next, {
+          id: 'f-told', path: '/tmp/vox.wav', name: 'vox.wav',
+          durationSec: 60, sampleRate: 48_000, channels: 2,
+        });
+        return updateClips(next, track.id, () => [
+          createClip('f-told', 'verse', { startSec: 1, durationSec: 4 }),
+        ]);
+      });
+    }
+
+    for (const c of cases) {
+      const asked: string[] = [];
+      const said: string[] = [];
+      const cmds = buildDawCommands({
+        notify: (m: string) => { said.push(m); },
+        openWorkspace: () => { /* not what is being tested */ },
+        daw: () => useDawStore.getState(),
+        invoke: async (channel: string) => { asked.push(channel); return null; },
+      });
+      const before = JSON.stringify(useDawStore.getState().session);
+      await (cmds[c.id] as () => Promise<void>)();
+      check(`${c.id} asks for ${c.channel}`,
+        asked.includes(c.channel), asked.join(' · ') || '(asked for nothing)');
+      check(`${c.id} leaves the session alone when the dialog is cancelled`,
+        JSON.stringify(useDawStore.getState().session) === before,
+        'session unchanged');
+      check(`${c.id} ${c.speaksOnCancel ? 'says it was cancelled' : 'says nothing when nothing happened'}`,
+        c.speaksOnCancel
+          ? said.some((m) => m.includes('취소'))
+          : said.length === 0,
+        said.join(' | ') || '(silent)');
+    }
+  }
+
+  // ── A KEY THAT IS REGISTERED IS NOT A KEY THAT WORKS ────────────────────
+  //
+  // `buildCommands` gives every group:'daw' id a fallback toast so the key
+  // explains itself on the mastering screen instead of doing nothing.  That
+  // is right, and it also blinds the shortcut selftest's "every CommandId has
+  // an implementation": the id is callable either way.  Measured by adding a
+  // declared command with no implementation anywhere — typecheck clean,
+  // 38/38 shortcut checks green, and in the DAW the key would answer "DAW
+  // 워크스페이스에서 사용할 수 있습니다" with the workspace already open.
+  //
+  // So ask the DAW's own map, which is the thing that would have to have it.
+  {
+    console.log('\n=== EVERY DAW KEY HAS SOMETHING BEHIND IT ===\n');
+    const deps = {
+      notify: () => { /* nothing is being read here, only presence */ },
+      openWorkspace: () => { /* not what is being tested */ },
+      daw: () => useDawStore.getState(),
+      invoke: async () => null,
+    };
+    const map = buildDawCommands(deps) as unknown as Record<string, unknown>;
+    const overrides = buildDawOverrides(deps) as unknown as Record<string, unknown>;
+    const declared = SHORTCUTS.filter((s) => s.group === 'daw');
+    const missing = declared
+      .filter((s) => typeof map[s.id] !== 'function' && typeof overrides[s.id] !== 'function')
+      .map((s) => s.id);
+    check(
+      'every daw-group command is implemented, not just registered',
+      missing.length === 0,
+      missing.length > 0
+        ? `구현이 없는데 키가 붙어 있다: ${missing.join(', ')}`
+        : `${declared.length}개 선언 · ${declared.length - missing.length}개 구현`,
     );
   }
 

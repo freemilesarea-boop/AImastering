@@ -34,23 +34,13 @@ import StepSequencer from '../components/daw/steps/StepSequencer.js';
 import IntelPanel from '../components/daw/intel/IntelPanel.js';
 import PluginWindowLayer from '../components/daw/plugin/PluginWindowLayer.js';
 import RegionLab from '../components/daw/region/RegionLab.js';
-import { createStack } from '../daw/model/stacks.js';
 
-import { useMidiEditorStore } from '../stores/midiEditorStore.js';
-import { findTrack, renameSession, sessionEndSec } from '../daw/model/session-ops.js';
+import { runCommand } from '../shortcuts/command-runner.js';
+import type { CommandId } from '../shortcuts/definitions.js';
 import { shouldAdoptQueue } from '../daw/model/import-audio.js';
 import { describeImport, importIntoSession } from '../daw/edit/session-import.js';
-import { importSessionData, deserializeDawSession, serializeDawSession } from '../daw/model/session-io.js';
-import {
-  bounceSession, commitTrack, freezeTrack, stageForMastering, unfreezeTrack,
-} from '../daw/engine/offline-render.js';
-import {
-  handoffFileName, handoffProblem, stageMessage,
-} from '../daw/edit/master-handoff.js';
-import { describePlan, exportStems, planStems } from '../daw/engine/stem-export.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
 import TemplatePanel from '../components/daw/template/TemplatePanel.js';
-import { describeFailure, exportAaf, importAaf } from '../daw/io/aaf-actions.js';
 import PanelWindowLayer from '../components/daw/PanelWindowLayer.js';
 import { usePanelWindowStore } from '../stores/panelWindowStore.js';
 import { DAW_PANELS, type DawWindow } from '../daw/model/view-window.js';
@@ -135,7 +125,6 @@ export default function DawPage() {
   const setTool      = useWorkspaceStore((s) => s.setTool);
   const rackOpen     = useWorkspaceStore((s) => s.panels.vstEditor);
   const setPanel     = useWorkspaceStore((s) => s.setPanel);
-  const loadSession  = useDawStore((s) => s.loadSession);
   const windowMode   = useDawStore((s) => s.window);
   const floatPanel   = usePanelWindowStore((s) => s.float);
   // Ids only: subscribing to the window objects would re-render the whole
@@ -150,8 +139,11 @@ export default function DawPage() {
   const loopEnabled  = useDawStore((s) => s.loopEnabled);
   const toggleLoop   = useDawStore((s) => s.toggleLoop);
   const focusedTrackId = useDawStore((s) => s.focusedTrackId);
-  const selection    = useDawStore((s) => s.selection);
-  const [busy, setBusy] = useState<string | null>(null);
+  // Both of these live in the store rather than here because the actions that
+  // drive them are commands now, and a command cannot reach a page's
+  // useState — see the note on `busy` in dawStore.
+  const busy = useDawStore((s) => s.busy);
+  const setBusy = useDawStore((s) => s.setBusy);
 
   // Files the user loaded on the home screen.  The DAW used to ignore them
   // entirely, which meant opening it always showed an empty session — you
@@ -187,7 +179,7 @@ export default function DawPage() {
     } catch (err) {
       notify(`가져오기 실패: ${(err as Error).message}`, 'error');
     } finally { setBusy(null); }
-  }, [notify]);
+  }, [notify, setBusy]);
 
   /**
    * On the first visit, an empty session adopts whatever is on the home
@@ -217,7 +209,7 @@ export default function DawPage() {
     } catch (err) {
       notify(`가져오기 실패: ${(err as Error).message}`, 'error');
     } finally { setBusy(null); }
-  }, [invoke, notify, playheadSec]);
+  }, [invoke, notify, playheadSec, setBusy]);
 
   /**
    * Adding an instrument means CHOOSING one.
@@ -232,78 +224,7 @@ export default function DawPage() {
   }, [setPanel]);
 
   /** Import a .mid — one instrument track per source track, MPE preserved. */
-  const handleImportMidi = useCallback(async () => {
-    // The MIDI picker, not the audio one — the audio filter hid every .mid.
-    const paths = await invoke('file:open-dialog-midi') as string[] | null;
-    const first = paths?.[0];
-    if (!first) return;
-    setBusy('MIDI 읽는 중…');
-    try {
-      const report = await importIntoSession([], [first], 0);
-      if (report.midiParts === 0) { notify('노트가 있는 트랙이 없습니다', 'warning'); return; }
-      if (report.firstMidiPart) {
-        useMidiEditorStore.getState().openPart(report.firstMidiPart);
-        setWindow('midi');
-      }
-      notify(describeImport(report), 'success');
-    } catch (err) {
-      notify(`MIDI 가져오기 실패: ${(err as Error).message}`, 'error');
-    } finally { setBusy(null); }
-  }, [invoke, notify, setWindow]);
-
   /** Wrap the selected tracks (or the focused one) in a summing stack. */
-  const handleCreateStack = useCallback(() => {
-    const state = useDawStore.getState();
-    const ids = state.selectedTrackIds.length > 0
-      ? state.selectedTrackIds
-      : (state.focusedTrackId ? [state.focusedTrackId] : []);
-    if (ids.length === 0) { notify('스택으로 묶을 트랙을 선택하세요', 'warning'); return; }
-    let folderId = '';
-    apply((s) => {
-      const result = createStack(s, `STACK ${s.tracks.filter((t) => t.kind === 'folder').length + 1}`, ids, 'summing');
-      folderId = result.folderId;
-      return result.session;
-    });
-    if (folderId) state.setFocusedTrack(folderId);
-    notify(`${ids.length}개 트랙을 스택으로 묶었습니다`, 'success');
-  }, [apply, notify]);
-
-  const handleSaveSession = useCallback(async () => {
-    const json = serializeDawSession(useDawStore.getState().session);
-    const dest = await invoke('session:save', json) as string | null;
-    if (!dest) return;
-    // The person has just typed a name for this song; asking them again in a
-    // second place would be silly, and NOT taking it is why every row in the
-    // mastering list said "Untitled Session.wav".
-    const stem = (dest.split(/[\\/]/).pop() ?? '').replace(/\.[^.]+$/, '');
-    if (stem.length > 0 && stem !== useDawStore.getState().session.name) {
-      apply((sn) => renameSession(sn, stem));
-    }
-    notify('세션 저장 완료', 'success');
-  }, [apply, invoke, notify]);
-
-  const handleOpenSession = useCallback(async () => {
-    const loaded = await invoke('session:load') as { path: string; data: string } | null;
-    if (!loaded) return;
-    const parsed = deserializeDawSession(loaded.data);
-    if (!parsed.ok) { notify(parsed.error, 'error'); return; }
-    loadSession(parsed.session);
-    notify('세션을 열었습니다', 'success');
-  }, [invoke, notify, loadSession]);
-
-  const handleImportSession = useCallback(async () => {
-    const loaded = await invoke('session:load') as { path: string; data: string } | null;
-    if (!loaded) return;
-    const parsed = deserializeDawSession(loaded.data);
-    if (!parsed.ok) { notify(parsed.error, 'error'); return; }
-    const result = importSessionData(useDawStore.getState().session, parsed.session, {
-      includeAlternatePlaylists: true, includeAutomation: true,
-    });
-    apply(() => result.session);
-    notify(`${result.importedTrackIds.length}개 트랙을 가져왔습니다`, 'success');
-    for (const w of result.warnings) notify(w, 'warning');
-  }, [invoke, notify, apply]);
-
   /**
    * Bring in a picture editor's AAF.
    *
@@ -312,56 +233,6 @@ export default function DawPage() {
    * of clips at the right times with the wrong paths is still the day's work
    * saved, and pretending the files are here would not be.
    */
-  const handleImportAaf = useCallback(async () => {
-    const loaded = await invoke('daw:aaf-open') as { path: string; bytes: number[] } | null;
-    if (!loaded) return;
-    try {
-      const result = importAaf(Uint8Array.from(loaded.bytes));
-      loadSession(result.session);
-      for (const p of result.problems.slice(0, 5)) notify(p, 'warning');
-      if (result.problems.length > 5) {
-        notify(`… 그리고 ${result.problems.length - 5}가지 더`, 'warning');
-      }
-      notify(`${result.summary} · 미디어는 다시 연결해야 합니다`, 'success');
-    } catch (err) {
-      notify(describeFailure(err), 'error');
-    }
-  }, [invoke, notify, loadSession]);
-
-  const handleExportAaf = useCallback(async () => {
-    const current = useDawStore.getState().session;
-    try {
-      const result = exportAaf(current);
-      for (const p of result.problems.slice(0, 5)) notify(p, 'warning');
-      if (result.problems.length > 5) {
-        notify(`… 그리고 ${result.problems.length - 5}가지 더`, 'warning');
-      }
-      const dest = await invoke('daw:aaf-save', {
-        name: current.name, bytes: Array.from(result.bytes),
-      }) as string | null;
-      if (!dest) { notify('AAF 내보내기를 취소했습니다', 'info'); return; }
-      notify(`AAF 저장 — ${result.summary}`, 'success');
-    } catch (err) {
-      notify(describeFailure(err), 'error');
-    }
-  }, [invoke, notify]);
-
-  const handleBounce = useCallback(async () => {
-    const current = useDawStore.getState().session;
-    if (sessionEndSec(current) <= 0) { notify('바운스할 오디오가 없습니다', 'warning'); return; }
-    setBusy('바운스 렌더링 중…');
-    try {
-      const range = selection.endSec > selection.startSec
-        ? { startSec: selection.startSec, endSec: selection.endSec }
-        : undefined;
-      const dest = await bounceSession(current, range);
-      notify(dest ? `바운스 완료 — ${dest.split(/[\\/]/).pop()}` : '바운스를 취소했습니다',
-        dest ? 'success' : 'info');
-    } catch (err) {
-      notify(`바운스 실패: ${(err as Error).message}`, 'error');
-    } finally { setBusy(null); }
-  }, [notify, selection]);
-
   /**
    * Render the mix and hand it to the mastering queue, then go there.
    *
@@ -370,94 +241,20 @@ export default function DawPage() {
    * it worked; the whole point of the button is that mixing and mastering stop
    * being two errands.
    */
-  const handleSendToMastering = useCallback(async () => {
-    const current = useDawStore.getState().session;
-    const audio = useAudioStore.getState();
-    const problem = handoffProblem(current, {
-      queued: audio.queue.length,
-      replacesExisting: audio.hasReplaceableRow(current.id),
-    });
-    if (problem) { notify(problem, 'warning'); return; }
-    setBusy('믹스를 렌더링하는 중…');
-    try {
-      const path = await stageForMastering(current);
-      const staged = useAudioStore.getState().stageSessionInQueue(current.id, path);
-      if (staged.outcome === 'full') {
-        // The render is already on disk and now has nowhere to go.  Leaving it
-        // there would be a file nothing points at, kept for the lifetime of
-        // the temp directory.
-        void invoke('daw:discard-staged', { path }).catch(() => undefined);
-        notify('대기열에 넣지 못했습니다 — 홈에서 자리를 만든 뒤 다시 보내세요', 'error');
-        return;
-      }
-      // The mix this one supersedes is no longer reachable from anywhere, and
-      // eight renders of the same session is a gigabyte of temp nobody asked
-      // for.  A failure here costs nothing worth reporting — the file is in a
-      // temp directory the OS clears anyway.
-      if (staged.replacedPath) {
-        void invoke('daw:discard-staged', { path: staged.replacedPath }).catch(() => undefined);
-      }
-      setPage('home');
-      notify(stageMessage(handoffFileName(current.name), staged.outcome, staged.queued), 'success');
-    } catch (err) {
-      notify(`마스터링으로 보내지 못했습니다: ${(err as Error).message}`, 'error');
-    } finally { setBusy(null); }
-  }, [invoke, notify, setPage]);
-
-  const [templatesOpen, setTemplatesOpen] = useState(false);
-
-  const handleStems = useCallback(async () => {
-    const current = useDawStore.getState().session;
-    const plan = planStems(current);
-    if (plan.items.length === 0) {
-      notify('내보낼 스템이 없습니다 — 들리는 오디오 트랙이 없습니다', 'warning');
-      return;
-    }
-    // What is about to be written, said before the folder dialog: the count,
-    // the length, and anything being left out.
-    notify(`${describePlan(plan)} — 폴더를 선택하세요`);
-    setBusy('스템 렌더링 준비 중…');
-    try {
-      const result = await exportStems(current, {}, (p) => {
-        setBusy(`스템 ${p.index}/${p.total} — ${p.trackName}`);
-      });
-      if (!result.directory) { notify('스템 내보내기를 취소했습니다', 'info'); return; }
-      for (const w of result.warnings) notify(w, 'warning');
-      // Skipped tracks are named, not counted: "3 skipped" sends you hunting.
-      for (const s of result.skipped) notify(`${s.trackName} 제외 — ${s.reason}`, 'info');
-      notify(`스템 ${result.written.length}개 저장 — ${result.directory}`, 'success');
-    } catch (err) {
-      notify(`스템 내보내기 실패: ${(err as Error).message}`, 'error');
-    } finally { setBusy(null); }
+  /**
+   * Run a toolbar button's command by id.
+   *
+   * `runCommand` answers false when the command map has not been published —
+   * the keyboard layer mounts with this page, so that window is brief, but a
+   * button that silently does nothing is the failure this app keeps refusing.
+   * Say it instead.
+   */
+  const fire = useCallback((id: CommandId) => {
+    if (!runCommand(id)) notify('아직 준비되지 않았습니다 — 잠시 후 다시 눌러주세요', 'warning');
   }, [notify]);
 
-  const handleFreeze = useCallback(async () => {
-    if (!focusedTrackId) { notify('트랙을 먼저 선택하세요', 'warning'); return; }
-    const current = useDawStore.getState().session;
-    const track = findTrack(current, focusedTrackId);
-    if (!track) return;
-    if (track.frozen) { apply((s) => unfreezeTrack(s, focusedTrackId)); notify('프리즈 해제'); return; }
-    setBusy('프리즈 렌더링 중…');
-    try {
-      const result = await freezeTrack(current, focusedTrackId);
-      apply(() => result.session);
-      notify(`${track.name} 프리즈 완료`, 'success');
-    } catch (err) {
-      notify(`프리즈 실패: ${(err as Error).message}`, 'error');
-    } finally { setBusy(null); }
-  }, [focusedTrackId, apply, notify]);
-
-  const handleCommit = useCallback(async () => {
-    if (!focusedTrackId) { notify('트랙을 먼저 선택하세요', 'warning'); return; }
-    setBusy('커밋 렌더링 중…');
-    try {
-      const next = await commitTrack(useDawStore.getState().session, focusedTrackId);
-      apply(() => next);
-      notify('커밋 완료 — 인서트를 오디오에 렌더링했습니다', 'success');
-    } catch (err) {
-      notify(`커밋 실패: ${(err as Error).message}`, 'error');
-    } finally { setBusy(null); }
-  }, [focusedTrackId, apply, notify]);
+  const templatesOpen = useDawStore((s) => s.templatesOpen);
+  const setTemplatesOpen = useDawStore((s) => s.setTemplatesOpen);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -560,9 +357,9 @@ export default function DawPage() {
           + 트랙
         </ToolbarButton>
         <ToolbarButton onClick={handleAddInstrument}>+ 인스트루먼트</ToolbarButton>
-        <ToolbarButton onClick={handleImportMidi}>MIDI 가져오기</ToolbarButton>
-        <ToolbarButton onClick={() => useDawStore.getState().addTrackHere('aux')}>+ Aux</ToolbarButton>
-        <ToolbarButton onClick={() => useDawStore.getState().addTrackHere('vca')}>+ VCA</ToolbarButton>
+        <ToolbarButton onClick={() => fire('daw.importMidi')}>MIDI 가져오기</ToolbarButton>
+        <ToolbarButton onClick={() => fire('daw.addAux')}>+ Aux</ToolbarButton>
+        <ToolbarButton onClick={() => fire('daw.addVca')}>+ VCA</ToolbarButton>
 
         <span className="w-px h-5 bg-zinc-800 mx-1" />
 
@@ -571,37 +368,37 @@ export default function DawPage() {
           if (!id) { notify('트랙이 없습니다', 'warning'); return; }
           useDawStore.getState().openSmartControls(id);
         }}>스마트 컨트롤</ToolbarButton>
-        <ToolbarButton onClick={handleCreateStack}>스택 만들기</ToolbarButton>
+        <ToolbarButton onClick={() => fire('daw.createStack')}>스택 만들기</ToolbarButton>
 
         <span className="w-px h-5 bg-zinc-800 mx-1" />
 
-        <ToolbarButton onClick={handleFreeze}>프리즈</ToolbarButton>
-        <ToolbarButton onClick={handleCommit}>커밋</ToolbarButton>
-        <ToolbarButton onClick={handleBounce}>바운스</ToolbarButton>
+        <ToolbarButton onClick={() => fire('daw.freeze')}>프리즈</ToolbarButton>
+        <ToolbarButton onClick={() => fire('daw.commit')}>커밋</ToolbarButton>
+        <ToolbarButton onClick={() => fire('daw.bounce')}>바운스</ToolbarButton>
         {/* The seam this app is actually for: mix here, master there, one
             press.  Highlighted because it is the finish line, and placed next
             to 바운스 because that is where someone goes looking for "I am
             done" — the difference being that this one does not ask for a
             folder or count as an export. */}
-        <ToolbarButton onClick={() => void handleSendToMastering()} accent>
+        <ToolbarButton onClick={() => fire('daw.sendToMastering')} accent>
           마스터링으로 →
         </ToolbarButton>
-        <ToolbarButton onClick={handleStems}>스템</ToolbarButton>
+        <ToolbarButton onClick={() => fire('daw.exportStems')}>스템</ToolbarButton>
 
         <span className="w-px h-5 bg-zinc-800 mx-1" />
 
-        <ToolbarButton onClick={() => setTemplatesOpen(true)}>템플릿</ToolbarButton>
+        <ToolbarButton onClick={() => fire('daw.templates')}>템플릿</ToolbarButton>
 
         <span className="w-px h-5 bg-zinc-800 mx-1" />
 
-        <ToolbarButton onClick={handleSaveSession}>세션 저장</ToolbarButton>
-        <ToolbarButton onClick={handleOpenSession}>세션 열기</ToolbarButton>
-        <ToolbarButton onClick={handleImportSession}>세션 가져오기</ToolbarButton>
+        <ToolbarButton onClick={() => fire('file.save')}>세션 저장</ToolbarButton>
+        <ToolbarButton onClick={() => fire('file.openSession')}>세션 열기</ToolbarButton>
+        <ToolbarButton onClick={() => fire('daw.importSession')}>세션 가져오기</ToolbarButton>
 
         <span className="w-px h-5 bg-zinc-800 mx-1" />
 
-        <ToolbarButton onClick={handleImportAaf}>AAF 가져오기</ToolbarButton>
-        <ToolbarButton onClick={handleExportAaf}>AAF 내보내기</ToolbarButton>
+        <ToolbarButton onClick={() => fire('daw.importAaf')}>AAF 가져오기</ToolbarButton>
+        <ToolbarButton onClick={() => fire('daw.exportAaf')}>AAF 내보내기</ToolbarButton>
 
         <div className="flex-1" />
         {busy && <span className="text-[11px] text-amber-400">{busy}</span>}

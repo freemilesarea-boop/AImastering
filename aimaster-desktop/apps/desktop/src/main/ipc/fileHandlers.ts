@@ -120,6 +120,11 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
 
   // ── Save WAV or MP3 — shows dialog, then copies from src ─────────────
   // Used by ResultPage for both WAV and MP3 export.
+  // Named for its first caller, not for what it does: this saves a COPY of
+  // whatever file it is handed, with the dialog filter chosen from that file's
+  // own extension (wav → WAV, anything else → MP3).  The result screen uses it
+  // for the mp3 preview for exactly that reason.  Bit depth and dither belong
+  // to `file:save-audio` below, which is what both WAV export doorways use.
   ipc.handle('file:save-wav', async (_e, srcPath: unknown) => {
     if (!win) return null;
     const safeSrc = validateAbsoluteFilePath(srcPath, 'file:save-wav');

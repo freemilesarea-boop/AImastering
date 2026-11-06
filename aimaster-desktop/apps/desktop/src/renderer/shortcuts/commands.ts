@@ -11,6 +11,7 @@ import type { RevisionInput } from '../audio/revisions/revision-types.js';
 import type { WorkspaceState, ToolId, PanelId } from '../stores/workspaceStore.js';
 import { serializeSession, deserializeSession, SESSION_VERSION, type LouiSession } from '../audio/session/session-schema.js';
 import { SHORTCUTS, type CommandId } from './definitions.js';
+import { saveAudioRequest, type SaveAudioResult, type SaveDepth, type SaveDither } from '../audio/save-format.js';
 
 export type NotifyType = 'info' | 'success' | 'error' | 'warning';
 
@@ -50,6 +51,17 @@ export interface CommandDeps {
   workspace: () => WorkspaceState;
   transport: TransportApi;
   invoke: (channel: string, ...args: unknown[]) => Promise<unknown>;
+  /**
+   * How the result screen is set to write a saved master.
+   *
+   * Its own dep rather than a field on `AudioSnapshot`, because that snapshot
+   * is what `buildSession` turns into a .louisession and an export preference
+   * is not session content.  The export command needs it because the 저장
+   * button carried the chosen depth and dither into `file:save-audio` while
+   * this command still called the plain-copy `file:save-wav` — the same
+   * screen's own setting obeyed by the mouse and ignored by the keyboard.
+   */
+  saveFormat: () => { depth: SaveDepth; dither: SaveDither };
 }
 
 export type CommandFn = () => void | Promise<void>;
@@ -103,7 +115,7 @@ export function buildSession(snap: AudioSnapshot, createdAt: string): LouiSessio
 // ── Command map ───────────────────────────────────────────────────────────────
 
 export function buildCommands(deps: CommandDeps, daw?: DawBridge): CommandMap {
-  const { notify, setPage, getAudio, audio, workspace, transport, invoke } = deps;
+  const { notify, setPage, getAudio, audio, workspace, transport, invoke, saveFormat } = deps;
 
   /** Registered-but-not-applicable command: say why instead of doing nothing. */
   const unavailable = (id: CommandId): CommandFn => () => {
@@ -182,10 +194,21 @@ export function buildCommands(deps: CommandDeps, daw?: DawBridge): CommandMap {
 
     'file.export': async () => {
       const out = getAudio().masteringResult?.outputPath;
+      const fmt = saveFormat();
       if (!out) { notify('내보낼 마스터가 없습니다 — 먼저 마스터링을 완료하세요', 'warning'); return; }
       try {
-        const dest = await invoke('file:save-wav', out) as string | null;
-        if (dest) notify(`내보내기 완료 — ${fileNameOf(dest)}`, 'success');
+        // The same channel and the same payload builder the 저장 button uses.
+        // This used to call `file:save-wav`, a plain copy, so a 16-bit + TPDF
+        // choice made on the result screen was written as 24-bit with no
+        // dither and nothing said a word about it.
+        const res = await invoke(
+          'file:save-audio',
+          saveAudioRequest(out, fmt.depth, fmt.dither),
+        ) as SaveAudioResult;
+        if (res?.error) { notify(`내보내기 실패 — ${res.error}`, 'error'); return; }
+        if (!res?.savedPath) return;            // the dialog was cancelled
+        if (res.warning) { notify(res.warning, 'warning'); return; }
+        notify(`내보내기 완료 — ${fileNameOf(res.savedPath)} · ${fmt.depth}-bit`, 'success');
       } catch (err) {
         // This used to blame the licence for every failure — a guess that
         // was already wrong when it was written and is now impossible: the

@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { SHORTCUTS, BINDINGS, findShortcut, type CommandId } from '../src/renderer/shortcuts/definitions.js';
 import { buildCommands, buildSession, type CommandDeps, type AudioSnapshot } from '../src/renderer/shortcuts/commands.js';
+import type { SaveDepth, SaveDither } from '../src/renderer/audio/save-format.js';
 import {
   useWorkspaceStore, snapTime, registerTransportElement,
 } from '../src/renderer/stores/workspaceStore.js';
@@ -30,9 +31,34 @@ import type { MasteringResult } from '@aimaster/shared-types';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
-function check(name: string, fn: () => void): void {
-  try { fn(); results.push({ name, pass: true, detail: '' }); }
-  catch (e) { results.push({ name, pass: false, detail: e instanceof Error ? e.message : String(e) }); }
+/**
+ * Run one check.
+ *
+ * It used to take `() => void` and call it bare.  Three checks in this file
+ * are `async`, so `fn()` handed back a promise, the result was recorded as a
+ * PASS before the body had run, and every assertion inside became an
+ * unhandled rejection that never reached the tally.  Found by changing the
+ * channel `file.export` calls and watching 38/38 pass anyway — the check that
+ * named that channel was one of the three.
+ *
+ * So a promise is awaited, through the same list the summary waits on.
+ */
+const pending: Promise<void>[] = [];
+
+function check(name: string, fn: () => void | Promise<void>): void {
+  const record = (e?: unknown): void => {
+    results.push(e === undefined
+      ? { name, pass: true, detail: '' }
+      : { name, pass: false, detail: e instanceof Error ? e.message : String(e) });
+  };
+  try {
+    const out = fn();
+    if (out !== undefined && typeof (out as Promise<void>).then === 'function') {
+      pending.push((out as Promise<void>).then(() => { record(); }, (e: unknown) => { record(e); }));
+      return;
+    }
+    record();
+  } catch (e) { record(e); }
 }
 function assert(c: unknown, m: string): void { if (!c) throw new Error(m); }
 function eq<T>(a: T, b: T, m: string): void {
@@ -262,6 +288,8 @@ interface Harness {
   durationSec: number;
   hasElement: boolean;
   toggles: number;
+  /** What the result screen is set to write — read by file.export. */
+  saveFormat: { depth: SaveDepth; dither: SaveDither };
 }
 
 function harness(over: Partial<AudioSnapshot> = {}, invokeResult: unknown = null): Harness {
@@ -273,12 +301,14 @@ function harness(over: Partial<AudioSnapshot> = {}, invokeResult: unknown = null
       selectedFile: null, masteringResult: null, options: opts(), referenceFilePath: null, ...over,
     },
     muted: false, positionSec: 0, durationSec: 120, hasElement: true, toggles: 0,
+    saveFormat: { depth: '24', dither: 'tpdf' },
   };
   h.options = h.audioSnapshot.options;
   h.deps = {
     notify: (message, type) => { h.notes.push({ message, type }); },
     setPage: (p) => { h.pages.push(p); },
     getAudio: () => ({ ...h.audioSnapshot, options: h.options }),
+    saveFormat: () => h.saveFormat,
     audio: {
       reset: () => { h.audioSnapshot.selectedFile = null; },
       setFile: (p) => { h.audioSnapshot.selectedFile = p; },
@@ -469,19 +499,41 @@ check('panel commands toggle their panel', () => {
   cmds['window.shortcutHelp']();
 });
 
-check('export refuses without a master and calls file:save-wav with one', async () => {
+check('export refuses without a master, and carries the chosen depth and dither', async () => {
   const h = harness();
   const cmds = buildCommands(h.deps);
   await cmds['file.export']();
   eq(h.invocations.length, 0, 'no IPC without a result');
   eq(h.notes[0]!.type, 'warning', 'warned');
 
-  const h2 = harness({ masteringResult: { outputPath: '/tmp/master.wav' } as MasteringResult }, '/out/master.wav');
-  const cmds2 = buildCommands(h2.deps);
-  await cmds2['file.export']();
-  eq(h2.invocations[0]!.channel, 'file:save-wav', 'channel');
-  eq(h2.invocations[0]!.args[0], '/tmp/master.wav', 'source path');
+  // The result screen's own choice has to reach the file.  This command used
+  // to call `file:save-wav`, which is a plain copy: 16-bit with TPDF dither,
+  // picked on that very screen, was written as the 24-bit render with no
+  // dither and nothing said a word.  The 저장 button beside it was right.
+  const h2 = harness({ masteringResult: { outputPath: '/tmp/master.wav' } as MasteringResult },
+    { savedPath: '/out/master.wav' });
+  h2.saveFormat = { depth: '16', dither: 'tpdf' };
+  await buildCommands(h2.deps)['file.export']();
+  eq(h2.invocations[0]!.channel, 'file:save-audio', 'channel');
+  const req = h2.invocations[0]!.args[0] as { sourcePath: string; bitDepth: number; dither: string };
+  eq(req.sourcePath, '/tmp/master.wav', 'source path');
+  eq(req.bitDepth, 16, 'the chosen depth');
+  eq(req.dither, 'tpdf', 'and the dither that goes with it');
   eq(h2.notes[0]!.type, 'success', 'success toast');
+
+  // At the render's own depth there is nothing to dither, so the payload must
+  // say none rather than name a shape the file will not get.
+  const h3 = harness({ masteringResult: { outputPath: '/tmp/m.wav' } as MasteringResult },
+    { savedPath: '/out/m.wav' });
+  h3.saveFormat = { depth: '24', dither: 'shaped' };
+  await buildCommands(h3.deps)['file.export']();
+  eq((h3.invocations[0]!.args[0] as { dither: string }).dither, 'none', '24-bit carries no dither');
+
+  // A cancelled dialog answers with no path and must not claim a success.
+  const h4 = harness({ masteringResult: { outputPath: '/tmp/m.wav' } as MasteringResult },
+    { savedPath: null });
+  await buildCommands(h4.deps)['file.export']();
+  eq(h4.notes.length, 0, 'a cancelled export says nothing');
 });
 
 check('save serialises a loadable session', async () => {
@@ -592,9 +644,17 @@ check('and the DAW override still zooms the way it is named', () => {
     'zoomOutH no longer divides pxPerSec');
 });
 
-const passed = results.filter((r) => r.pass).length;
-const failed = results.length - passed;
-console.log('\n=== DAW keyboard layer ===');
-for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);
-console.log(`\n${passed}/${results.length} passed${failed ? `, ${failed} FAILED` : ''}`);
-if (failed > 0) process.exit(1);
+// Nothing is counted until every async body has finished — the summary used to
+// print while three of them were still running, which is exactly how their
+// failures went missing.  In an IIFE because this file compiles to cjs, where
+// a top-level await is a build error.
+void (async (): Promise<void> => {
+  await Promise.all(pending);
+
+  const passed = results.filter((r) => r.pass).length;
+  const failed = results.length - passed;
+  console.log('\n=== DAW keyboard layer ===');
+  for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);
+  console.log(`\n${passed}/${results.length} passed${failed ? `, ${failed} FAILED` : ''}`);
+  if (failed > 0) process.exit(1);
+})();

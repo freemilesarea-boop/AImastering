@@ -88,6 +88,19 @@ export function trackMenu(opts: {
     { kind: 'command', id: 'daw.bounce' },
     { kind: 'separator' },
     { kind: 'command', id: opts.inStack ? 'daw.unpackStack' : 'daw.createStack' },
+    { kind: 'separator' },
+    // The lane area is the only right-click surface that stands for "the
+    // session" rather than one thing in it, and these five sat at the far end
+    // of a toolbar row that scrolls off a 1520 px window.  A track header is
+    // where a DAW user reaches for "another track like this one", so that is
+    // where the three track-makers go; the two imports go with them because
+    // what they produce is tracks.
+    { kind: 'header', label: '추가' },
+    { kind: 'command', id: 'daw.newTrack' },
+    { kind: 'command', id: 'daw.addAux' },
+    { kind: 'command', id: 'daw.addVca' },
+    { kind: 'command', id: 'daw.importAudio' },
+    { kind: 'command', id: 'daw.importMidi' },
     ...(opts.onDelete === null
       // The master has no delete, and saying so beats offering a dead item:
       // the edit window already hides its delete button for the same reason.
@@ -126,6 +139,12 @@ export function mixerMenu(opts: {
     ]),
     { kind: 'separator' },
     { kind: 'command', id: 'daw.smartControls' },
+    { kind: 'separator' },
+    // A bus is a mix-console object, so the console offers to make one.  Both
+    // were toolbar-only before, past the right edge of the window.
+    { kind: 'header', label: '버스 추가' },
+    { kind: 'command', id: 'daw.addAux' },
+    { kind: 'command', id: 'daw.addVca' },
   ];
 }
 

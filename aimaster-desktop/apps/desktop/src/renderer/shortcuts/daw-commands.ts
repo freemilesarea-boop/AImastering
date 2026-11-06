@@ -56,7 +56,7 @@ import { formatLabel, TIME_FORMATS } from '../daw/model/spot-time.js';
 import { alignClipToGuide, describeAlign } from '../daw/edit/align-actions.js';
 import { consolidationSpans, describeOutcome, outcomeOf } from '../daw/edit/consolidate.js';
 import { editPoints, tabBackward, tabForward } from '../daw/edit/navigation.js';
-import { findTrack, sessionEndSec } from '../daw/model/session-ops.js';
+import { findTrack, renameSession, sessionEndSec } from '../daw/model/session-ops.js';
 import { matchTrackToTrack } from '../daw/edit/match-between-tracks.js';
 import { slotLetter } from '../daw/edit/match-from-reference.js';
 import {
@@ -69,6 +69,7 @@ import {
 import { autosaveDriver } from '../daw/engine/autosave-driver.js';
 import { isEmptyPlan, planDrop } from '../daw/model/drop-target.js';
 import { describeImport, importIntoSession } from '../daw/edit/session-import.js';
+import { describeFailure, exportAaf, importAaf } from '../daw/io/aaf-actions.js';
 import {
   bounceSelection, bounceSession, commitTrack, consolidateSelection, freezeTrack,
   renderSession, sessionRange,
@@ -180,7 +181,9 @@ export type DawCommandId =
   | 'daw.newTrack' | 'daw.playlistNext' | 'daw.playlistPrev' | 'daw.compSelection'
   | 'daw.takeAdd' | 'daw.takeDuplicate' | 'daw.takeFlatten'
   | 'daw.freeze' | 'daw.commit' | 'daw.bounce' | 'daw.sendToMastering' | 'daw.exportStems'
-  | 'daw.importAudio' | 'daw.importSession'
+  | 'daw.importAudio' | 'daw.importSession' | 'daw.importMidi'
+  | 'daw.importAaf' | 'daw.exportAaf' | 'daw.templates'
+  | 'daw.addAux' | 'daw.addVca'
   | 'daw.zoomIn' | 'daw.zoomOut'
   | 'daw.quantize' | 'daw.humanize' | 'daw.selectAllNotes' | 'daw.legatoNotes'
   | 'daw.transposeUp' | 'daw.transposeDown'
@@ -200,7 +203,7 @@ export type DawCommandId =
   | 'daw.trackDelayEarlier' | 'daw.trackDelayLater' | 'daw.trackDelayClear'
   | 'daw.pictureBack' | 'daw.pictureForward' | 'daw.pictureToPlayhead'
   | 'daw.spotClip'
-  | 'daw.showRestore' | 'daw.declick'
+  | 'daw.showRestore' | 'daw.declick' | 'daw.showStems'
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
   | 'daw.clearSlide' | 'daw.flam'
@@ -1003,44 +1006,52 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
         notify('프리즈 해제');
         return;
       }
-      notify('프리즈 렌더링 중…');
+      state.setBusy('프리즈 렌더링 중…');
       try {
         const result = await freezeTrack(state.session, trackId);
         state.apply(() => result.session);
         notify(`${track.name} 프리즈 완료`, 'success');
       } catch (err) {
         notify(`프리즈 실패: ${(err as Error).message}`, 'error');
-      }
+      } finally { daw().setBusy(null); }
     },
 
     'daw.commit': async () => {
       const state = daw();
       const trackId = targetTrackIds()[0];
       if (!trackId) { notify('트랙을 먼저 선택하세요', 'warning'); return; }
-      notify('커밋 렌더링 중…');
+      state.setBusy('커밋 렌더링 중…');
       try {
         const next = await commitTrack(state.session, trackId);
         state.apply(() => next);
-        notify('커밋 완료', 'success');
+        // What it did, not that it did something: a commit renders the
+        // inserts into the audio and that is the part worth saying.
+        notify('커밋 완료 — 인서트를 오디오에 렌더링했습니다', 'success');
       } catch (err) {
         notify(`커밋 실패: ${(err as Error).message}`, 'error');
-      }
+      } finally { daw().setBusy(null); }
     },
 
     'daw.bounce': async () => {
       const state = daw();
       if (sessionEndSec(state.session) <= 0) { notify('바운스할 오디오가 없습니다', 'warning'); return; }
       const sel = state.selection;
-      notify('바운스 렌더링 중…');
+      // The chrome label, not a toast: a render takes long enough that the
+      // toast is gone before it finishes, and the button beside this key was
+      // already using the label.  One surface for both doorways.
+      state.setBusy('바운스 렌더링 중…');
       try {
         const range = sel.endSec > sel.startSec
           ? { startSec: sel.startSec, endSec: sel.endSec }
           : undefined;
         const dest = await bounceSession(state.session, range);
-        notify(dest ? '바운스 완료' : '바운스를 취소했습니다', dest ? 'success' : 'info');
+        // Named, not just "done" — the folder is the person's choice and the
+        // file name is how they find it again.
+        notify(dest ? `바운스 완료 — ${dest.split(/[\\/]/).pop()}` : '바운스를 취소했습니다',
+          dest ? 'success' : 'info');
       } catch (err) {
         notify(`바운스 실패: ${(err as Error).message}`, 'error');
-      }
+      } finally { daw().setBusy(null); }
     },
 
     'daw.sendToMastering': async () => {
@@ -1055,7 +1066,7 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       });
       if (problem) { notify(problem, 'warning'); return; }
 
-      notify('믹스를 렌더링하는 중…');
+      state.setBusy('믹스를 렌더링하는 중…');
       try {
         const path = await stageForMastering(state.session);
         // The same staging the toolbar button does.  This used to append, so
@@ -1078,7 +1089,7 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
         notify(stageMessage(handoffFileName(state.session.name), staged.outcome, staged.queued), 'success');
       } catch (err) {
         notify(`마스터링으로 보내지 못했습니다: ${(err as Error).message}`, 'error');
-      }
+      } finally { daw().setBusy(null); }
     },
 
     'daw.exportStems': async () => {
@@ -1089,20 +1100,99 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
         return;
       }
       notify(`${describePlan(plan)} — 폴더를 선택하세요`);
+      // Per-stem progress on the label.  It used to be a toast per stem, and
+      // the notifier has ONE slot: twelve stems meant eleven messages cut
+      // short and no way to read any of them.
+      state.setBusy('스템 렌더링 준비 중…');
       try {
         const result = await exportStems(state.session, {}, (p) => {
-          notify(`스템 ${p.index}/${p.total} — ${p.trackName}`);
+          daw().setBusy(`스템 ${p.index}/${p.total} — ${p.trackName}`);
         });
         if (!result.directory) { notify('스템 내보내기를 취소했습니다', 'info'); return; }
         for (const w of result.warnings) notify(w, 'warning');
+        // Skipped tracks are named, not counted: "3 skipped" sends you hunting.
         for (const s of result.skipped) notify(`${s.trackName} 제외 — ${s.reason}`, 'info');
-        notify(`스템 ${result.written.length}개 저장`, 'success');
+        notify(`스템 ${result.written.length}개 저장 — ${result.directory}`, 'success');
       } catch (err) {
         notify(`스템 내보내기 실패: ${(err as Error).message}`, 'error');
-      }
+      } finally { daw().setBusy(null); }
     },
 
     'daw.importAudio': () => importAtPlayhead(deps),
+
+    // ── The chrome row's far end ────────────────────────────────────────
+    //
+    // These six are the toolbar's own buttons, and they live HERE rather than
+    // in DawPage because the page was the only doorway: the row they sit in
+    // scrolls past the right edge of a 1520 px window, so a user without a
+    // horizontal scroll had no way to run them.  The buttons now call these
+    // by id through `runCommand`, which is the whole point of that module —
+    // one command, three doorways (key, menu, button).  A second copy in the
+    // page is what `daw.importSession` and its button already drifted into:
+    // the page reports the import's warnings and the command drops them.
+
+    'daw.importMidi': async () => {
+      // The MIDI picker, not the audio one — the audio filter hid every .mid.
+      const paths = await invoke('file:open-dialog-midi') as string[] | null;
+      const first = paths?.[0];
+      if (!first) return;
+      daw().setBusy('MIDI 읽는 중…');
+      try {
+        // At 0, not at the play head: a MIDI file carries its own timeline and
+        // dropping it at the cursor silently shifts every bar in it.
+        const report = await importIntoSession([], [first], 0);
+        if (report.midiParts === 0) { notify('노트가 있는 트랙이 없습니다', 'warning'); return; }
+        if (report.firstMidiPart) {
+          useMidiEditorStore.getState().openPart(report.firstMidiPart);
+          daw().setWindow('midi');
+        }
+        notify(describeImport(report), 'success');
+      } catch (err) {
+        notify(`MIDI 가져오기 실패: ${(err as Error).message}`, 'error');
+      } finally { daw().setBusy(null); }
+    },
+
+    'daw.importAaf': async () => {
+      const loaded = await invoke('daw:aaf-open') as { path: string; bytes: number[] } | null;
+      if (!loaded) return;
+      try {
+        const result = importAaf(Uint8Array.from(loaded.bytes));
+        daw().loadSession(result.session);
+        for (const problem of result.problems.slice(0, 5)) notify(problem, 'warning');
+        if (result.problems.length > 5) {
+          notify(`… 그리고 ${result.problems.length - 5}가지 더`, 'warning');
+        }
+        notify(`${result.summary} · 미디어는 다시 연결해야 합니다`, 'success');
+      } catch (err) {
+        notify(describeFailure(err), 'error');
+      }
+    },
+
+    'daw.exportAaf': async () => {
+      const current = daw().session;
+      try {
+        const result = exportAaf(current);
+        for (const problem of result.problems.slice(0, 5)) notify(problem, 'warning');
+        if (result.problems.length > 5) {
+          notify(`… 그리고 ${result.problems.length - 5}가지 더`, 'warning');
+        }
+        const dest = await invoke('daw:aaf-save', {
+          name: current.name, bytes: Array.from(result.bytes),
+        }) as string | null;
+        if (!dest) { notify('AAF 내보내기를 취소했습니다', 'info'); return; }
+        notify(`AAF 저장 — ${result.summary}`, 'success');
+      } catch (err) {
+        notify(describeFailure(err), 'error');
+      }
+    },
+
+    'daw.templates': () => {
+      const state = daw();
+      state.setTemplatesOpen(!state.templatesOpen);
+    },
+
+    'daw.addAux': () => { daw().addTrackHere('aux'); },
+    'daw.addVca': () => { daw().addTrackHere('vca'); },
 
     'daw.importSession': async () => {
       const loaded = await invoke('session:load') as { path: string; data: string } | null;
@@ -1114,6 +1204,9 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       });
       daw().apply(() => result.session);
       notify(`${result.importedTrackIds.length}개 트랙을 가져왔습니다`, 'success');
+      // The button beside this reported these and the key did not, so the same
+      // import told two different stories depending on how it was started.
+      for (const warning of result.warnings) notify(warning, 'warning');
     },
 
     'daw.zoomIn':  () => { daw().setPxPerSec(daw().pxPerSec * 1.5); },
@@ -2321,6 +2414,11 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       notify('Restoration');
     },
 
+    'daw.showStems': () => {
+      daw().setWindow('stems');
+      notify('스템 분리');
+    },
+
     'daw.declick': async () => {
       const state = daw();
       const target = audioClipAtPlayhead(state);
@@ -2576,6 +2674,36 @@ async function importAtPlayhead(deps: DawCommandDeps): Promise<void> {
 export function buildDawOverrides(deps: DawCommandDeps): Partial<Record<CommandId, CommandFn>> {
   const { notify, daw, invoke } = deps;
 
+  /**
+   * Save the session to a file the person picks — ONE implementation.
+   *
+   * There were two, and each did half the job.  The toolbar button took the
+   * name the person had just typed into the save dialog and made it the
+   * session's name, because not doing that is why every row in the mastering
+   * list read "Untitled Session.wav"; it never told the autosave driver, so
+   * the recovery file stayed on disk.  The key told the driver — a save that
+   * lands makes the recovery file unnecessary, and leaving it is the
+   * difference between opening the project tomorrow and being offered an
+   * older copy of it under a banner claiming a crash that never happened —
+   * and never took the name.  Both halves are written down here, with the
+   * reason each exists, and the button runs this by id.
+   *
+   * The time is recorded as well as the file deleted: if the delete does not
+   * happen, the staleness rule still has something to compare the leftover
+   * against.
+   */
+  const saveSessionByHand = async (): Promise<void> => {
+    const session = daw().session;
+    const dest = await invoke('session:save', serializeDawSession(session)) as string | null;
+    if (!dest) return;
+    const stem = (dest.split(/[\\/]/).pop() ?? '').replace(/\.[^.]+$/, '');
+    if (stem.length > 0 && stem !== daw().session.name) {
+      daw().apply((current) => renameSession(current, stem));
+    }
+    await autosaveDriver.savedByHand(session.id);
+    notify('세션 저장 완료', 'success');
+  };
+
   const soloMuteTargets = (): string[] => {
     const ids = targetTrackIds();
     return ids.length > 0 ? ids : [];
@@ -2771,20 +2899,8 @@ export function buildDawOverrides(deps: DawCommandDeps): Partial<Record<CommandI
     // happened.  The time is recorded as well as the file deleted: if the
     // delete does not happen, the staleness rule still has something to
     // compare the leftover against.
-    'file.save': async () => {
-      const session = daw().session;
-      const dest = await invoke('session:save', serializeDawSession(session)) as string | null;
-      if (!dest) return;
-      await autosaveDriver.savedByHand(session.id);
-      notify('세션 저장 완료', 'success');
-    },
-    'file.saveAs': async () => {
-      const session = daw().session;
-      const dest = await invoke('session:save', serializeDawSession(session)) as string | null;
-      if (!dest) return;
-      await autosaveDriver.savedByHand(session.id);
-      notify('세션 저장 완료', 'success');
-    },
+    'file.save': saveSessionByHand,
+    'file.saveAs': saveSessionByHand,
     'file.export': async () => {
       const state = daw();
       if (sessionEndSec(state.session) <= 0) { notify('내보낼 오디오가 없습니다', 'warning'); return; }

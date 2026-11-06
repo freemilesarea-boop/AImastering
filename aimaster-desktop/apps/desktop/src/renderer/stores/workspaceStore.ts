@@ -147,8 +147,6 @@ export interface WorkspaceState {
   /** Clear the applying flag once the undone/redone snapshot is in audioStore. */
   endApplyHistory: () => void;
   redoOptions: () => MasteringOptions | null;
-  canUndoOptions: () => boolean;
-  canRedoOptions: () => boolean;
 
   // Settings clipboard (Mod+C / Mod+V)
   clipboard: MasteringOptions | null;
@@ -264,8 +262,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     return next.present;
   },
   endApplyHistory: () => set({ applyingHistory: false }),
-  canUndoOptions: () => { const h = get().history; return h ? canUndo(h) : false; },
-  canRedoOptions: () => { const h = get().history; return h ? canRedo(h) : false; },
 
   clipboard: null,
   setClipboard: (o) => set({ clipboard: o }),

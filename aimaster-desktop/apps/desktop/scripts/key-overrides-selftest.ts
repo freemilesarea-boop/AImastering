@@ -64,20 +64,43 @@ function fresh(): ReturnType<typeof memStore> {
  * it was refused — because `Mod+T` is 선택 구간으로 트림.  A test that picks
  * its own keys out of a 234-command table will keep colliding as the table
  * grows, and the collision looks like the feature being broken.
+ *
+ * It kept colliding, exactly as written.  Six new chrome bindings took the
+ * last of `Alt+Shift+`, three families held three free chords between them,
+ * and a test that needs four failed with `could not find 4 free chord(s)` —
+ * which reads as the remapping feature being broken and is nothing of the
+ * kind.  So the search is wider than the keymap can fill: letters across four
+ * modifier families, then digits and brackets, which few commands claim with
+ * these modifiers.  Measured: 220 bindings leave 63 of the 172 free, spread
+ * across all four families (Mod+Alt 31, Mod+Shift 17, the other two 15 each),
+ * where letters alone left three.
+ *
+ * The failure says what it searched, because the number it used to print was
+ * the one thing that could not explain it.
  */
+const FREE_FAMILIES = ['Mod+Alt+Shift+', 'Mod+Alt+', 'Alt+Shift+', 'Mod+Shift+'];
+const FREE_KEYS = [
+  ...'QWERTYUIOPASDFGHJKLZXCVBNM'.split('').map((l) => `Key${l}`),
+  ...'0123456789'.split('').map((d) => `Digit${d}`),
+  'BracketLeft', 'BracketRight', 'Semicolon', 'Quote', 'Comma', 'Period', 'Slash',
+];
+
 function freeSpecs(count: number, overrides: Overrides): string[] {
   const out: string[] = [];
-  const letters = 'QWERTYUIOPASDFGHJKLZXCVBNM'.split('');
-  for (const mods of ['Mod+Alt+Shift+', 'Mod+Alt+', 'Alt+Shift+']) {
-    for (const letter of letters) {
-      const spec = `${mods}Key${letter}`;
+  let searched = 0;
+  for (const mods of FREE_FAMILIES) {
+    for (const key of FREE_KEYS) {
+      const spec = `${mods}${key}`;
+      searched++;
       if (conflictOf(spec, 'file.new', overrides) === null && !out.includes(spec)) {
         out.push(spec);
         if (out.length === count) return out;
       }
     }
   }
-  throw new Error(`could not find ${count} free chord(s)`);
+  throw new Error(`could not find ${count} free chord(s): searched ${searched} `
+    + `(${FREE_FAMILIES.length} modifier families x ${FREE_KEYS.length} keys) `
+    + `and only ${out.length} were free — the keymap has filled up`);
 }
 
 /** One past the schema this build writes. */

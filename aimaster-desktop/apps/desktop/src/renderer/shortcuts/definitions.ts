@@ -70,7 +70,9 @@ export type CommandId =
   | 'daw.newTrack' | 'daw.playlistNext' | 'daw.playlistPrev' | 'daw.compSelection'
   | 'daw.takeAdd' | 'daw.takeDuplicate' | 'daw.takeFlatten'
   | 'daw.freeze' | 'daw.commit' | 'daw.bounce' | 'daw.sendToMastering' | 'daw.exportStems'
-  | 'daw.importAudio' | 'daw.importSession'
+  | 'daw.importAudio' | 'daw.importSession' | 'daw.importMidi'
+  | 'daw.importAaf' | 'daw.exportAaf' | 'daw.templates'
+  | 'daw.addAux' | 'daw.addVca'
   | 'daw.zoomIn' | 'daw.zoomOut'
   // Key Editor
   | 'daw.quantize' | 'daw.humanize' | 'daw.selectAllNotes' | 'daw.legatoNotes'
@@ -94,7 +96,7 @@ export type CommandId =
   | 'daw.trackDelayEarlier' | 'daw.trackDelayLater' | 'daw.trackDelayClear'
   | 'daw.pictureBack' | 'daw.pictureForward' | 'daw.pictureToPlayhead'
   | 'daw.spotClip'
-  | 'daw.showRestore' | 'daw.declick'
+  | 'daw.showRestore' | 'daw.declick' | 'daw.showStems'
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
   | 'daw.clearSlide' | 'daw.flam'
@@ -341,6 +343,32 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '파일마다 트랙 + 클립 생성', available: true },
   { id: 'daw.importSession', group: 'daw', label: '세션 데이터 가져오기', chords: ['Mod+Shift+D'],
     note: '다른 세션의 트랙 · 인서트 · 센드 · 오토메이션을 가져옴', available: true },
+
+  // ── The chrome row's far end ──────────────────────────────────────────────
+  //
+  // These six had no binding at all, which made a horizontal scroll of the
+  // toolbar the ONLY way to reach them: the row is 2831 px wide and the
+  // window is 1520, the scrollbar is six pixels, and a plain vertical wheel
+  // does nothing to it.  The other ten actions out there were always one key
+  // away; these were not.
+  //
+  // All six land in the Alt+Shift family because that is where the free
+  // space is — Mod+Alt is full, Mod+Alt+Shift has one letter left.  The
+  // letter is the action's own initial where it is free, else the next free
+  // letter after it (M→O, A→B, V→W, T→Y, I→J; E was free).  Not beautiful,
+  // and it does not have to be: every binding here is user-remappable.
+  { id: 'daw.importMidi', group: 'daw', label: 'MIDI 가져오기', chords: ['Alt+Shift+O'],
+    note: 'MIDI 파일만 고르는 창 — 노트가 있는 트랙을 파트로 만들고 키 에디터를 엽니다', available: true },
+  { id: 'daw.importAaf', group: 'daw', label: 'AAF 가져오기', chords: ['Alt+Shift+J'],
+    note: '다른 DAW 의 AAF 를 세션으로 — 미디어는 다시 연결해야 합니다', available: true },
+  { id: 'daw.exportAaf', group: 'daw', label: 'AAF 내보내기', chords: ['Alt+Shift+E'],
+    note: '현재 세션을 AAF 로 — 무엇이 빠지는지 먼저 말합니다', available: true },
+  { id: 'daw.templates', group: 'daw', label: '템플릿', chords: ['Alt+Shift+Y'],
+    note: '세션 템플릿 패널을 열고 닫습니다', available: true },
+  { id: 'daw.addAux', group: 'daw', label: '+ Aux 트랙', chords: ['Alt+Shift+B'],
+    note: '센드를 받는 Aux 트랙을 포커스 아래에 추가', available: true },
+  { id: 'daw.addVca', group: 'daw', label: '+ VCA 트랙', chords: ['Alt+Shift+W'],
+    note: '여러 트랙의 페이더를 함께 미는 VCA 를 추가', available: true },
   { id: 'daw.zoomIn', group: 'daw', label: '가로 확대', chords: ['Mod+BracketRight'],
     note: '타임라인 확대', available: true },
   { id: 'daw.zoomOut', group: 'daw', label: '가로 축소', chords: ['Mod+BracketLeft'],
@@ -545,6 +573,11 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '노트를 라이브러리로 옮기고 클립을 링크로 만듭니다', available: true },
   { id: 'daw.showRestore', group: 'daw', label: 'Restoration (노이즈 · 클릭)', chords: ['Mod+Alt+N'],
     note: '노이즈 프로파일 학습 후 감산 · 클릭 스캔 후 AR 복원', available: true },
+  // STEMS was the one workspace view with no key of its own: thirteen views,
+  // twelve reachable by a chord, and this one only by cycling the tab strip
+  // or clicking it.  Reachable, but the odd one out for no reason.
+  { id: 'daw.showStems', group: 'daw', label: '스템 분리 (Stem Separation)', chords: ['Alt+Shift+H'],
+    note: '트랙을 보컬 · 드럼 · 베이스 · 그 외로 분리합니다 — 분리 모델 선택', available: true },
   { id: 'daw.declick', group: 'daw', label: '클립 디클릭', chords: ['Mod+Shift+K'],
     note: '커서 아래 클립의 클릭을 찾아 전부 복원', available: true },
   { id: 'daw.showSpectral', group: 'daw', label: 'Spectral Repair', chords: ['Mod+Alt+G'],
