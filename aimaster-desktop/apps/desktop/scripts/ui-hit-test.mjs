@@ -44,13 +44,15 @@
  *
  * ── What it does not cover ──────────────────────────────────────────────────
  *
- * Only what is ON SCREEN.  A control scrolled below the fold is skipped, because
- * "outside the viewport" is a different question and a scrollable panel makes it
- * a non-question — an earlier version of this reported 21 such controls on HOME
- * and every one was fine.  HOME therefore probes about six: the mastering page's
- * preset cards live below the fold at this window size.  That is the honest
- * limit, not a bug to paper over — the two defects this found were both in
- * chrome that is always in view, which is where covered controls actually hurt.
+ * A control drawn outside the window is not skipped, but it is not judged where
+ * it lies either: the sweep scrolls the container a USER can scroll (auto or
+ * scroll, never a clipped overflow:hidden, which scrolls from script and would
+ * fake a reachable control), judges the control there, and puts the scroll back.
+ * Outside the window with nothing to scroll it in IS a finding.  An earlier
+ * version only counted these, which is how sixteen chrome actions sat past the
+ * right edge of a 1520 px window in eighteen views with nothing saying whether
+ * anyone could reach them — they could, by scrolling, and the count alone could
+ * not say so.
  *
  * It also sweeps one window size.  A collision that only happens at 900 px wide
  * will not show up here.
@@ -82,7 +84,7 @@ const DISPLAY_NUM = process.env.UI_HIT_TEST_DISPLAY ?? ':98';
 const KEEP = process.argv.includes('--keep');
 
 /** Controls the sweep declined to judge, with how many views each sat out. */
-const skipped = new Map();
+const scrolled = new Map();
 
 const children = [];
 /**
@@ -219,7 +221,7 @@ function connect(wsUrl) {
 
 const PROBE = `
   const out = [];
-  const offscreen = [];
+  const reachable = [];
   let probed = 0;
   const vis = (el) => {
     const s = getComputedStyle(el);
@@ -228,31 +230,74 @@ const PROBE = `
   };
   const label = (el) => ((el.textContent || '').trim() || el.getAttribute('title')
     || el.getAttribute('aria-label') || el.tagName).replace(/\\s+/g, ' ').slice(0, 24);
+  const boxOf = (r) => Math.round(r.left) + ',' + Math.round(r.top)
+    + ' ' + Math.round(r.width) + 'x' + Math.round(r.height);
+  const inView = (r) => r.right > 0 && r.bottom > 0 && r.left < innerWidth && r.top < innerHeight;
+  const owner = (el, r) => {
+    const cx = Math.min(innerWidth - 1, Math.max(0, r.left + r.width / 2));
+    const cy = Math.min(innerHeight - 1, Math.max(0, r.top + r.height / 2));
+    const hit = document.elementFromPoint(cx, cy);
+    return {
+      ok: hit === el || el.contains(hit) || (hit && hit.contains(el)),
+      blocker: hit ? hit.tagName + '.' + (hit.className || '').toString()
+        .replace(/\\s+/g, ' ').slice(0, 44) : 'none',
+    };
+  };
+  // The container a USER can scroll.  overflow:hidden scrolls fine from script,
+  // so scrollIntoView would happily "reach" a control behind a clipped edge and
+  // call it clickable; only auto/scroll gives the user a way in.
+  const scroller = (el) => {
+    for (let p = el.parentElement; p; p = p.parentElement) {
+      const s = getComputedStyle(p);
+      if (['auto', 'scroll'].includes(s.overflowX) && p.scrollWidth > p.clientWidth) return p;
+      if (['auto', 'scroll'].includes(s.overflowY) && p.scrollHeight > p.clientHeight) return p;
+    }
+    const d = document.scrollingElement;
+    if (d && (d.scrollWidth > d.clientWidth || d.scrollHeight > d.clientHeight)) return d;
+    return null;
+  };
+  const outside = [];
   for (const el of document.querySelectorAll('button, select, input, [role=button]')) {
     if (!vis(el) || el.disabled) continue;
     const r = el.getBoundingClientRect();
     if (r.width < 1 || r.height < 1) continue;
-    // Off-screen is a different defect and a scrollable panel makes it a
-    // non-defect; this one is only about who owns the pixel.
-    if (r.right < 0 || r.bottom < 0 || r.left > innerWidth || r.top > innerHeight) {
-      offscreen.push(label(el) + ' @' + Math.round(r.left) + ',' + Math.round(r.top)
-        + ' ' + Math.round(r.width) + 'x' + Math.round(r.height));
+    if (!inView(r)) { outside.push(el); continue; }
+    probed++;
+    const o = owner(el, r);
+    if (o.ok) continue;
+    out.push({ what: label(el), box: boxOf(r), blocker: o.blocker });
+  }
+  // The ones drawn outside the window.  An earlier version counted these and
+  // judged none of them, which is how sixteen actions sat past the right edge
+  // in eighteen views with nothing saying whether a user could get to them.
+  // Counting is not an answer.  Ask what the user asks — can I bring it into
+  // view and click it? — by scrolling the container that would do it, judging
+  // the control there, and putting the scroll back.
+  for (const el of outside) {
+    const r0 = el.getBoundingClientRect();
+    const sc = scroller(el);
+    if (!sc) {
+      out.push({ what: label(el), box: boxOf(r0), blocker: 'off-screen, and nothing scrolls it into view' });
       continue;
     }
-    probed++;
-    const cx = Math.min(innerWidth - 1, Math.max(0, r.left + r.width / 2));
-    const cy = Math.min(innerHeight - 1, Math.max(0, r.top + r.height / 2));
-    const hit = document.elementFromPoint(cx, cy);
-    if (hit === el || el.contains(hit) || (hit && hit.contains(el))) continue;
-    out.push({
-      what: label(el),
-      box: Math.round(r.left) + ',' + Math.round(r.top)
-        + ' ' + Math.round(r.width) + 'x' + Math.round(r.height),
-      blocker: hit ? hit.tagName + '.' + (hit.className || '').toString()
-        .replace(/\\s+/g, ' ').slice(0, 44) : 'none',
-    });
+    const sl = sc.scrollLeft, st = sc.scrollTop;
+    const cb = sc === document.scrollingElement
+      ? { left: 0, top: 0 } : sc.getBoundingClientRect();
+    sc.scrollLeft += (r0.left - cb.left) - (sc.clientWidth - r0.width) / 2;
+    sc.scrollTop += (r0.top - cb.top) - (sc.clientHeight - r0.height) / 2;
+    const r = el.getBoundingClientRect();
+    if (!inView(r)) {
+      out.push({ what: label(el), box: boxOf(r0), blocker: 'off-screen, and scrolling ' + sc.tagName + ' did not bring it in' });
+    } else {
+      probed++;
+      const o = owner(el, r);
+      if (o.ok) reachable.push(label(el) + ' @' + boxOf(r0));
+      else out.push({ what: label(el), box: boxOf(r), blocker: o.blocker + ' (once scrolled into view)' });
+    }
+    sc.scrollLeft = sl;
+    sc.scrollTop = st;
   }
-  return { covered: out, probed, offscreen, win: innerWidth + 'x' + innerHeight };
+  return { covered: out, probed, reachable, win: innerWidth + 'x' + innerHeight };
 `;
 
 // ── Driving the app ───────────────────────────────────────────────────────────
@@ -310,21 +355,21 @@ async function sweep(cdp) {
    * user cannot reach by waiting.
    */
   const look = async (view) => {
-    let { covered, probed, offscreen, win } = await cdp.evaluate(PROBE);
+    let { covered, probed, reachable, win } = await cdp.evaluate(PROBE);
     if (covered.length > 0) {
       await sleep(4000);
-      ({ covered, probed, offscreen, win } = await cdp.evaluate(PROBE));
+      ({ covered, probed, reachable, win } = await cdp.evaluate(PROBE));
     }
     probedTotal += probed;
     for (const c of covered) findings.push({ view, ...c });
     const mark = covered.length === 0 ? 'clean' : `${covered.length} COVERED`;
     console.log(`  ${view.padEnd(20)} ${String(probed).padStart(3)} probed   ${mark}`
-      + `   ${win}${offscreen.length ? ` · ${offscreen.length} off-screen` : ''}`);
-    // Counted, not judged.  A control outside the viewport is a different
-    // defect from a covered one, and in a scrollable panel it is no defect at
-    // all — but a SILENT skip is how sixteen of them sat past the right edge
-    // of a 1520 px window in every view but HOME without anything saying so.
-    for (const o of offscreen) skipped.set(o, (skipped.get(o) ?? 0) + 1);
+      + `   ${win}${reachable.length ? ` · ${reachable.length} only after scrolling` : ''}`);
+    // Judged, not skipped: these were drawn outside the window, and scrolling
+    // the container a user can scroll brought each one in and gave it its own
+    // pixel.  So they are clickable — but only for someone who scrolls, and
+    // that is worth printing rather than leaving to a guess.
+    for (const o of reachable) scrolled.set(o, (scrolled.get(o) ?? 0) + 1);
     for (const c of covered) {
       console.log(`       "${c.what}" at ${c.box}\n         under ${c.blocker}`);
     }
@@ -585,9 +630,10 @@ async function main() {
   const { findings, probedTotal } = await sweep(cdp);
   cdp.close();
 
-  if (skipped.size > 0) {
-    console.log(`\n${skipped.size} control(s) were outside the window and not judged:`);
-    for (const [what, views] of [...skipped.entries()].sort((a, b) => b[1] - a[1])) {
+  if (scrolled.size > 0) {
+    console.log(`\n${scrolled.size} control(s) are drawn outside the window and need a scroll`
+      + ` — each one was scrolled in and owned its own pixel there:`);
+    for (const [what, views] of [...scrolled.entries()].sort((a, b) => b[1] - a[1])) {
       console.log(`  ${what}   (in ${views} view${views === 1 ? '' : 's'})`);
     }
   }
@@ -603,7 +649,11 @@ async function main() {
   console.log(`\n${findings.length} control(s) cannot be clicked where they are drawn:\n`);
   for (const f of findings) console.log(`  ${f.view}: "${f.what}" at ${f.box} under ${f.blocker}`);
   console.log('');
-  return findings.length;
+  // The exit code is one byte.  Clipping the chrome row produced 288 findings,
+  // which the shell reported as 32; at exactly 256 it would have reported 0 and
+  // read as a pass.  The true number is in the output above — cap what the
+  // shell sees so a big number can never wrap into success.
+  return Math.min(findings.length, 120);
 }
 
 let code = 2;
