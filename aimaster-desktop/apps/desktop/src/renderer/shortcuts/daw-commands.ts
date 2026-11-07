@@ -163,6 +163,7 @@ import { dawRuntime } from '../daw/engine/daw-runtime.js';
 import type { CommandFn, NotifyType } from './commands.js';
 import type { CommandId } from './definitions.js';
 import { chordNow } from './command-title.js';
+import { demoModeOn, setDemoMode } from './demo-mode.js';
 
 export type DawCommandId =
   | 'daw.open' | 'daw.toggleWindow'
@@ -204,7 +205,7 @@ export type DawCommandId =
   | 'daw.trackDelayEarlier' | 'daw.trackDelayLater' | 'daw.trackDelayClear'
   | 'daw.pictureBack' | 'daw.pictureForward' | 'daw.pictureToPlayhead'
   | 'daw.spotClip'
-  | 'daw.showRestore' | 'daw.declick' | 'daw.showStems' | 'daw.palette'
+  | 'daw.showRestore' | 'daw.declick' | 'daw.showStems' | 'daw.palette' | 'daw.demoMode'
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
   | 'daw.clearSlide' | 'daw.flam'
@@ -2424,6 +2425,15 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     // would be the first thing the palette covers.
     'daw.palette': () => {
       useWorkspaceStore.getState().togglePanel('palette');
+    },
+
+    'daw.demoMode': () => {
+      const on = setDemoMode(!demoModeOn());
+      // Said out loud, because the only other evidence is the next keystroke —
+      // and if it is off, there is no evidence at all.
+      notify(on
+        ? '시연 모드 켜짐 — 누르는 키가 화면 위에 표시됩니다'
+        : '시연 모드 꺼짐', 'success');
     },
 
     'daw.declick': async () => {

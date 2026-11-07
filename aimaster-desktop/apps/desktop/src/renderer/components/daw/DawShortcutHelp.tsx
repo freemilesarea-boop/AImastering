@@ -20,6 +20,7 @@ import {
 } from '../../shortcuts/key-overrides.js';
 import { searchCommands } from '../../shortcuts/command-search.js';
 import { resetHints } from '../../shortcuts/chord-hints.js';
+import { demoModeOn, setDemoMode } from '../../shortcuts/demo-mode.js';
 import { KEYMAP_PRESETS, activePresetId } from '../../shortcuts/keymap-presets.js';
 import { LESSONS, findLesson, stageOf, type StageId } from '../../shortcuts/lesson-plan.js';
 import { detectPlatform } from '../../shortcuts/keys.js';
@@ -59,6 +60,10 @@ export default function DawShortcutHelp() {
    * moved on and does not remember choosing a stage.
    */
   const [stage, setStage] = useState<StageId | null>(null);
+  // Read once on mount: the flag lives in localStorage so it survives a class
+  // that spans days, and nothing else in the app changes it while this panel
+  // is open — except the command, which this button and the palette share.
+  const [demoOn, setDemoOn] = useState(() => demoModeOn());
   /** The command waiting for a keypress, or null. */
   const [capturing, setCapturing] = useState<CommandId | null>(null);
   const close = () => setPanel('help', false);
@@ -215,6 +220,23 @@ export default function DawShortcutHelp() {
               gets dismissed without being read.  But a shared classroom
               machine has already used up somebody else's three, and a student
               who wants them back has nowhere to ask.  Here. */}
+          {/* The projector switch, beside the other teaching control.  It is a
+              command too, so the palette can find it by name — but an
+              instructor setting up a classroom machine is looking at this
+              panel, not typing. */}
+          <button
+            onClick={() => {
+              const on = setDemoMode(!demoOn);
+              setDemoOn(on);
+              notify(on
+                ? '시연 모드 켜짐 — 누르는 키가 화면 위에 표시됩니다'
+                : '시연 모드 꺼짐', 'success');
+            }}
+            title="누른 단축키와 그 명령 이름을 화면 위에 크게 띄웁니다 — 수업·녹화용"
+            className={`shrink-0 h-7 px-2 rounded-lg border text-[10px] transition-colors ${demoOn
+              ? 'border-emerald-600/60 bg-emerald-600/15 text-emerald-300'
+              : 'border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-600'}`}
+          >시연 모드{demoOn ? ' ✓' : ''}</button>
           <button
             onClick={() => {
               resetHints();

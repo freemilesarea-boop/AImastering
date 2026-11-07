@@ -19,8 +19,9 @@ import { setCommandMap } from './command-runner.js';
 import { useShortcutStore } from '../stores/shortcutStore.js';
 import { buildCommands, type CommandDeps, type DawBridge, type TransportApi } from './commands.js';
 import { buildDawCommands, buildDawOverrides } from './daw-commands.js';
+import { demoModeOn } from './demo-mode.js';
 import { useDawStore } from '../stores/dawStore.js';
-import { matchesChord, detectPlatform, type Platform } from './keys.js';
+import { matchesChord, detectPlatform, formatChord, type Platform } from './keys.js';
 
 /** Typing surfaces where the DAW layer must stay out of the way. */
 function isTypingTarget(target: EventTarget | null): boolean {
@@ -185,6 +186,12 @@ export function useDawShortcuts(): void {
         if (def.id === 'edit.copy' && hasTextSelection()) return;
         e.preventDefault();
         e.stopPropagation();
+        // The projector, when the instructor asked for it.  Before the command
+        // runs, not after: a render takes seconds and the key has to appear
+        // when it was pressed, which is what the class is copying down.
+        if (demoModeOn()) {
+          useAppStore.getState().castCommand(def.label, formatChord(chord, platform));
+        }
         const run = commands[def.id];
         try {
           const result = run();

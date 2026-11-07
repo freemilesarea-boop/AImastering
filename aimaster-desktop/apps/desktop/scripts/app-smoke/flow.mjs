@@ -1962,6 +1962,62 @@ try {
     }
   }
 
+  // ── 시연 모드 ───────────────────────────────────────────────────────────
+  //
+  // Here for the same reason the stage block above is: new UI that only
+  // appears after an interaction is UI the smoke has to actually trigger, or
+  // the renderer-error check below never sees it.  Off by default is the
+  // property worth holding — a chip announcing every keystroke is wrong for
+  // somebody working alone — so both halves are checked.
+  {
+    const demo = await page.evaluate(async () => {
+      const app = await import('/stores/appStore.ts');
+      const dm = await import('/shortcuts/demo-mode.ts');
+      app.useAppStore.getState().setPage('daw');
+      await new Promise((r) => setTimeout(r, 600));
+
+      const chip = () => [...document.querySelectorAll('div')]
+        .find((d) => d.className.includes('top-16') && d.className.includes('pointer-events-none'));
+
+      dm.setDemoMode(false);
+      app.useAppStore.setState({ demoCast: null });
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyF', bubbles: true }));
+      await new Promise((r) => setTimeout(r, 250));
+      const whenOff = { cast: app.useAppStore.getState().demoCast, chip: Boolean(chip()) };
+
+      dm.setDemoMode(true);
+      app.useAppStore.setState({ demoCast: null });
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyF', bubbles: true }));
+      await new Promise((r) => setTimeout(r, 250));
+      const el = chip();
+      const whenOn = {
+        cast: app.useAppStore.getState().demoCast,
+        text: el ? el.innerText.replace(/\n/g, ' ') : null,
+        ignoresClicks: el ? getComputedStyle(el).pointerEvents === 'none' : null,
+      };
+
+      dm.setDemoMode(false);
+      return { whenOff, whenOn };
+    });
+
+    expect(
+      demo.whenOff.cast === null && demo.whenOff.chip === false,
+      'demo mode off announces nothing — the default a soloist works in',
+      `cast=${JSON.stringify(demo.whenOff.cast)} chip=${demo.whenOff.chip}`,
+    );
+    expect(
+      demo.whenOn.cast !== null && demo.whenOn.cast.chord === 'F'
+        && demo.whenOn.cast.label === '화면 가로 확대',
+      'and on, the key that was pressed appears with what it did',
+      demo.whenOn.text ?? '(no chip)',
+    );
+    expect(
+      demo.whenOn.ignoresClicks === true,
+      'and the chip never takes a click — it sits over the arrangement',
+      `pointer-events: ${demo.whenOn.ignoresClicks === true ? 'none' : 'TAKES CLICKS'}`,
+    );
+  }
+
   await page.waitForTimeout(500);
   expect(
     rendererErrors.length === 0,

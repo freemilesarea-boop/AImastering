@@ -32,6 +32,22 @@ function check(name: string, ok: boolean, detail: string): void {
 const wait = (ms: number) => new Promise((r) => { setTimeout(r, ms); });
 
 async function main(): Promise<void> {
+  // Node has no localStorage, and three things here keep records in it: the
+  // manual-save time (the staleness rule asks at startup about a run that
+  // already ended), the key-hint counts, and the demo-mode flag.  Without a
+  // store the writes are swallowed and the reads come back empty, and a check
+  // then blames the product for being right — which is exactly what happened
+  // twice while these were written.  One shim, before anything reads.
+  const mem = new Map<string, string>();
+  (globalThis as unknown as { localStorage: unknown }).localStorage = {
+    getItem: (k: string) => mem.get(k) ?? null,
+    setItem: (k: string, v: string) => { mem.set(k, v); },
+    removeItem: (k: string) => { mem.delete(k); },
+    clear: () => { mem.clear(); },
+    key: () => null,
+    length: 0,
+  };
+
   const { useAppStore, NOTIFY_MS } = await import('../src/renderer/stores/appStore.js');
   const { useDawStore } = await import('../src/renderer/stores/dawStore.js');
   const { useRecordingStore } = await import('../src/renderer/stores/recordingStore.js');
@@ -125,6 +141,50 @@ async function main(): Promise<void> {
     );
   }
 
+  // ── 시연 모드는 꺼져 있으면 아무 일도 하지 않는다 ────────────────────────
+  //
+  // A chip announcing every keystroke is right for a projector and wrong for
+  // working alone, so the feature's most important property is that it is
+  // INVISIBLE by default — and that is a property a test can hold, while
+  // "looks good on a projector" is not.
+  {
+    console.log('\n=== 시연 모드 ===\n');
+    const { demoModeOn, setDemoMode } = await import('../src/renderer/shortcuts/demo-mode.js');
+    const { runCommand, setCommandMap } = await import('../src/renderer/shortcuts/command-runner.js');
+
+    // The flag lives in localStorage so a class spanning days keeps it; the
+    // shim above gives it somewhere to live.
+    check('기본값은 꺼짐', !demoModeOn(), String(demoModeOn()));
+
+    let ran = 0;
+    setCommandMap({ 'daw.freeze': () => { ran += 1; } });
+    useAppStore.setState({ demoCast: null });
+    check('꺼져 있을 때 명령은 돌지만 아무것도 띄우지 않는다',
+      runCommand('daw.freeze') && ran === 1 && useAppStore.getState().demoCast === null,
+      `ran=${ran} cast=${JSON.stringify(useAppStore.getState().demoCast)}`);
+
+    setDemoMode(true);
+    check('켜면 켜진 것으로 읽힌다', demoModeOn(), String(demoModeOn()));
+    useAppStore.setState({ demoCast: null });
+    runCommand('daw.freeze');
+    const cast = useAppStore.getState().demoCast;
+    check('그리고 명령 이름과 그 키가 함께 올라간다',
+      cast !== null && cast.label === '프리즈 / 해제' && typeof cast.chord === 'string'
+        && cast.chord.includes('F'),
+      JSON.stringify(cast));
+
+    // Off again, and the record is gone rather than set to "0" — a stale
+    // truthy value in storage is how a flag comes back on by itself.
+    setDemoMode(false);
+    check('끄면 다시 조용해진다', !demoModeOn(), String(demoModeOn()));
+    useAppStore.setState({ demoCast: null });
+    runCommand('daw.freeze');
+    check('그리고 끈 뒤에는 띄우지 않는다',
+      useAppStore.getState().demoCast === null,
+      JSON.stringify(useAppStore.getState().demoCast));
+    setCommandMap(null);
+  }
+
   // ── SAVING BY HAND DOES BOTH HALVES, WHICHEVER DOORWAY ──────────────────
   //
   // There were two implementations and each did half.  The button took the
@@ -136,20 +196,6 @@ async function main(): Promise<void> {
   // check that keeps it one: both halves, from the id the button runs.
   {
     console.log('\n=== SAVING BY HAND DOES BOTH HALVES ===\n');
-    // The manual-save record has to survive a restart — the staleness rule
-    // asks at startup about a run that already ended — so it lives in
-    // localStorage, which Node does not have: the first run of this check
-    // read back null and blamed the product, which was right all along.
-    // Give it a store so the record is observable.
-    const mem = new Map<string, string>();
-    (globalThis as unknown as { localStorage: unknown }).localStorage = {
-      getItem: (k: string) => mem.get(k) ?? null,
-      setItem: (k: string, v: string) => { mem.set(k, v); },
-      removeItem: (k: string) => { mem.delete(k); },
-      clear: () => { mem.clear(); },
-      key: () => null,
-      length: 0,
-    };
     const said: string[] = [];
     const overrides = buildDawOverrides({
       notify: (m: string) => { said.push(m); },

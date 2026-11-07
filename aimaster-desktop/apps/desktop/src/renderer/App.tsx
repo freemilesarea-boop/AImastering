@@ -119,6 +119,40 @@ function ChordHint() {
   );
 }
 
+// ── 시연 모드: 방금 누른 것을 교실 뒤까지 ──────────────────────────────────
+
+/**
+ * The command the instructor just ran, large.
+ *
+ * Near the TOP, because the message slot is at the bottom and a demonstration
+ * needs both at once: the key that was pressed up here, what it did down
+ * there.  It never takes a click — a chip over the arrangement that swallowed
+ * a mouse press would be a defect in the middle of a lesson.
+ *
+ * Off unless the instructor turned it on; see demo-mode.ts.
+ */
+function DemoKeyCast() {
+  const cast = useAppStoreNotification((s) => s.demoCast);
+  if (!cast) return null;
+
+  return (
+    <div key={cast.id} style={{ zIndex: LAYER.notification }}
+         className="fixed animate-in-fast pointer-events-none select-none
+                    top-16 left-1/2 -translate-x-1/2
+                    flex items-center gap-3 px-4 py-2.5 rounded-xl
+                    border border-zinc-700 bg-zinc-900/95 shadow-2xl">
+      {cast.chord !== null ? (
+        <span className="font-mono text-[22px] leading-none tracking-wide text-emerald-300">
+          {cast.chord}
+        </span>
+      ) : (
+        <span className="text-[13px] leading-none text-zinc-500">클릭</span>
+      )}
+      <span className="text-[13px] text-zinc-300">{cast.label}</span>
+    </div>
+  );
+}
+
 // ── Preload 미노출 시 fallback UI ────────────────────────────────────────────
 // Python / IPC 없어도 앱 제목·업로드 영역·스타일 선택·실행 버튼이 표시됩니다.
 
@@ -509,6 +543,7 @@ function AppInner() {
       {/* Toast notifications */}
       <Toast />
       <ChordHint />
+      <DemoKeyCast />
       {/* Electron has no window.prompt — see ui/text-prompt.ts. */}
       <TextPromptDialog />
       <ConfirmDialog />

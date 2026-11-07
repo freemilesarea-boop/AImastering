@@ -19,6 +19,7 @@ import { findShortcut, type CommandId } from './definitions.js';
 import { describeSpec, effectiveChords, loadOverrides } from './key-overrides.js';
 import { detectPlatform } from './keys.js';
 import { takeHintTurn } from './chord-hints.js';
+import { demoModeOn } from './demo-mode.js';
 import { useAppStore } from '../stores/appStore.js';
 
 export type CommandMap = Partial<Record<CommandId, () => void | Promise<void>>>;
@@ -63,7 +64,27 @@ export function runCommand(id: CommandId): boolean {
     onError?.(id, err);
   }
   teachTheKey(id);
+  castForDemo(id);
   return true;
+}
+
+/**
+ * Announce a clicked command on the projector too.
+ *
+ * A demonstration is not all keyboard — the instructor clicks 프리즈 as often
+ * as they press it, and a class watching only the keys would see the result
+ * with no cause again.  The chord comes along when the command has one, so
+ * the chip says "this is the button AND this is its key".
+ */
+function castForDemo(id: CommandId): void {
+  if (!demoModeOn()) return;
+  const def = findShortcut(id);
+  if (!def) return;
+  const spec = effectiveChords(def, loadOverrides())[0];
+  useAppStore.getState().castCommand(
+    def.label,
+    spec === undefined ? null : describeSpec(spec, detectPlatform()),
+  );
 }
 
 /**

@@ -96,7 +96,7 @@ export type CommandId =
   | 'daw.trackDelayEarlier' | 'daw.trackDelayLater' | 'daw.trackDelayClear'
   | 'daw.pictureBack' | 'daw.pictureForward' | 'daw.pictureToPlayhead'
   | 'daw.spotClip'
-  | 'daw.showRestore' | 'daw.declick' | 'daw.showStems' | 'daw.palette'
+  | 'daw.showRestore' | 'daw.declick' | 'daw.showStems' | 'daw.palette' | 'daw.demoMode'
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
   | 'daw.clearSlide' | 'daw.flam'
@@ -583,6 +583,11 @@ export const SHORTCUTS: ShortcutDef[] = [
   // key — it is knowing which of the 241 you want.  Mod+P because it is free:
   // Mod+K is 반복 and Mod+Shift+P is 펀치 구간, the two a palette usually takes,
   // and this app has nothing to print.
+  // 교실 프로젝터용. 켜두면 누른 키와 그 명령 이름이 화면 위에 크게 뜬다 —
+  // 결과만 보이고 원인이 보이지 않는 것이 시연의 문제다.
+  { id: 'daw.demoMode', group: 'daw', label: '시연 모드 (누른 키 표시)', chords: ['Mod+Shift+L'],
+    note: '누른 단축키와 그 명령 이름을 화면 위에 크게 띄웁니다 — 수업·녹화용, 기본은 꺼짐',
+    available: true },
   { id: 'daw.palette', group: 'daw', label: '명령 팔레트', chords: ['Mod+P'],
     note: '이름 · 설명 · 키로 명령을 찾아 Enter 로 실행합니다 — 각 줄에 그 명령의 키가 함께 나옵니다',
     available: true },
