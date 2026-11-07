@@ -164,6 +164,12 @@ import type { CommandFn, NotifyType } from './commands.js';
 import type { CommandId } from './definitions.js';
 import { chordNow } from './command-title.js';
 import { demoModeOn, setDemoMode } from './demo-mode.js';
+import { buildCheatSheet } from './cheat-sheet.js';
+import { findLesson } from './lesson-plan.js';
+import { useShortcutStore } from '../stores/shortcutStore.js';
+import { SHORTCUTS } from './definitions.js';
+import { loadOverrides } from './key-overrides.js';
+import { detectPlatform } from './keys.js';
 
 export type DawCommandId =
   | 'daw.open' | 'daw.toggleWindow'
@@ -205,7 +211,7 @@ export type DawCommandId =
   | 'daw.trackDelayEarlier' | 'daw.trackDelayLater' | 'daw.trackDelayClear'
   | 'daw.pictureBack' | 'daw.pictureForward' | 'daw.pictureToPlayhead'
   | 'daw.spotClip'
-  | 'daw.showRestore' | 'daw.declick' | 'daw.showStems' | 'daw.palette' | 'daw.demoMode'
+  | 'daw.showRestore' | 'daw.declick' | 'daw.showStems' | 'daw.palette' | 'daw.demoMode' | 'daw.cheatSheet'
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
   | 'daw.clearSlide' | 'daw.flam'
@@ -2425,6 +2431,28 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     // would be the first thing the palette covers.
     'daw.palette': () => {
       useWorkspaceStore.getState().togglePanel('palette');
+    },
+
+    'daw.cheatSheet': async () => {
+      // What the overlay is showing, which is why the stage lives in the
+      // store: a sheet that printed a different page from the screen would be
+      // worse than no sheet.
+      const stage = useShortcutStore.getState().stage;
+      const lesson = stage === null ? undefined : findLesson(stage);
+      const html = buildCheatSheet({
+        title: lesson?.title ?? 'LV DAW 단축키 전체',
+        commands: lesson?.commands ?? SHORTCUTS.map((s) => s.id),
+        overrides: loadOverrides(),
+        platform: detectPlatform(),
+        printedAt: new Date(),
+      });
+      try {
+        const dest = await invoke('daw:cheatsheet-export', html) as string | null;
+        if (!dest) return;                    // the dialog was cancelled
+        notify(`치트시트 저장 — ${dest.split(/[\\/]/).pop()} (브라우저에서 열어 인쇄하세요)`, 'success');
+      } catch (err) {
+        notify(`치트시트를 저장하지 못했습니다 — ${(err as Error).message}`, 'error');
+      }
     },
 
     'daw.demoMode': () => {

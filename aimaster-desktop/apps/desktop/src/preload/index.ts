@@ -65,6 +65,7 @@ const INVOKE_CHANNELS = [
   'daw:presets-export', 'daw:presets-import',
   // Control surface mappings (.louisurface)
   'daw:surface-export', 'daw:surface-import',
+  'daw:cheatsheet-export',
   // Whole insert chains (.louirack)
   'daw:racks-export', 'daw:racks-import',
   // AAF interchange — binary, so these carry byte arrays rather than text

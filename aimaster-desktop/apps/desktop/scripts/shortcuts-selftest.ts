@@ -21,6 +21,7 @@ import { buildCommands, buildSession, type CommandDeps, type AudioSnapshot } fro
 import type { SaveDepth, SaveDither } from '../src/renderer/audio/save-format.js';
 import { searchCommands } from '../src/renderer/shortcuts/command-search.js';
 import { LESSONS, stageOf } from '../src/renderer/shortcuts/lesson-plan.js';
+import { buildCheatSheet } from '../src/renderer/shortcuts/cheat-sheet.js';
 import {
   resetHints, takeHintTurn, MAX_HINTS_PER_COMMAND,
 } from '../src/renderer/shortcuts/chord-hints.js';
@@ -757,6 +758,78 @@ check('no tooltip spells a chord out by hand', () => {
   assert(offenders.length === 0,
     `${offenders.length} tooltip(s) write a key out instead of asking the keymap:\n    `
     + offenders.join('\n    '));
+});
+
+check('the cheat sheet prints what the keyboard actually is', () => {
+  const platform: Platform = 'win';
+  const ids: CommandId[] = ['file.save', 'transport.playPause', 'daw.freeze'];
+  const html = buildCheatSheet({
+    title: '시험', commands: ids, overrides: NO_OVERRIDES, platform,
+    printedAt: new Date('2026-01-02T03:04:05Z'),
+  });
+  for (const id of ids) {
+    const def = findShortcut(id)!;
+    assert(html.includes(def.label), `${id}: the label is on the page`);
+    const chord = describeSpec(def.chords[0]!, platform);
+    assert(html.includes(chord), `${id}: its key (${chord}) is on the page`);
+  }
+  assert(html.includes('2026-01-02 03:04'), 'and when it was printed');
+});
+
+check('a remapped key prints as the remapped key, and is marked', () => {
+  const platform: Platform = 'win';
+  const overrides: Overrides = Object.freeze({ 'daw.freeze': ['Mod+Alt+Shift+KeyV'] });
+  const html = buildCheatSheet({
+    title: '시험', commands: ['daw.freeze'], overrides, platform, printedAt: new Date(),
+  });
+  // A sheet of factory defaults is wrong for anybody who changed a key, which
+  // is the whole reason this is generated rather than shipped as a picture.
+  assert(html.includes(describeSpec('Mod+Alt+Shift+KeyV', platform)), 'the new key');
+  assert(!html.includes(describeSpec(findShortcut('daw.freeze')!.chords[0]!, platform)),
+    'and not the one it replaced');
+  assert(/class="row changed"/.test(html), 'and the row says it was changed');
+});
+
+check('the page escapes the text it is given', () => {
+  // Real data, not a synthetic case: one note in the table carries double
+  // quotes, so this check has something to prove.
+  const html = buildCheatSheet({
+    title: '시험', commands: ['daw.tuneToGuide'], overrides: NO_OVERRIDES,
+    platform: 'win', printedAt: new Date(),
+  });
+  assert(html.includes('&quot;의도한 음&quot;'), 'the quotes came through escaped');
+  assert(!html.includes('"의도한 음"'), 'and not raw');
+});
+
+check('the page is self-contained, because a classroom machine has no network', () => {
+  const html = buildCheatSheet({
+    title: '전체', commands: SHORTCUTS.map((s) => s.id), overrides: NO_OVERRIDES,
+    platform: 'mac', printedAt: new Date(),
+  });
+  for (const bad of ['http://', 'https://', '<script', '@import', 'url(']) {
+    assert(!html.includes(bad), `nothing to fetch: found ${bad}`);
+  }
+  assert(/@page/.test(html) && /columns: 2/.test(html), 'and it is laid out for paper');
+});
+
+check('a stage prints as that stage, not as the whole table', () => {
+  const first = LESSONS.find((l) => l.stage === 1)!;
+  const html = buildCheatSheet({
+    title: first.title, commands: first.commands, overrides: NO_OVERRIDES,
+    platform: 'win', printedAt: new Date(),
+  });
+  assert(html.includes(first.title), 'the stage names itself');
+  eq((html.match(/class="row/g) ?? []).length, first.commands.length, 'one row per command');
+  // Rendered and looked at: every row carried an identical "1단계" chip while
+  // the title above already said it.  A badge that is the same on every row
+  // says nothing, so a stage's sheet drops it — and the whole table, where
+  // the stages differ, keeps it as the map of the course.
+  assert(!/class="stage"/.test(html), 'a stage sheet does not repeat the stage on every row');
+  const whole = buildCheatSheet({
+    title: '전체', commands: SHORTCUTS.map((x) => x.id), overrides: NO_OVERRIDES,
+    platform: 'win', printedAt: new Date(),
+  });
+  assert(/class="stage"/.test(whole), 'but the whole table marks which rows a stage teaches');
 });
 
 check('the lesson plan teaches real commands, each in one place', () => {

@@ -249,6 +249,9 @@ async function main(): Promise<void> {
       { id: 'daw.importMidi', channel: 'file:open-dialog-midi', speaksOnCancel: false },
       { id: 'daw.importAaf', channel: 'daw:aaf-open', speaksOnCancel: false },
       { id: 'daw.exportAaf', channel: 'daw:aaf-save', speaksOnCancel: true },
+      // The cheat sheet is the fourth: a wrong channel name here writes no
+      // file and says nothing, which looks exactly like a cancelled dialog.
+      { id: 'daw.cheatSheet', channel: 'daw:cheatsheet-export', speaksOnCancel: false },
     ] as const;
     // An AAF of nothing is refused before any dialog — correctly, and the
     // first run of this block proved it by failing.  So give the session one

@@ -96,7 +96,7 @@ export type CommandId =
   | 'daw.trackDelayEarlier' | 'daw.trackDelayLater' | 'daw.trackDelayClear'
   | 'daw.pictureBack' | 'daw.pictureForward' | 'daw.pictureToPlayhead'
   | 'daw.spotClip'
-  | 'daw.showRestore' | 'daw.declick' | 'daw.showStems' | 'daw.palette' | 'daw.demoMode'
+  | 'daw.showRestore' | 'daw.declick' | 'daw.showStems' | 'daw.palette' | 'daw.demoMode' | 'daw.cheatSheet'
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
   | 'daw.clearSlide' | 'daw.flam'
@@ -585,6 +585,11 @@ export const SHORTCUTS: ShortcutDef[] = [
   // and this app has nothing to print.
   // 교실 프로젝터용. 켜두면 누른 키와 그 명령 이름이 화면 위에 크게 뜬다 —
   // 결과만 보이고 원인이 보이지 않는 것이 시연의 문제다.
+  // 종이 한 장. `?` 오버레이에서 보고 있는 것을 그대로 — 단계를 고르면 그
+  // 단계만, 전체면 전체. 코드는 비어 있던 것 중 하나이고 재지정할 수 있다.
+  { id: 'daw.cheatSheet', group: 'daw', label: '치트시트 내보내기 (HTML)', chords: ['Alt+Shift+Q'],
+    note: '지금 보고 있는 단축키 목록을 인쇄용 HTML 한 장으로 — 바꾼 키와 단계가 그대로 들어갑니다',
+    available: true },
   { id: 'daw.demoMode', group: 'daw', label: '시연 모드 (누른 키 표시)', chords: ['Mod+Shift+L'],
     note: '누른 단축키와 그 명령 이름을 화면 위에 크게 띄웁니다 — 수업·녹화용, 기본은 꺼짐',
     available: true },

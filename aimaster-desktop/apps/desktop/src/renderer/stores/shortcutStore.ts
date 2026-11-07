@@ -17,6 +17,7 @@ import {
   type Overrides, type PresetPlan, type SaveResult,
 } from '../shortcuts/key-overrides.js';
 import { findPreset } from '../shortcuts/keymap-presets.js';
+import type { StageId } from '../shortcuts/lesson-plan.js';
 import type { CommandId } from '../shortcuts/definitions.js';
 
 export interface ShortcutState {
@@ -34,10 +35,26 @@ export interface ShortcutState {
    * `planPreset`.
    */
   usePreset: (id: string) => SaveResult & { plan?: PresetPlan };
+
+  /**
+   * Which lesson stage the `?` overlay is showing, or null for everything.
+   *
+   * In the store rather than in that component because the cheat-sheet
+   * command prints what the overlay shows, and a second copy of the selection
+   * is a sheet that prints a different page from the one on screen.
+   *
+   * NOT persisted, on purpose: a stage is where somebody is in a course, and
+   * remembering it across launches would quietly hide 229 commands from a
+   * person who has moved on and does not remember choosing a stage.
+   */
+  stage: StageId | null;
+  setStage: (stage: StageId | null) => void;
 }
 
 export const useShortcutStore = create<ShortcutState>((set) => ({
   overrides: loadOverrides(),
+  stage: null,
+  setStage: (stage) => set({ stage }),
   reload: () => set({ overrides: loadOverrides() }),
   setChords: (id, chords) => {
     const result = saveOverride(id, chords);

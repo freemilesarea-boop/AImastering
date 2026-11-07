@@ -19,10 +19,11 @@ import {
   describeSpec, effectiveChords, isOverridden, specFromEvent,
 } from '../../shortcuts/key-overrides.js';
 import { searchCommands } from '../../shortcuts/command-search.js';
+import { runCommand } from '../../shortcuts/command-runner.js';
 import { resetHints } from '../../shortcuts/chord-hints.js';
 import { demoModeOn, setDemoMode } from '../../shortcuts/demo-mode.js';
 import { KEYMAP_PRESETS, activePresetId } from '../../shortcuts/keymap-presets.js';
-import { LESSONS, findLesson, stageOf, type StageId } from '../../shortcuts/lesson-plan.js';
+import { LESSONS, findLesson, stageOf } from '../../shortcuts/lesson-plan.js';
 import { detectPlatform } from '../../shortcuts/keys.js';
 import { useWorkspaceStore } from '../../stores/workspaceStore.js';
 import { useShortcutStore } from '../../stores/shortcutStore.js';
@@ -59,7 +60,9 @@ export default function DawShortcutHelp() {
    * across launches would quietly hide 229 commands from a person who has
    * moved on and does not remember choosing a stage.
    */
-  const [stage, setStage] = useState<StageId | null>(null);
+  // From the store, so the cheat sheet prints the page that is on screen.
+  const stage = useShortcutStore((s) => s.stage);
+  const setStage = useShortcutStore((s) => s.setStage);
   // Read once on mount: the flag lives in localStorage so it survives a class
   // that spans days, and nothing else in the app changes it while this panel
   // is open — except the command, which this button and the palette share.
@@ -220,6 +223,16 @@ export default function DawShortcutHelp() {
               gets dismissed without being read.  But a shared classroom
               machine has already used up somebody else's three, and a student
               who wants them back has nowhere to ask.  Here. */}
+          {/* Paper.  Runs the command rather than building the page here, so
+              the sheet and the key print the same thing — and the command
+              reads the stage out of the store, which is why that selection
+              moved there. */}
+          <button
+            onClick={() => { void runCommand('daw.cheatSheet'); }}
+            title="지금 보고 있는 목록을 인쇄용 HTML 한 장으로 내보냅니다 — 바꾼 키가 그대로 들어갑니다"
+            className="shrink-0 h-7 px-2 rounded-lg border border-zinc-700 text-[10px]
+                       text-zinc-400 hover:text-zinc-200 hover:border-zinc-600"
+          >치트시트</button>
           {/* The projector switch, beside the other teaching control.  It is a
               command too, so the palette can find it by name — but an
               instructor setting up a classroom machine is looking at this
