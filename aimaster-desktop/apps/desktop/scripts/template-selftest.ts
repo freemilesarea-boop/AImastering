@@ -40,6 +40,9 @@ import {
   listTrackTemplates, resetTemplateIds, saveSessionTemplate, saveTrackTemplate,
   setTemplateStore,
 } from '../src/renderer/daw/engine/template-store.js';
+import { COURSE_TEMPLATES } from '../src/renderer/daw/model/course-templates.js';
+import { findInstrument } from '../src/renderer/daw/engine/instruments.js';
+import { sanitiseParams } from '../src/renderer/daw/engine/user-presets.js';
 import { setTrackDelay } from '../src/renderer/daw/edit/track-delay-ops.js';
 import type { DawSession } from '../src/renderer/daw/model/types.js';
 
@@ -392,6 +395,177 @@ check('deleting removes exactly one', () => {
   eq(listTrackTemplates()[0]!.name, 'B', 'the other one');
   eq(deleteTrackTemplate('nope'), false, 'and deleting nothing reports nothing');
   setTemplateStore(null);
+});
+
+// ── The built-in course templates ─────────────────────────────────────────────
+//
+// These are DATA, and data in a typed language is exactly where a typo lives
+// forever: a param id that no device has is dropped by `sanitiseParams`
+// without a word, a send pointed at a bus no aux returns is silent, and a
+// second track called "Lead Vox" gets renamed on apply, taking its group
+// membership with it.  None of that fails to compile and none of it throws.
+// So every one of those is a check here, over every template.
+
+const forEachBuiltIn = (fn: (t: typeof COURSE_TEMPLATES[number]) => void): void => {
+  for (const t of COURSE_TEMPLATES) fn(t);
+};
+
+check('every built-in template has a unique prefixed id and a unique name', () => {
+  assert(COURSE_TEMPLATES.length >= 3, `enough to be a course: ${COURSE_TEMPLATES.length}`);
+  const ids = new Set<string>();
+  const names = new Set<string>();
+  forEachBuiltIn((t) => {
+    // The literal is written out here on purpose: this is the contract the
+    // store's own ids ('st:') must never collide with, so the test states it
+    // rather than importing whatever the module currently happens to use.
+    assert(t.id.startsWith('builtin:'), `${t.name} — id ${t.id} is not prefixed`);
+    assert(!ids.has(t.id), `two built-ins share the id ${t.id}`);
+    assert(!names.has(t.name), `two built-ins are called ${t.name}`);
+    ids.add(t.id);
+    names.add(t.name);
+    assert(t.note.length > 0, `${t.name} — a built-in says what it is for`);
+  });
+});
+
+check('every built-in applies to an empty session without a single problem', () => {
+  forEachBuiltIn((t) => {
+    resetIds();
+    const made = sessionFromTemplate(t);
+    eq(made.problems.length, 0, `${t.name} — ${made.problems.join(' | ')}`);
+    eq(made.trackIds.length, t.tracks.length, `${t.name} — every track arrived`);
+    eq(made.session.groups.length, t.groups.length, `${t.name} — every group arrived`);
+    eq(made.session.markers.length, t.markers.length, `${t.name} — every marker arrived`);
+    eq(made.session.tempoBpm, t.tempoBpm, `${t.name} — tempo`);
+  });
+});
+
+check('a built-in declares every bus it uses, and no bus it does not', () => {
+  forEachBuiltIn((t) => {
+    const used = new Set<string>();
+    for (const track of t.tracks) for (const name of requiredBuses(track)) used.add(name);
+    for (const name of used) {
+      assert(t.buses.includes(name), `${t.name} — ${name} 버스를 쓰면서 선언하지 않았습니다`);
+    }
+    for (const name of t.buses) {
+      assert(used.has(name), `${t.name} — ${name} 버스를 선언만 하고 아무도 쓰지 않습니다`);
+    }
+  });
+});
+
+check('every bus a built-in uses has exactly one aux returning it', () => {
+  // The property this whole file exists for: a bus does no processing and
+  // reaches nothing on its own, so a send to a bus with no return channel is
+  // a fader that does nothing.
+  forEachBuiltIn((t) => {
+    for (const busName of t.buses) {
+      const returns = t.tracks.filter((k) => k.kind === 'aux' && k.inputBusName === busName);
+      eq(returns.length, 1, `${t.name} — ${busName} 버스의 리턴 채널이 ${returns.length}개입니다`);
+      const ret = returns[0]!;
+      eq(ret.output.kind, 'master', `${t.name} — ${busName} 리턴이 마스터로 가지 않습니다`);
+    }
+  });
+});
+
+check('every insert in a built-in is a device this build has', () => {
+  forEachBuiltIn((t) => {
+    for (const track of t.tracks) {
+      eq(missingDevices(track).join(','), '', `${t.name} / ${track.trackName}`);
+      const slots = track.inserts.map((d) => d.slot);
+      eq(new Set(slots).size, slots.length, `${t.name} / ${track.trackName} — 두 장치가 같은 슬롯`);
+    }
+  });
+});
+
+check('every insert parameter in a built-in is real and in range', () => {
+  forEachBuiltIn((t) => {
+    for (const track of t.tracks) {
+      for (const d of track.inserts) {
+        const asked = Object.keys(d.params);
+        const got = sanitiseParams(d.pluginId, d.params);
+        eq(got.unknown.join(','), '',
+          `${t.name} / ${track.trackName} / ${d.pluginId} — 없는 파라미터`);
+        eq(got.clamped.join(','), '',
+          `${t.name} / ${track.trackName} / ${d.pluginId} — 범위를 벗어난 값`);
+        eq(Object.keys(got.params).length, asked.length,
+          `${t.name} / ${track.trackName} / ${d.pluginId} — 설정한 값이 모두 살아남지 않았습니다`);
+      }
+    }
+  });
+});
+
+check('every instrument a built-in asks for exists, and only on an instrument track', () => {
+  forEachBuiltIn((t) => {
+    for (const track of t.tracks) {
+      if (track.instrumentId === null) continue;
+      assert(findInstrument(track.instrumentId) !== undefined,
+        `${t.name} / ${track.trackName} — ${track.instrumentId} 악기가 없습니다`);
+      eq(track.kind, 'instrument', `${t.name} / ${track.trackName} — 악기는 악기 트랙에만`);
+    }
+    // And the other way: an instrument track with no instrument is a track
+    // that cannot make a sound and does not say why.
+    for (const track of t.tracks) {
+      if (track.kind !== 'instrument') continue;
+      assert(track.instrumentId !== null, `${t.name} / ${track.trackName} — 악기가 비어 있습니다`);
+    }
+  });
+});
+
+check('no built-in has two tracks of the same name, or a master of its own', () => {
+  forEachBuiltIn((t) => {
+    const names = new Set<string>();
+    for (const track of t.tracks) {
+      // A duplicate name is renamed on apply — and the group and send that
+      // named it then point at nothing.
+      assert(!names.has(track.trackName), `${t.name} — 트랙 ${track.trackName} 이 두 개입니다`);
+      names.add(track.trackName);
+      assert(track.kind !== 'master', `${t.name} — 마스터는 세션이 이미 갖고 있습니다`);
+      assert(track.sends.every((s) => s.slot < 10), `${t.name} / ${track.trackName} — 센드 슬롯`);
+    }
+    for (const g of t.groups) {
+      for (const member of g.memberTrackNames) {
+        assert(names.has(member), `${t.name} / ${g.name} 그룹 — ${member} 트랙이 없습니다`);
+      }
+    }
+    const symbols = t.groups.map((g) => g.symbol);
+    eq(new Set(symbols).size, symbols.length, `${t.name} — 그룹 기호가 겹칩니다`);
+  });
+});
+
+check('every marker in a built-in sits on a bar line of its own tempo', () => {
+  forEachBuiltIn((t) => {
+    const barSec = (t.timeSignature[0] * 4 * 60) / (t.timeSignature[1] * t.tempoBpm);
+    for (const m of t.markers) {
+      const bars = m.timeSec / barSec;
+      close(bars, Math.round(bars), `${t.name} / ${m.name} — 마디 선에서 벗어났습니다`, 1e-6);
+      assert(m.name.length > 0, `${t.name} — 이름 없는 마커`);
+    }
+  });
+});
+
+check('applying a built-in writes nothing to the template store', () => {
+  // Built-ins live in code precisely so that they are not store entries a
+  // student can lose or an upgrade can be unable to fix.
+  setTemplateStore(memoryStore());
+  const before = listSessionTemplates().length;
+  for (const t of COURSE_TEMPLATES) sessionFromTemplate(t);
+  eq(listSessionTemplates().length, before, '기본 템플릿이 저장소에 들어갔습니다');
+  eq(before, 0, 'and the store started empty');
+  setTemplateStore(null);
+});
+
+check('a built-in reuses a bus the session already has', () => {
+  // The same name-not-id property as above, read from the other side: a
+  // built-in applied into a session that already has "Reverb" must not make
+  // a second one.
+  const withReverb = COURSE_TEMPLATES.find((t) => t.buses.includes('Reverb'));
+  assert(withReverb !== undefined, 'a built-in that uses a reverb bus');
+  resetIds();
+  let session = createSession('Open', 48_000);
+  session = { ...session, buses: [...session.buses, createBus('Reverb')] };
+  const before = session.buses.length;
+  const applied = applyTrackTemplate(session, withReverb!.tracks.find((k) => k.sends.length > 0)!);
+  eq(applied.session.buses.length, before, '버스가 하나 늘었습니다');
+  eq(applied.createdBuses.length, 0, 'and none was reported as created');
 });
 
 const passed = results.filter((r) => r.pass).length;

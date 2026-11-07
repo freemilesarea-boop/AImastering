@@ -2018,6 +2018,101 @@ try {
     );
   }
 
+  // ── 수업용 기본 템플릿 ────────────────────────────────────────────────────
+  //
+  // The selftests hold the DATA to its contract — every bus declared, every
+  // send returned, every parameter real.  What they cannot see is whether the
+  // panel offers them at all, and whether the button a student presses builds
+  // the session the row describes.  So this applies one through the actual
+  // "새 세션" button and then asks the SESSION, not the template, whether a
+  // send can be heard: a send whose bus no aux returns is a fader that does
+  // nothing, and that is invisible in every layer above this one.
+  {
+    const built = await page.evaluate(async () => {
+      const app = await import('/stores/appStore.ts');
+      const dawm = await import('/stores/dawStore.ts');
+      app.useAppStore.getState().setPage('daw');
+      await new Promise((r) => setTimeout(r, 700));
+      dawm.useDawStore.getState().setTemplatesOpen(true);
+      await new Promise((r) => setTimeout(r, 600));
+
+      const header = (text) => [...document.querySelectorAll('p')]
+        .some((n) => n.textContent.trim() === text);
+      const cards = () => [...document.querySelectorAll('div.rounded.px-2')].map((d) => ({
+        node: d,
+        title: d.querySelector('span')?.textContent?.trim() ?? '',
+        buttons: [...d.querySelectorAll('button')].map((x) => x.textContent.trim()),
+      }));
+      const listed = cards().map((c) => ({ title: c.title, buttons: c.buttons }));
+      if (!header('수업용 기본 템플릿')) return { error: 'no built-in heading', listed };
+
+      const want = '밴드 믹스';
+      const card = cards().find((c) => c.title === want);
+      if (!card) return { error: `${want} is not listed`, listed };
+      const go = [...card.node.querySelectorAll('button')]
+        .find((x) => x.textContent.trim() === '새 세션');
+      if (!go) return { error: 'no 새 세션 button', listed };
+
+      // The apply asks before replacing the open session; a smoke run has
+      // nobody to answer, so it answers and puts the dialog back.
+      const asked = globalThis.confirm;
+      let prompted = false;
+      globalThis.confirm = () => { prompted = true; return true; };
+      go.click();
+      await new Promise((r) => setTimeout(r, 900));
+      globalThis.confirm = asked;
+
+      const s = dawm.useDawStore.getState().session;
+      const busName = (id) => s.buses.find((b) => b.id === id)?.name ?? null;
+      // Which buses an aux returns to the master, and where sends land.
+      const returned = new Set(s.tracks
+        .filter((t) => t.kind === 'aux' && t.input && t.output.kind === 'master')
+        .map((t) => busName(t.input))
+        .filter(Boolean));
+      const sends = s.tracks.flatMap((t) => t.sends.map((d) => ({
+        from: t.name, bus: busName(d.target),
+      })));
+      const silent = sends.filter((d) => d.bus === null || !returned.has(d.bus));
+      return {
+        listed, prompted,
+        name: s.name,
+        tempo: s.tempoBpm,
+        tracks: s.tracks.length,
+        buses: s.buses.map((b) => b.name),
+        groups: s.groups.length,
+        markers: s.markers.length,
+        sends: sends.length,
+        silent: silent.map((d) => `${d.from}→${d.bus ?? '(없는 버스)'}`),
+      };
+    });
+
+    if (expect(built.error === undefined,
+      'the template panel offers the course templates, with nothing to delete',
+      built.error ?? (built.listed ?? []).map((c) => `${c.title} [${c.buttons.join(' ')}]`).join(' · '))) {
+      expect(
+        built.listed.length >= 4
+          && built.listed.every((c) => c.buttons.includes('새 세션') && !c.buttons.includes('삭제')),
+        'and each is a new session, not something a student can lose',
+        built.listed.map((c) => `${c.title} [${c.buttons.join(' ')}]`).join(' · '),
+      );
+      expect(
+        built.prompted === true && built.name === '밴드 믹스' && built.tempo === 120
+          && built.tracks === 14 && built.groups === 3 && built.markers === 5
+          && built.buses.join(',') === 'Drums,Reverb,Delay',
+        'and pressing 새 세션 builds the session the row describes',
+        `${built.name} — ${built.tracks} tracks · ${built.buses.join('/')} · `
+        + `그룹 ${built.groups} · 마커 ${built.markers} · ${built.tempo} BPM`,
+      );
+      expect(
+        built.sends > 0 && built.silent.length === 0,
+        'and every send in it reaches a return channel that reaches the master',
+        built.silent.length === 0
+          ? `${built.sends} sends, all returned`
+          : `silent: ${built.silent.join(', ')}`,
+      );
+    }
+  }
+
   await page.waitForTimeout(500);
   expect(
     rendererErrors.length === 0,

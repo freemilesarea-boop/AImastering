@@ -22,6 +22,7 @@ import {
   deleteSessionTemplate, deleteTrackTemplate, exportTemplates, importTemplates,
   listSessionTemplates, listTrackTemplates, saveSessionTemplate, saveTrackTemplate,
 } from '../../../daw/engine/template-store.js';
+import { COURSE_TEMPLATES } from '../../../daw/model/course-templates.js';
 import { askText } from '../../../ui/text-prompt.js';
 
 export default function TemplatePanel({ onClose }: { onClose: () => void }) {
@@ -219,6 +220,23 @@ export default function TemplatePanel({ onClose }: { onClose: () => void }) {
               트랙 · 버스 · 그룹 · 마커 · 템포를 담습니다. 마스터는 담지 않습니다 —
               모든 세션에 이미 하나씩 있습니다.
             </p>
+            <p className="mb-1" style={{
+              fontSize: 9, letterSpacing: '0.1em', color: premium.text.muted,
+            }}>수업용 기본 템플릿</p>
+            {COURSE_TEMPLATES.map((t) => (
+              <Row
+                key={t.id}
+                title={t.name}
+                detail={describeSessionTemplate(t)}
+                note={t.note}
+                warn={[...new Set(t.tracks.flatMap(missingDevices))]}
+                onUse={() => useSession(t)}
+                useLabel="새 세션"
+              />
+            ))}
+            <p className="mb-1 mt-2" style={{
+              fontSize: 9, letterSpacing: '0.1em', color: premium.text.muted,
+            }}>내가 저장한 것</p>
             {sessions.length === 0 && <Empty>저장된 세션 템플릿이 없습니다</Empty>}
             {sessions.map((t) => (
               <Row
@@ -258,10 +276,13 @@ function Empty({ children }: { children: React.ReactNode }) {
 }
 
 function Row({
-  title, detail, warn, onUse, onDelete, useLabel,
+  title, detail, note, warn, onUse, onDelete, useLabel,
 }: {
-  title: string; detail: string; warn: readonly string[];
-  onUse: () => void; onDelete: () => void; useLabel: string;
+  title: string; detail: string; note?: string; warn: readonly string[];
+  onUse: () => void;
+  /** Absent for a built-in: there is nothing stored to delete. */
+  onDelete?: () => void;
+  useLabel: string;
 }) {
   return (
     <div className="mb-1.5 rounded px-2 py-1.5"
@@ -270,11 +291,14 @@ function Row({
         <span className="flex-1 min-w-0 truncate"
               style={{ fontSize: 11, color: premium.text.primary }}>{title}</span>
         <Small onClick={onUse}>{useLabel}</Small>
-        <Small onClick={onDelete}>삭제</Small>
+        {onDelete && <Small onClick={onDelete}>삭제</Small>}
       </div>
       <p className="truncate" style={{
         fontSize: 9, fontFamily: premium.type.mono, color: premium.text.muted,
       }} title={detail}>{detail}</p>
+      {note && (
+        <p style={{ fontSize: 9, color: premium.text.faint }}>{note}</p>
+      )}
       {/* Named, not counted: "3 devices missing" tells you nothing about
           whether the chain is still worth using. */}
       {warn.length > 0 && (
