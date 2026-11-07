@@ -12,6 +12,7 @@ import type { WorkspaceState, ToolId, PanelId } from '../stores/workspaceStore.j
 import { serializeSession, deserializeSession, SESSION_VERSION, type LouiSession } from '../audio/session/session-schema.js';
 import { SHORTCUTS, type CommandId } from './definitions.js';
 import { saveAudioRequest, type SaveAudioResult, type SaveDepth, type SaveDither } from '../audio/save-format.js';
+import { chordNow } from './command-title.js';
 
 export type NotifyType = 'info' | 'success' | 'error' | 'warning';
 
@@ -428,7 +429,7 @@ export function buildCommands(deps: CommandDeps, daw?: DawBridge): CommandMap {
     // screen the key says where to find it rather than toggling a panel that
     // nothing renders — a dead key reads as a broken one.
     'window.deviceSetup': () => {
-      notify('디바이스 셋업은 DAW 워크스페이스(Mod+Alt+D)에서 F4 로 엽니다', 'warning');
+      notify(`디바이스 셋업은 DAW 워크스페이스(${chordNow('daw.open') ?? ''})에서 ${chordNow('window.deviceSetup') ?? ''} 로 엽니다`, 'warning');
     },
   } as CommandMap;
 
@@ -438,7 +439,7 @@ export function buildCommands(deps: CommandDeps, daw?: DawBridge): CommandMap {
     if (def.group !== 'daw') continue;
     const impl = daw?.commands[def.id];
     base[def.id] = impl ?? (() => {
-      notify('DAW 워크스페이스(Mod+Alt+D)에서 사용할 수 있습니다', 'warning');
+      notify(`DAW 워크스페이스(${chordNow('daw.open') ?? ''})에서 사용할 수 있습니다`, 'warning');
     });
   }
 

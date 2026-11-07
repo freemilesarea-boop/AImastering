@@ -162,6 +162,7 @@ import { dawRuntime as runtime } from '../daw/engine/daw-runtime.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
 import type { CommandFn, NotifyType } from './commands.js';
 import type { CommandId } from './definitions.js';
+import { chordNow } from './command-title.js';
 
 export type DawCommandId =
   | 'daw.open' | 'daw.toggleWindow'
@@ -317,7 +318,7 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
         const state = daw();
         const recall = recallLocation(state.session, slot);
         if (!recall) {
-          notify(`메모리 위치 ${slot} 이 비어 있습니다 — Mod+Shift+${digit} 로 저장`, 'warning');
+          notify(`메모리 위치 ${slot} 이 비어 있습니다 — ${chordNow(`daw.memStore.${digit}`) ?? ''} 로 저장`, 'warning');
           return;
         }
         state.seek(recall.playheadSec);
@@ -668,7 +669,7 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       const hideable = ids.filter((id) => findTrack(state.session, id)?.kind !== 'master');
       if (hideable.length === 0) { notify('숨길 트랙을 고르세요', 'warning'); return; }
       state.apply((s) => setTracksHidden(s, hideable, true));
-      notify(`${hideable.length}개 트랙 숨김 — 소리는 그대로 납니다 (Mod+Alt+Shift+Y 로 복구)`);
+      notify(`${hideable.length}개 트랙 숨김 — 소리는 그대로 납니다 (${chordNow('daw.showAllTracks') ?? ''} 로 복구)`);
     },
 
     'daw.showAllTracks': () => {
@@ -699,7 +700,7 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     'daw.pasteChannel': () => {
       const state = daw();
       const settings = state.channelClipboard;
-      if (!settings) { notify('복사한 채널이 없습니다 — 먼저 Mod+Alt+Shift+C', 'warning'); return; }
+      if (!settings) { notify(`복사한 채널이 없습니다 — 먼저 ${chordNow('daw.copyChannel') ?? '채널 설정 복사'}`, 'warning'); return; }
       const ids = currentSelection(state).trackIds.length > 0
         ? currentSelection(state).trackIds : targetTrackIds();
       const targets = ids.filter((id) => findTrack(state.session, id)?.kind !== 'master');
@@ -737,7 +738,7 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       const state = daw();
       const modelId = state.matchModelTrackId;
       if (!modelId) {
-        notify('기준 트랙이 없습니다 — 먼저 Mod+Alt+Shift+Q', 'warning');
+        notify(`기준 트랙이 없습니다 — 먼저 ${chordNow('daw.matchPickModel') ?? '매치 기준 트랙 지정'}`, 'warning');
         return;
       }
       const model = findTrack(state.session, modelId);
@@ -1473,7 +1474,7 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     'daw.fillSelection': () => {
       const state = daw();
       const board = state.clipboard;
-      if (!board) { notify('먼저 복사하세요 (Mod+C)', 'warning'); return; }
+      if (!board) { notify(`먼저 복사하세요 (${chordNow('edit.copy') ?? ''})`, 'warning'); return; }
       const sel = currentSelection(state);
       if (!hasRange(sel) || sel.trackIds.length === 0) {
         notify('채울 구간을 먼저 선택하세요', 'warning');
@@ -1627,7 +1628,7 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       state.setSnapshotsOpen(true);
       state.setWindow('mix');
       if (state.snapshots.length === 0) {
-        notify('저장된 스냅샷이 없습니다 — Mod+Alt+Shift+M 으로 찍으세요', 'warning');
+        notify(`저장된 스냅샷이 없습니다 — ${chordNow('daw.mixSnapshot') ?? ''} 으로 찍으세요`, 'warning');
         return;
       }
       // The list is on screen now, so this only has to say where to look.
@@ -1642,7 +1643,7 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       state.setLayoutsOpen(!state.layoutsOpen);
       if (state.layoutsOpen) return;
       if (state.layouts.length === 0) {
-        notify('저장된 작업 화면이 없습니다 — Mod+Alt+Shift+J 로 지금 화면을 저장하세요', 'warning');
+        notify(`저장된 작업 화면이 없습니다 — ${chordNow('daw.layoutSave') ?? ''} 로 지금 화면을 저장하세요`, 'warning');
       }
     },
 
@@ -1837,7 +1838,7 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       if (!target) { notify('오디오 클립 위에 커서를 두세요', 'warning'); return; }
       const clip = findClip(state.session, target.trackId, target.clipId);
       if (!clip || clip.pitchSegments.length === 0) {
-        notify('먼저 피치 분석을 실행하세요 (Mod+Alt+P)', 'warning');
+        notify(`먼저 피치 분석을 실행하세요 (${chordNow('daw.analyzeVocal') ?? ''})`, 'warning');
         return;
       }
       const scale = useMidiEditorStore.getState().scale;
@@ -1868,7 +1869,7 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       if (!target) { notify('오디오 클립 위에 커서를 두세요', 'warning'); return; }
       const clip = findClip(state.session, target.trackId, target.clipId);
       if (!clip || clip.pitchSegments.length === 0) {
-        notify('먼저 피치 분석을 실행하세요 (Mod+Alt+P)', 'warning');
+        notify(`먼저 피치 분석을 실행하세요 (${chordNow('daw.analyzeVocal') ?? ''})`, 'warning');
         return;
       }
       const guide = useMidiEditorStore.getState().open;
@@ -2480,7 +2481,7 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     'daw.reharmonize': () => {
       const state = daw();
       if (state.session.chordTrack.length === 0) {
-        notify('먼저 코드를 감지하세요 (Mod+Shift+C)', 'warning');
+        notify(`먼저 코드를 감지하세요 (${chordNow('daw.detectChords') ?? ''})`, 'warning');
         return;
       }
       const next = reharmonize(state.session.chordTrack, { extend: true, insertTwoFive: true });

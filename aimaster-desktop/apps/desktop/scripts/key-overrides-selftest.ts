@@ -27,8 +27,9 @@ import {
   MAX_CHORDS_PER_COMMAND, canonicalSpec, clearAllOverrides, clearOverride,
   conflictOf, describeSpec, effectiveChords, isOverridden, isUsableSpec,
   NO_OVERRIDES, loadOverrides, resolveBindings, saveOverride, setOverrideStore,
-  specFromEvent, type Overrides,
+  specFromEvent, applyPreset, planPreset, type Overrides,
 } from '../src/renderer/shortcuts/key-overrides.js';
+import { KEYMAP_PRESETS, activePresetId } from '../src/renderer/shortcuts/keymap-presets.js';
 import { BINDINGS, SHORTCUTS, findShortcut } from '../src/renderer/shortcuts/definitions.js';
 import { matchesChord, parseChord } from '../src/renderer/shortcuts/keys.js';
 
@@ -473,12 +474,110 @@ console.log('\n=== 단축키 재정의 ===\n');
 // ── The store writes to disk before it believes itself ───────────────────
 {
   const store = readFileSync('src/renderer/stores/shortcutStore.ts', 'utf8');
+  // Counted from the store rather than written down here.  The number used to
+  // be a literal 3 and a fourth mutator (`usePreset`) made this fail while the
+  // store was right — the same shape as the file-size check that called a
+  // shrinking DawPage "not read".  Every mutator that takes a SaveResult has
+  // to gate the React update on it; the count comes from the file.
+  const takesResult = (store.match(/const result = /g) ?? []).length;
   const guarded = (store.match(/if \(result\.ok\) set\(\{ overrides: loadOverrides\(\) \}\);/g) ?? []).length;
   check(
     'every mutator updates React state only if the write landed',
-    guarded === 3,
-    `${guarded}/3 mutators (setChords · reset · resetAll) check first`,
+    takesResult >= 3 && guarded === takesResult,
+    `${guarded}/${takesResult} mutators check first`,
   );
+}
+
+// ── 키맵 프리셋 ──────────────────────────────────────────────────────────────
+//
+// A preset is a whole keyboard arriving at once, and half of its entries want
+// keys the default map has already given out.  The per-command path refuses a
+// taken chord — correctly, because the dispatcher is first-match-wins — so the
+// bundle has to be planned as a whole and checked over the RESULT.
+
+{
+  const name = (id: string) => findShortcut(id as never)?.label ?? id;
+
+  for (const preset of KEYMAP_PRESETS) {
+    fresh();
+    const plan = planPreset(preset.bindings);
+    check(`${preset.label}: 계획이 성립한다`,
+      plan.problem === undefined,
+      plan.problem ?? `명령 ${Object.keys(plan.overrides).length}개 · 내놓음 ${plan.displaced.length}개`);
+    if (plan.problem !== undefined) continue;
+
+    // The invariant the whole area exists to protect, counted independently of
+    // the planner: one chord, one command.
+    const owner = new Map<string, string>();
+    const clashes: string[] = [];
+    for (const def of SHORTCUTS) {
+      for (const spec of effectiveChords(def, plan.overrides)) {
+        const canon = canonicalSpec(spec);
+        const prev = owner.get(canon);
+        if (prev !== undefined) clashes.push(`${canon}: ${name(prev)} + ${name(def.id)}`);
+        owner.set(canon, def.id);
+      }
+    }
+    check(`${preset.label}: 한 키를 두 명령이 갖지 않는다`,
+      clashes.length === 0, clashes.join(' | ') || `${owner.size}개 바인딩`);
+
+    // Everything the preset asked for is what the keyboard answers to.
+    const missing = Object.entries(preset.bindings)
+      .filter(([id, chords]) => {
+        const got = effectiveChords(findShortcut(id as never)!, plan.overrides);
+        return (chords as string[]).some((c) => !got.includes(canonicalSpec(c)));
+      })
+      .map(([id]) => name(id));
+    check(`${preset.label}: 요청한 키가 실제로 들어간다`,
+      missing.length === 0, missing.join(' · ') || `${Object.keys(preset.bindings).length}개 항목`);
+  }
+
+  // Planning is not applying.  A plan that wrote would make the overlay's
+  // "what would this cost" question change the answer by asking it.
+  {
+    const store = fresh();
+    planPreset(KEYMAP_PRESETS[1]!.bindings);
+    check('계획은 아무것도 쓰지 않는다', store.raw() === null, String(store.raw()));
+  }
+
+  // Applying is all or nothing, and a bundle that cannot satisfy the invariant
+  // is refused with the clash named.
+  {
+    const store = fresh();
+    const bad = { 'daw.freeze': ['Mod+Alt+Shift+KeyV'], 'daw.commit': ['Mod+Alt+Shift+KeyV'] } as const;
+    const result = applyPreset(bad);
+    check('한 키를 두 명령에 주는 프리셋은 거부된다',
+      !result.ok && /함께 가집니다/.test(result.reason ?? ''), result.reason ?? '(거부하지 않았다)');
+    check('그리고 거부된 프리셋은 아무것도 쓰지 않는다', store.raw() === null, String(store.raw()));
+  }
+
+  // The round trip the overlay reads: apply, and the buttons know which one.
+  {
+    fresh();
+    check('기본 프리셋은 재정의를 비운다',
+      applyPreset({}).ok && Object.keys(loadOverrides()).length === 0,
+      `${Object.keys(loadOverrides()).length}개`);
+    check('그리고 비어 있으면 기본 프리셋으로 읽힌다',
+      activePresetId(loadOverrides()) === 'builtin', String(activePresetId(loadOverrides())));
+
+    const logic = KEYMAP_PRESETS.find((x) => x.id === 'logic')!;
+    check('Logic 식을 적용하면', applyPreset(logic.bindings).ok, 'applied');
+    check('그 키맵으로 읽힌다',
+      activePresetId(loadOverrides()) === 'logic', String(activePresetId(loadOverrides())));
+    check('녹음이 R 로 간다',
+      effectiveChords(findShortcut('transport.record')!, loadOverrides()).includes('KeyR'),
+      effectiveChords(findShortcut('transport.record')!, loadOverrides()).join(' / '));
+    check('R 을 쥐고 있던 명령은 그 키를 내놓고, 이름이 남는다',
+      planPreset(logic.bindings).displaced.some((d) => d.id === 'daw.toggleArm' && d.chord === 'KeyR'),
+      planPreset(logic.bindings).displaced.map((d) => `${name(d.id)}:${d.chord}`).join(' · '));
+
+    // One key changed by hand and it is no longer that preset — the overlay
+    // must not keep claiming Logic while the keyboard says otherwise.
+    const free = freeSpecs(1, loadOverrides())[0]!;
+    check('손으로 한 키만 바꾸면 프리셋이 아니게 된다',
+      saveOverride('daw.declick', [free]).ok && activePresetId(loadOverrides()) === null,
+      String(activePresetId(loadOverrides())));
+  }
 }
 
 setOverrideStore(null);

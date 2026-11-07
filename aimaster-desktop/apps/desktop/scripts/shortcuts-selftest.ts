@@ -756,6 +756,36 @@ check('no tooltip spells a chord out by hand', () => {
     + offenders.join('\n    '));
 });
 
+check('no message spells a chord out by hand either', () => {
+  // The tooltip check below found 22 of these; the MESSAGE surface had twelve
+  // more — "먼저 Mod+Alt+Shift+C", which shows the person a token out of this
+  // codebase and goes wrong the moment a key moves.  Keymap presets move six
+  // keys at once, so the day presets shipped this stopped being theoretical:
+  // switching to Logic took R off 녹음 무장, and a message was still telling
+  // students to press R to arm — which now starts recording instead.
+  const files = execSync("grep -rl 'notify(' src/renderer --include=*.ts --include=*.tsx",
+    { encoding: 'utf8' }).trim().split('\n');
+  const chordish = [
+    /(?:Mod|Cmd|Ctrl)\+/, /⌘|⌥/, /Alt\+(?![가-힣])/,
+    /\((?:Home|End|Space|Tab|Enter|Esc|Del|Numpad[^)]*|F\d+|[A-Z])\)/,
+  ];
+  const offenders: string[] = [];
+  for (const f of files) {
+    const src = readFileSync(f, 'utf8');
+    for (const m of src.matchAll(/notify\(\s*(`[^`]*`|'[^']*')/g)) {
+      // An interpolation that asks the keymap is the right answer, so it comes
+      // out before the text is judged.
+      const text = m[1]!.replace(/\$\{[^}]*\}/g, '');
+      if (chordish.some((re) => re.test(text))) {
+        offenders.push(`${f.replace('src/renderer/', '')}: ${text.slice(0, 52)}`);
+      }
+    }
+  }
+  assert(offenders.length === 0,
+    `${offenders.length} message(s) write a key out instead of asking the keymap:\n    `
+    + offenders.join('\n    '));
+});
+
 check('a key hint stops after three showings and remembers that it did', () => {
   // The count lives in localStorage so the fourth session does not start the
   // three over again; Node has no such thing, so give it one.

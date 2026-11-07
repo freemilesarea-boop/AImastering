@@ -13,8 +13,8 @@
 // since they were built; this is the same thing for buttons.
 
 import { findShortcut, type CommandId } from './definitions.js';
-import { describeSpec, effectiveChords, type Overrides } from './key-overrides.js';
-import type { Platform } from './keys.js';
+import { describeSpec, effectiveChords, loadOverrides, type Overrides } from './key-overrides.js';
+import { detectPlatform, type Platform } from './keys.js';
 
 /**
  * The command's key as the person sees it, or null when it has none.
@@ -51,4 +51,17 @@ export function commandTitle(
   const name = extra ?? def?.label ?? id;
   const chord = chordOf(id, overrides, platform);
   return chord === null ? name : `${name} — ${chord}`;
+}
+
+/**
+ * The command's key as printed, read fresh from storage.
+ *
+ * For a MESSAGE, where there is no component to hold a hook: twelve toasts
+ * used to spell their chords out — "먼저 Mod+Alt+Shift+C" — which shows the
+ * person a token from this codebase, and goes wrong the moment a key is
+ * remapped or a keymap preset moves it.  A preset moves six of them, so this
+ * stopped being theoretical the day presets shipped.
+ */
+export function chordNow(id: CommandId): string | null {
+  return chordOf(id, loadOverrides(), detectPlatform());
 }

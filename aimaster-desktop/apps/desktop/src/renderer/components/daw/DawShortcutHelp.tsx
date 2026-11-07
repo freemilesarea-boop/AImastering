@@ -20,6 +20,7 @@ import {
 } from '../../shortcuts/key-overrides.js';
 import { searchCommands } from '../../shortcuts/command-search.js';
 import { resetHints } from '../../shortcuts/chord-hints.js';
+import { KEYMAP_PRESETS, activePresetId } from '../../shortcuts/keymap-presets.js';
 import { detectPlatform } from '../../shortcuts/keys.js';
 import { useWorkspaceStore } from '../../stores/workspaceStore.js';
 import { useShortcutStore } from '../../stores/shortcutStore.js';
@@ -45,6 +46,8 @@ export default function DawShortcutHelp() {
   const setChords = useShortcutStore((s) => s.setChords);
   const reset = useShortcutStore((s) => s.reset);
   const resetAll = useShortcutStore((s) => s.resetAll);
+  const usePreset = useShortcutStore((s) => s.usePreset);
+  const active = useMemo(() => activePresetId(overrides), [overrides]);
   const platform = useMemo(() => detectPlatform(), []);
   const [filter, setFilter] = useState('');
   /** The command waiting for a keypress, or null. */
@@ -144,6 +147,47 @@ export default function DawShortcutHelp() {
                          text-zinc-400 hover:text-zinc-200 hover:border-zinc-600"
             >전체 기본값 ({changedCount})</button>
           )}
+        </div>
+
+        {/* ── The keyboard you already have in your fingers ──────────────
+            The default map is Cubase-shaped, and somebody who learned Logic
+            or Live types the wrong key for a week.  Switching takes keys off
+            other commands, so the toast NAMES them rather than letting a
+            command go quiet — and the palette (⌘P) still runs anything by
+            name, which is why that is a trade and not a loss. */}
+        <div className="mb-4 rounded-xl border border-zinc-800 bg-zinc-900/40 px-3 py-2">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-[10px] text-zinc-500 mr-1">키맵</span>
+            {KEYMAP_PRESETS.map((preset) => {
+              const on = active === preset.id;
+              return (
+                <button
+                  key={preset.id}
+                  onClick={() => {
+                    const r = usePreset(preset.id);
+                    if (!r.ok) { notify(r.reason ?? '키맵을 바꾸지 못했습니다', 'warning'); return; }
+                    const lost = r.plan?.unbound ?? [];
+                    const names = lost
+                      .map((id) => SHORTCUTS.find((x) => x.id === id)?.label ?? id)
+                      .join(' · ');
+                    notify(lost.length === 0
+                      ? `${preset.label} 으로 바꿨습니다`
+                      : `${preset.label} 으로 바꿨습니다 — ${names} 는 키가 없어졌습니다 (팔레트로 실행)`,
+                    'success');
+                  }}
+                  title={preset.note}
+                  className={`h-7 px-2.5 rounded-lg border text-[10px] transition-colors ${on
+                    ? 'border-emerald-600/60 bg-emerald-600/15 text-emerald-300'
+                    : 'border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-600'}`}
+                >{preset.label}{on ? ' ✓' : ''}</button>
+              );
+            })}
+          </div>
+          <p className="text-[10px] text-zinc-600 mt-1.5">
+            {active === null
+              ? '직접 바꾼 키맵입니다 — 아래 표에서 행을 누르면 그 키를 다시 정할 수 있습니다'
+              : (KEYMAP_PRESETS.find((p) => p.id === active)?.note ?? '')}
+          </p>
         </div>
 
         <div className="grid gap-5 sm:grid-cols-2">

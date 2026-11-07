@@ -186,6 +186,108 @@ export function clearOverride(id: CommandId): SaveResult {
   return write(next);
 }
 
+/** What a preset would do, worked out before anything is written. */
+export interface PresetPlan {
+  /** The override map the preset results in. */
+  overrides: Overrides;
+  /** Commands that lose a chord to the preset, and which one. */
+  displaced: { id: CommandId; chord: string }[];
+  /** Commands left with no key at all — reachable by name in the palette. */
+  unbound: CommandId[];
+  /** Set when the preset cannot be applied, with the reason. */
+  problem?: string;
+}
+
+/**
+ * Work out a preset without writing it.
+ *
+ * `saveOverride` refuses a chord somebody else holds, and it is right to:
+ * the dispatcher is first-match-wins, so a second owner is a command that
+ * silently does nothing.  But a PRESET is a whole keyboard arriving at once,
+ * and half of its entries want keys the default map has already given out —
+ * refusing would make every preset unusable, and applying one command at a
+ * time would succeed or fail depending on the order.
+ *
+ * So the whole thing is computed first.  A chord the preset claims is taken
+ * off whoever held it, that command is NAMED rather than quietly broken, and
+ * the caller shows the list before writing.  The result is checked for two
+ * owners of one chord — the invariant the per-command path protects — and a
+ * preset that cannot satisfy it is refused with the clash named.
+ */
+export function planPreset(
+  bindings: Readonly<Partial<Record<CommandId, readonly string[]>>>,
+): PresetPlan {
+  const wanted = new Map<CommandId, string[]>();
+  for (const [id, chords] of Object.entries(bindings) as [CommandId, readonly string[]][]) {
+    if (!KNOWN.has(id)) return { overrides: NO_OVERRIDES, displaced: [], unbound: [], problem: `알 수 없는 명령입니다 — ${id}` };
+    if (chords.length > MAX_CHORDS_PER_COMMAND) {
+      return { overrides: NO_OVERRIDES, displaced: [], unbound: [], problem: `한 명령에 최대 ${MAX_CHORDS_PER_COMMAND}개까지입니다 — ${id}` };
+    }
+    const specs: string[] = [];
+    for (const raw of chords) {
+      if (!isUsableSpec(raw)) {
+        return { overrides: NO_OVERRIDES, displaced: [], unbound: [], problem: `이 키는 단축키로 쓸 수 없습니다 — ${raw}` };
+      }
+      const spec = canonicalSpec(raw);
+      if (!specs.includes(spec)) specs.push(spec);
+    }
+    wanted.set(id, specs);
+  }
+
+  // A preset is a whole choice, so it replaces the overrides rather than
+  // layering on them: starting from what is stored would carry yesterday's
+  // remap into today's keyboard and nobody could say which was which.
+  const next = new Map<CommandId, string[]>(wanted);
+  const claimed = new Set<string>();
+  for (const specs of wanted.values()) for (const spec of specs) claimed.add(spec);
+
+  const displaced: { id: CommandId; chord: string }[] = [];
+  for (const def of SHORTCUTS) {
+    if (wanted.has(def.id)) continue;
+    const keep = def.chords.filter((c) => !claimed.has(canonicalSpec(c)));
+    if (keep.length === def.chords.length) continue;      // nothing taken
+    for (const lost of def.chords.filter((c) => claimed.has(canonicalSpec(c)))) {
+      displaced.push({ id: def.id, chord: canonicalSpec(lost) });
+    }
+    next.set(def.id, keep.map((c) => canonicalSpec(c)));
+  }
+
+  const overrides = Object.freeze(Object.fromEntries(next)) as Overrides;
+
+  // The invariant: one chord, one command.  Checked over the RESULT, which is
+  // the only place it can be checked for a bundle.
+  const owner = new Map<string, CommandId>();
+  for (const def of SHORTCUTS) {
+    for (const spec of effectiveChords(def, overrides)) {
+      const canon = canonicalSpec(spec);
+      const prev = owner.get(canon);
+      if (prev !== undefined) {
+        const name = (x: CommandId) => SHORTCUTS.find((s) => s.id === x)?.label ?? x;
+        return {
+          overrides: NO_OVERRIDES, displaced: [], unbound: [],
+          problem: `${formatChord(parseChord(canon), 'win')} 를 "${name(prev)}" 와 "${name(def.id)}" 가 함께 가집니다`,
+        };
+      }
+      owner.set(canon, def.id);
+    }
+  }
+
+  const unbound = [...next.entries()].filter(([, c]) => c.length === 0).map(([id]) => id);
+  return { overrides, displaced, unbound };
+}
+
+/** Apply a preset, all of it or none of it. */
+export function applyPreset(
+  bindings: Readonly<Partial<Record<CommandId, readonly string[]>>>,
+): SaveResult {
+  // The built-in map is "no overrides", not "an override per command": that
+  // way a later build changing a default reaches someone who chose it.
+  if (Object.keys(bindings).length === 0) return clearAllOverrides();
+  const plan = planPreset(bindings);
+  if (plan.problem !== undefined) return { ok: false, reason: plan.problem };
+  return write(plan.overrides);
+}
+
 export function clearAllOverrides(): SaveResult {
   return write(NO_OVERRIDES);
 }
