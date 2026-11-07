@@ -32,6 +32,41 @@ change. Run this before a release, and after any change to the main
 process, the IPC surface, or the render path — the three places a headless
 test cannot follow.
 
+## The boot is not ready when a FILE says so
+
+`boot.sh` used to call the display ready when `/tmp/.X11-unix/X98` existed.
+A socket file outlives its server, and Xvfb refuses to start while
+`/tmp/.X98-lock` is there — it says so on its own stderr, which nothing read:
+
+    Fatal server error:
+    (EE) Server is already active for display 98
+      If this server is no longer running, remove /tmp/.X98-lock
+
+So the boot printed `display :98`, Electron exited with "Missing X server",
+and the run died ninety seconds later as **`CDP down`** — a failure reported
+in the wrong place, blaming the app for a display that was never there. The
+boot now asks whether the display ANSWERS: if it does — a previous run's, left
+up on purpose — it is reused, because starting a second Xvfb on the same
+display only makes it refuse; if it does not, a stale lock and socket are
+cleared, Xvfb is started, and the boot polls until it answers or prints
+Xvfb's own reason for dying. `xdpyinfo` is the real test and
+is not installed everywhere; where it is missing, a live `Xvfb :98` process is
+the fallback, so a running display never has its lock removed from under it.
+
+## The app that answers must be the app you just built
+
+Both boot scripts kill anything already serving CDP on their port before they
+launch, and stop if it will not die. Launching a second Electron does **not**
+take the port from the first: the newcomer starts and serves nothing, the flow
+connects to the old app, and every step reports on code that is no longer on
+disk. That is how it was found — a licence step was broken on purpose to check
+it was load-bearing and the flow came back 26/26 green, because the app
+answering had been booted four minutes earlier. The same poke against a freshly
+booted app moved the trial count from 0 to 1 immediately.
+
+A run still leaves its app up on purpose, so you can open the window and look
+at it afterwards. The next run is what cleans up.
+
 ## Two steps that exist for a reason worth stating
 
 **"the saved move is still there after a reload."** Every other step proves
@@ -66,3 +101,146 @@ flow has actually broken.
 The zustand stores are module singletons, so importing one in the page gets
 the instance the app is rendering from. Step 2 checks that assumption
 rather than trusting it.
+
+**"every page the app can route to mounts something."**
+The flow never leaves home, and the headless suite tests the DAW, mixer and
+arrangement MODELS — so a `DawPage` that throws on mount leaves all of it
+green and the feature dead. Each of the eight routes is visited through the
+store the app routes with, and the step records where each one landed:
+`mastering`, `result` and `tweak` need a selected file and bounce to home
+without one, which is the defensive redirect working. Measured clean:
+`home 209, mastering→home 209, result→home 209, tweak→home 209, studio 473,
+qc 26, daw 239, settings 67` nodes. Made `DawPage` throw to check the step
+is load-bearing: `daw: landed daw, 6 nodes, 7 error(s)` — the ErrorBoundary
+fallback, caught by both the node count and the error count.
+
+**The DAW, driven rather than merely mounted.**
+The headless suite has eighty-odd tests over the DAW's *models*, and not one
+of them can tell whether the transport clock is wired to anything. Four
+steps drive it: an edit and its undo (1 track → 2 → 1), the playhead's rate
+while playing, stop, and a loop.
+
+The rate is sampled **in flight** — two readings while already playing — and
+that is a correction, not a style. Sampling from before `play()` gave
+1.502 s of wall clock for 1.401 s of playhead: a ratio of 0.933, which reads
+as a 7%-slow clock. The missing 0.101 s was the rAF loop starting. In flight
+it measures 0.9962–0.9997 over four runs.
+
+**The decoded-audio store, with ffmpeg and a real disk.**
+Three steps drive `daw:pcm-source`: a decode whose store file's size must
+equal `frames x channels x 4` (the handler's claim that "the file size IS the
+frame count" — no estimate, no slack), the sidecar beside it, and the sweep.
+
+The sweep step plants a two-hour-old `.part` in the store's own directory —
+the path comes from the decode's own reply, not from a guess — and then asks
+for a different sample rate, because a different rate is a different store and
+only a miss runs the sweep. It exists because the sweep counted `*.f32` only:
+a `.part` left by a killed decode was counted by nothing and removed by
+nothing, which at the handler's three-hour ceiling is ~4 GB inside a store
+that advertises 12 GB. Breaking the sweep makes this step read `the orphan is
+STILL THERE`.
+
+**Crash recovery, end to end.**
+Two steps drive the one path whose entire job is to survive the app dying.
+Both autosaves are written through the real IPC handler, so the previous
+generation the listing hands back is one the app made and not one the test
+planted; then the page is reloaded, because the prompt scans once on mount,
+and the banner's own text is read back.
+
+This is what had never been driven. The decision model was tested against
+hand-made records, and the main process's half could not be imported outside
+Electron at all — so nothing noticed that `autosave:list` filtered
+`*.louisession`, which excludes `*.louisession.bak`. The copy the handler
+deliberately kept for a broken session was written, swept after thirty days
+and deleted on a clean save, and no code path could reach it. The second step
+reads `그 전 · 방금 전으로 복구` out of the live banner, which is also how a
+wrong Korean particle in that label was caught (`방금 전 로 복구`).
+
+The loop step checks three things, because only together do they mean
+anything: a wrap *happens*, every sample stays inside the loop, and the
+landing **carries the remainder** instead of snapping to the start — 1.921 →
+1.059 is the loop end plus the overshoot, which is what task #48 ("make the
+loop wrap land where the loop ends") settled.
+
+Break-tested all four: stubbing out `dawRuntime.play` gives
+`0.0000 playhead-seconds per wall second` and `0 wrap(s)`; leaving
+`isPlaying` true in `stop()` fails the stop step alone.
+
+**"the renderer logged no errors through any of it."**
+Every other step asserts its own result; none of them asks what *else*
+happened. A React error inside a panel, a failed dynamic import, an
+unhandled rejection — all of it used to be invisible. `pageerror` and
+`console.error` are collected from before the first interaction.
+
+It found something on its first run: `[wasm-analyzer-session] DIAG build v3
+loaded`, logged at **error** level on every app start. Five such lines live
+in `wasm-analyzer-session.ts`, deliberately at `console.error` so a level
+filter cannot hide them — crash-hunt instrumentation from the dlmalloc panic
+that once hard-disabled the realtime preview. That panic was fixed at the
+source and the lines stayed, so every user's console, and anything that
+collects errors, saw them as faults. They are now behind an explicit
+`__LOUI_ANALYZER_DIAG__` / `localStorage['loui.analyzerDiag']` opt-in.
+
+`isDevMode()` was tried as the gate first and is the wrong trigger: it is
+"ON automatically in a dev build", so the lines would still speak in every
+dev session and in every smoke run, and this step would have needed a
+carve-out for them. A carve-out in the one step that asks "what else
+happened" is how that step stops meaning anything.
+
+---
+
+## The packaged flow — `pnpm smoke:packaged`
+
+`boot.sh` + `flow.mjs` drive a **dev** build: vite, the renderer's module
+graph, source paths. Three defects got past all of it, because each lived
+in a layer only packaging creates:
+
+| what shipped | what the user got |
+| --- | --- |
+| `resources/bin/engine` absent | first `audio:analyze` → `spawn … ENOENT` |
+| `resources/bin/engine` present, built with CI's own command | `ModuleNotFoundError: No module named 'backports'` on startup |
+| the loader counting `../../../../../` to `pkg-node` | right from `src/main/offline`, one level too high from `dist-electron/main` — so every packaged build silently took the Python path |
+
+So `boot-packaged.sh` + `flow-packaged.mjs` drive `out/linux-unpacked`
+instead. It needs `pnpm dist` first.
+
+**It copies the app out of the source tree before launching it, and that is
+the point.** `wasmNodeCandidates()` walks *up* from the main bundle's
+directory before it tries `process.resourcesPath`. `out/linux-unpacked`
+sits inside the workspace, so a package launched in place resolves
+`packages/dsp-wasm/pkg-node` — the dev copy — and the shipped
+`resources/dsp-wasm-node` is never touched. The first run of this probe did
+exactly that, and only a Rust panic's stack trace gave it away. The boot
+script now walks the ancestors of the copy and refuses to start if any of
+them holds a workspace, so the run cannot quietly become meaningless again.
+`wasm-resolve-selftest` pins the ordering this depends on.
+
+The render step is judged by the **output audio**, not by the handler's
+`chainConfigHonored` flag. The flag records which branch ran, so it cannot
+tell you the chain did anything: with the EQ bypassed the flag still reads
+`honored=true` while the measurement reads `60 Hz +0.01 dB`. With the two
++6 dB shelves asked for, the file comes back `60 Hz +5.27 dB, 14 kHz
++4.41 dB` relative to 1 kHz — the 32 Hz low cut and the limiter taking the
+rest.
+
+It collects the renderer's errors too, for the same reason the dev flow
+does — but the list it watches is a different list. `file://` instead of
+Vite, reads out of the asar, a Content-Security-Policy only the packaged
+page carries: none of those can fail in a dev build, and nothing was
+listening for them here. One limit is worth writing down: Playwright
+attaches over CDP *after* the window has booted, so anything thrown during
+the first paint is already gone. What the step covers is what the steps
+below it provoke.
+
+Both flows wait 500 ms before reading that list, and the wait is not a
+precaution — it was measured. With a `console.error` and a thrown error
+injected into the packaged page and the wait taken out, the list held only
+the synchronous `console.error`: the `pageerror` and the app's own
+`[AIMASTER:window-error]` line were both still in flight when the step ran.
+An error thrown from a `setTimeout` would have been reported as `clean`.
+
+What it cannot cover: macOS and Windows packages, which cannot be
+cross-built here. On those hosts the prebuild gate falls back to checking
+that the engine binary is *present* (`engineStatus` reports
+`unverifiable`, and `pnpm dist` says so) because a `win32` binary cannot be
+executed to ask whether it starts.

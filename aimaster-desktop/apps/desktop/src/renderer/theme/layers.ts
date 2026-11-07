@@ -26,6 +26,16 @@ export const LAYER = {
   pluginWindow: 200,
   /** Small popovers raised from inside a view (the fade-curve picker). */
   popover: 400,
+  /**
+   * The right-click menu.
+   *
+   * Above the popovers rather than among them: it is raised FROM a surface
+   * that may already have one open, and a menu underneath the thing it was
+   * asked about is a menu nobody can use.  Below `scrim`, because a
+   * full-screen overlay owns the screen and a menu left over from the view
+   * underneath it would be unreachable anyway.
+   */
+  contextMenu: 500,
   /** DAW overlays with a full-screen scrim: MediaBay, smart controls, rack. */
   scrim: 8000,
   /** The shortcut help — over the scrims, because '?' is asked from one. */

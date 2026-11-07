@@ -9,21 +9,38 @@
  *     Free  : up to TRIAL_MAX processing runs; WAV save locked, MP3 preview open
  *     Pro   : unlimited; all features unlocked
  *
- * Storage layout (electron-store, AES-256-CBC encrypted at rest):
- *   'license'  → StoredLicense  (key + tier + HMAC binding to machineId)
- *   'trial'    → TrialRecord    (usage count + HMAC binding to machineId)
+ * Storage layout (electron-store):
+ *   'license'  → StoredLicense  (key + tier + HMAC over the record)
+ *   'trial'    → TrialRecord    (usage count + HMAC over the record)
+ *
+ *   The store's `encryptionKey` is OBFUSCATION, not protection: `conf`
+ *   derives a key from a string compiled into the app, and says so itself.
+ *   See the note at the top of apps/desktop/src/main/ipc/licenseHandlers.ts.
+ *   What protects a licence is the server; what the HMAC buys is that a
+ *   record cannot be edited in place.
  *
  * Tamper resistance:
- *   Both records carry an HMAC-SHA256 signature that covers the sensitive
- *   fields and the machine ID.  Signature verification uses timingSafeEqual
- *   to resist timing-based attacks.  If verification fails the record is
+ *   Both records carry an HMAC-SHA256 signature over the sensitive fields and
+ *   a machine ID, compared with timingSafeEqual.  A record that fails is
  *   treated as invalid (license → free, trial → maxed out).
  *
+ *   The two are NOT bound the same way.  `_readTrialUsed` compares the stored
+ *   machine ID with this machine's and refuses a mismatch; `_readLicense`
+ *   makes no such comparison, and the signature covers the record's OWN
+ *   machine ID — so a `license` record copied to a second machine verifies
+ *   and is honoured there, offline, until it expires, while a copied `trial`
+ *   record locks that machine out.  Both are pinned in license-core-selftest;
+ *   whether the licence should be device-bound locally is a business decision
+ *   (the server already answers `device_limit` on activation), so this file
+ *   does not quietly pick one.
+ *
  * Server API readiness:
- *   Validation logic is behind the LicenseValidator interface.
- *   LocalValidator is the v1 implementation (format check only).
- *   Swap in a RemoteValidator when the server API is ready — no other
- *   changes required.
+ *   Validation is behind the LicenseValidator interface.  BOTH
+ *   implementations are written: `RemoteValidator` posts to the Supabase
+ *   activation function and is what `licenseHandlers` wires whenever
+ *   LICENSE_API_URL and LICENSE_API_KEY were injected at build time;
+ *   `LocalValidator` is the dev fallback that activates any well-formed key
+ *   and is no protection at all.  Nothing is left to "swap in".
  */
 
 import crypto from 'node:crypto';
@@ -87,13 +104,20 @@ export function isLicenseSecretProductionReady(): boolean {
 }
 
 /**
- * Throw if the active HMAC secret is not safe for production.  Hosts call
- * this from the main process on startup when `app.isPackaged === true`
- * (or another reliable production signal).  Dev / unpackaged builds skip
- * this check and the dev fallback is used.
+ * Throw if the active HMAC secret is not safe for production.
  *
- * The error message is intentionally explicit so a packager who forgot to
- * inject the secret can self-diagnose.
+ * NOTHING CALLS THIS TODAY.  This comment used to say "hosts call this from
+ * the main process on startup when `app.isPackaged === true`", and a reader
+ * who believed it would have shipped a build in the belief that a missing
+ * secret could not get past startup.  The host made the opposite choice, at
+ * `apps/desktop/src/main/index.ts`: on a packaged build that has an API
+ * endpoint but no strong secret it writes an error to the log and carries on,
+ * because the server is the source of truth and refusing to start would turn
+ * a weakened local tamper check into a dead app.
+ *
+ * It stays exported for the host that wants the strict version — one call in
+ * `app.whenReady` — and because the message is explicit enough for a packager
+ * who forgot the secret to self-diagnose from a crash report.
  */
 export function assertLicenseSecretReady(): void {
   if (isLicenseSecretProductionReady()) return;
@@ -337,6 +361,53 @@ export function getMachineId(): string {
   return machineIdSync(true);
 }
 
+// ── The gate, as arithmetic ──────────────────────────────────────────────────
+
+/** What {@link LicenseService.canProcess} answers. */
+export interface GateAnswer {
+  allowed: boolean;
+  isPaid: boolean;
+  remaining: number;
+  /** Why not, when `allowed` is false.  Shown to the user as-is. */
+  reason?: string;
+}
+
+const TRIAL_EXHAUSTED =
+  `무료 체험 ${TRIAL_MAX}회를 모두 사용했습니다. 라이선스 키를 입력하면 계속 사용할 수 있습니다.`;
+
+/** The answer when nothing is limited: this build, a dev build, a paid user. */
+function openGate(): GateAnswer {
+  // A fresh object each time: this one travels over IPC to the renderer, and
+  // a shared instance is a shared mutable answer.
+  return { allowed: true, isPaid: true, remaining: Infinity };
+}
+
+/** True while a developer build is told not to count or refuse anything. */
+function devLicenseBypass(): boolean {
+  return process.env['NODE_ENV'] === 'development'
+      || process.env['AIMASTER_DEV_LICENSE'] === '1';
+}
+
+/**
+ * The paid/trial decision, as a function of the two facts it turns on.
+ *
+ * A function rather than four lines inside `canProcess` because
+ * `LICENSE_ENFORCED` is a compile-time constant and this build has it off:
+ * with the switch off every one of those lines is unreachable from anything
+ * that imports this package, and the only suite that covered them read this
+ * file as text and grepped it.  "One word away from being switched on" is a
+ * promise about THIS arithmetic — so the arithmetic has to be runnable
+ * without the word, or the promise is untested.
+ */
+export function trialGate(paid: boolean, trialUsed: number): GateAnswer {
+  if (paid) return openGate();
+  const remaining = TRIAL_MAX - trialUsed;
+  if (remaining <= 0) {
+    return { allowed: false, isPaid: false, remaining: 0, reason: TRIAL_EXHAUSTED };
+  }
+  return { allowed: true, isPaid: false, remaining };
+}
+
 // ── LicenseService ────────────────────────────────────────────────────────────
 
 export class LicenseService {
@@ -530,9 +601,7 @@ export class LicenseService {
     // Nothing to count when nothing is limited.
     if (!LICENSE_ENFORCED) return;
     // Dev bypass: don't consume trial counts in development mode
-    if (process.env['NODE_ENV'] === 'development' || process.env['AIMASTER_DEV_LICENSE'] === '1') {
-      return;
-    }
+    if (devLicenseBypass()) return;
     const current = this._readTrialUsed();
     // Never exceed TRIAL_MAX (belt-and-suspenders)
     this._writeTrialUsed(Math.min(current + 1, TRIAL_MAX));
@@ -543,34 +612,16 @@ export class LicenseService {
    * Returns: { allowed, isPaid, remaining, reason? }
    * (Spec: canProcess)
    */
-  canProcess(): { allowed: boolean; isPaid: boolean; remaining: number; reason?: string } {
+  canProcess(): GateAnswer {
     // This build ships unlicensed.  Answering "paid" here is what opens the
     // export gates in the main process, which all read this one function.
-    if (!LICENSE_ENFORCED) {
-      return { allowed: true, isPaid: true, remaining: Infinity };
-    }
-    // Dev bypass: skip all license checks in development mode
-    if (process.env['NODE_ENV'] === 'development' || process.env['AIMASTER_DEV_LICENSE'] === '1') {
-      return { allowed: true, isPaid: true, remaining: Infinity };
-    }
+    if (!LICENSE_ENFORCED) return openGate();
+    if (devLicenseBypass()) return openGate();
 
     const stored    = this._readLicense();
     const trialUsed = this._readTrialUsed();
 
-    if (this._isPaid(stored)) {
-      return { allowed: true, isPaid: true, remaining: Infinity };
-    }
-
-    const remaining = TRIAL_MAX - trialUsed;
-    if (remaining <= 0) {
-      return {
-        allowed:   false,
-        isPaid:    false,
-        remaining: 0,
-        reason:    `무료 체험 ${TRIAL_MAX}회를 모두 사용했습니다. 라이선스 키를 입력하면 계속 사용할 수 있습니다.`,
-      };
-    }
-    return { allowed: true, isPaid: false, remaining };
+    return trialGate(this._isPaid(stored), trialUsed);
   }
 
   /**
@@ -581,8 +632,14 @@ export class LicenseService {
   getRemainingTrials(): number {
     if (!LICENSE_ENFORCED) return Infinity;
     const stored = this._readLicense();
+    // Read the trial record only when it can change the answer — a paid user
+    // has no count to look up, and looking it up would log a machine-id
+    // warning at them for a record they are not using.
     if (this._isPaid(stored)) return Infinity;
-    return Math.max(0, TRIAL_MAX - this._readTrialUsed());
+    // Same arithmetic as `canProcess`, from the same place: a second copy of
+    // "how many are left" is how the number the UI shows and the number the
+    // gate enforces drift apart.
+    return trialGate(false, this._readTrialUsed()).remaining;
   }
 
   /**

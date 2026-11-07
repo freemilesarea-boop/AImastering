@@ -14,11 +14,13 @@
  *   ran a CI artefact built from a branch where no GitHub Release exists.
  *
  * Soft-error reclassification:
- *   "No published versions on GitHub" is the literal message electron-updater
- *   emits when latest.yml is absent (e.g. release was created but not yet
- *   published).  This is NOT a fatal error — the user just hasn't been
- *   offered a release yet.  We map it to a `no-release` status that the
- *   renderer renders as silence (no toast).
+ *   "No release published yet" is not a fatal error — the user just hasn't
+ *   been offered a release yet — so it maps to a `no-release` status the
+ *   renderer renders as silence.  WHICH errors those are is decided in
+ *   `updater-status.ts`, by the `code` electron-updater sets rather than by
+ *   matching its prose: two of the four patterns that used to live here could
+ *   never match anything the library emits, and the error that says "please
+ *   ensure a production release exists" matched none of them.
  *
  * Renderer-facing IPC bridge (events + commands)
  *   · checkForUpdates()         → main triggers an immediate check
@@ -51,6 +53,7 @@ import { app, BrowserWindow } from 'electron';
 import type { IpcMain } from 'electron';
 import log from 'electron-log/main';
 import { autoUpdater, type UpdateInfo, type ProgressInfo } from 'electron-updater';
+import { isNoReleaseError } from './updater-status.js';
 
 // Build-time constant injected by esbuild (`define`).  Default false at the
 // type level so an unbundled run (e.g. tsc unit tests) doesn't crash.
@@ -82,22 +85,6 @@ let _lastStatus: UpdaterStatus = { type: 'idle' };
  * the first event lands.
  */
 const FIRST_CHECK_DELAY_MS = 5_000;
-
-/**
- * Patterns that indicate "no release published yet" rather than a real
- * failure.  electron-updater wraps these as Errors with the literal text
- * shown in the message.
- */
-const SOFT_NO_RELEASE_PATTERNS: RegExp[] = [
-  /No published versions on GitHub/i,
-  /404.*latest(-mac|-linux)?\.yml/i,
-  /Cannot find latest(-mac|-linux)?\.yml/i,
-  /HttpError:\s*404/i,                  // bare 404 on the metadata file
-];
-
-function _isNoReleaseError(message: string): boolean {
-  return SOFT_NO_RELEASE_PATTERNS.some(re => re.test(message));
-}
 
 /** True when the build was produced for a real release channel. */
 function _autoUpdateEnabled(): boolean {
@@ -152,7 +139,7 @@ function _wireAutoUpdaterEvents(): void {
     const message = err.message ?? String(err);
     // Soft error — release just hasn't been published yet.  Treat as
     // benign "no release" rather than a fatal error toast.
-    if (_isNoReleaseError(message)) {
+    if (isNoReleaseError(err)) {
       log.info('[updater] no published release yet — silent');
       _send({ type: 'no-release' });
       return;
@@ -234,12 +221,15 @@ export function initUpdater(mainWindow: BrowserWindow, ipcMain: IpcMain): void {
   // Schedule the first automatic check.
   setTimeout(() => {
     autoUpdater.checkForUpdates().catch((err) => {
-      const message = (err as Error)?.message ?? String(err);
-      // Initial check can also hit the same soft "no release" path before
-      // the event handler is wired for it; suppress the same way.
-      if (_isNoReleaseError(message)) {
+      // `checkForUpdates()` REJECTS as well as emitting 'error', so this
+      // catch is about the rejection, not about a gap in the wiring: the
+      // handler above is attached synchronously, before this timer is even
+      // scheduled, so it has always been in place by the time this runs.
+      // (The comment here used to say the opposite.)  A soft error therefore
+      // already sent `no-release` from the event, and sending it twice is
+      // just noise on the channel.
+      if (isNoReleaseError(err)) {
         log.info('[updater] initial check: no published release yet — silent');
-        _send({ type: 'no-release' });
         return;
       }
       log.error('[updater] initial check failed:', err);

@@ -24,7 +24,7 @@
  * Run:  pnpm --filter @aimaster/desktop test:clipper
  */
 
-import { OfflineAudioContext } from 'node-web-audio-api';
+import { OfflineAudioContext } from './lib/offline-audio-context.js';
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 
 import { PLUGINS, defaultParams } from '../src/renderer/daw/engine/plugins.js';

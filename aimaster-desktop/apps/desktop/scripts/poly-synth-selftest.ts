@@ -26,7 +26,7 @@
  * Run via:  pnpm --filter @aimaster/desktop test:poly-synth
  */
 
-import { OfflineAudioContext } from 'node-web-audio-api';
+import { OfflineAudioContext } from './lib/offline-audio-context.js';
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 
 import { findInstrument, defaultInstrumentParams } from '../src/renderer/daw/engine/instruments.js';

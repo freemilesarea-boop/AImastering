@@ -5,6 +5,18 @@ export type Page = 'home' | 'mastering' | 'result' | 'tweak' | 'studio' | 'qc' |
 /** How long a message stays on screen, when nothing replaces it. */
 export const NOTIFY_MS = 3500;
 
+/** How long the key hint stays. Shorter than a message — it is an aside. */
+export const CHORD_HINT_MS = 2600;
+
+/**
+ * How long the projector keeps a key.
+ *
+ * Long enough to write down, short enough that the next one is not queued
+ * behind it: an instructor demonstrating a chain of edits presses a key every
+ * couple of seconds.
+ */
+export const DEMO_CAST_MS = 1600;
+
 interface Notification {
   message: string;
   type: 'info' | 'success' | 'error' | 'warning';
@@ -22,11 +34,44 @@ interface Notification {
   id: number;
 }
 
+/**
+ * "That button has a key" — shown beside the message, never instead of it.
+ *
+ * Its own slot because the notifier has exactly one, and a hint that competed
+ * for it would cut the command's own message short: measured at 0.2 s against
+ * the 3.5 s it was supposed to get, which is the comment above this one.
+ */
+interface ChordHint {
+  label: string;
+  chord: string;
+  id: number;
+}
+
+/**
+ * What the instructor just ran, for the projector.
+ *
+ * Its own slot again, and a short one: this replaces itself several times a
+ * minute during a demonstration, while the message slot has to hold what the
+ * command SAID for long enough to read.  Two things, two lifetimes.
+ */
+interface DemoCast {
+  label: string;
+  /** The key, or null when it was a click. */
+  chord: string | null;
+  id: number;
+}
+
 interface AppStore {
   currentPage: Page;
   notification: Notification | null;
+  chordHint: ChordHint | null;
+  demoCast: DemoCast | null;
   setPage: (page: Page) => void;
   notify: (message: string, type?: Notification['type']) => void;
+  /** Show a command's key. The policy for WHETHER lives in chord-hints.ts. */
+  showChordHint: (label: string, chord: string) => void;
+  /** Announce a command on the projector. The flag lives in demo-mode.ts. */
+  castCommand: (label: string, chord: string | null) => void;
 }
 
 // ── Bootstrap guard ───────────────────────────────────────────────────────────
@@ -67,6 +112,8 @@ function initialPage(): Page {
 }
 
 let notifySeq = 0;
+let hintSeq = 0;
+let castSeq = 0;
 
 export const useAppStore = create<AppStore>((set, get) => ({
   currentPage:  initialPage(),
@@ -83,6 +130,26 @@ export const useAppStore = create<AppStore>((set, get) => ({
       console.log('[appStore] setPage:', page, new Error('caller stack').stack?.split('\n').slice(1, 6).join(' | '));
     }
     set({ currentPage: page });
+  },
+
+  demoCast: null,
+  castCommand: (label, chord) => {
+    const id = ++castSeq;
+    set({ demoCast: { label, chord, id } });
+    setTimeout(() => {
+      if (get().demoCast?.id === id) set({ demoCast: null });
+    }, DEMO_CAST_MS);
+  },
+
+  chordHint: null,
+  showChordHint: (label, chord) => {
+    const id = ++hintSeq;
+    set({ chordHint: { label, chord, id } });
+    setTimeout(() => {
+      // Only if this is still the hint this timer was started for — the same
+      // trap the message slot fell into.
+      if (get().chordHint?.id === id) set({ chordHint: null });
+    }, CHORD_HINT_MS);
   },
 
   notify: (message, type = 'info') => {

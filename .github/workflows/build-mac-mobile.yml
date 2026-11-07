@@ -36,7 +36,9 @@ concurrency:
 jobs:
   build-mac-mobile:
     name: macOS app (dmg + zip, arm64 + x64)
-    runs-on: macos-14
+    # macos-15: macos-14 stopped being served on 2026-11-06 — see the note
+    # in build.yml's build-mac matrix.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 

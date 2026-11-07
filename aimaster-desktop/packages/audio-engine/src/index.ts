@@ -19,7 +19,7 @@ export type { AppErrorCode } from './errors.js';
 
 // ── Python bridge & high-level API ────────────────────────────────────────────
 export { PythonBridge }  from './utils/pythonBridge.js';
-export { analyzeFile }   from './analyzers/index.js';
+export { analyzeFile, engineEnvInfo } from './analyzers/index.js';
 export { masterFile }    from './mastering/index.js';
 export { runQC }         from './qc/index.js';
 

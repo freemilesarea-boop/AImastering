@@ -22,7 +22,7 @@
  */
 
 import {
-  FRAME_RATES, describeVideo, formatTimecode, frameAt, frameSec, nearestFrameRate,
+  FRAME_RATES, describeVideo, formatTimecode, frameSec, nearestFrameRate,
   parseTimecode, snapToFrame, timecodeAt, timelineTimeAt, videoOf, videoTimeAt,
   withVideo, type VideoRef,
 } from '../src/renderer/daw/model/video.js';
@@ -40,6 +40,7 @@ import {
   addFile, addTrack, createClip, createSession, createTrack, findTrack, trackClips, updateClips,
 } from '../src/renderer/daw/model/session-ops.js';
 import { resetIds } from '../src/renderer/daw/model/ids.js';
+import { readFileSync } from 'node:fs';
 import {
   alignVideoAudio, describeVideoAudio, hasVideoAudio, importVideoAudio,
   videoAudioOffsetSec, videoAudioTracks,
@@ -116,6 +117,34 @@ check('a whole-number rate needs no dropping at all', () => {
   eq(formatTimecode(3600, 24, false), '01:00:00:00', 'so is 24');
 });
 
+check("the main process reads a file's start timecode with THIS code", () => {
+  // The checks above have been right about drop-frame all along — against the
+  // renderer's copy.  `ipc/videoHandlers.ts` carried its own
+  // `timecodeToSeconds`, which accepted the `;` marker (ffprobe's way of
+  // saying drop-frame) and then counted the frames as non-drop.  Nothing
+  // compared the two, so the probe put every reel 3.6 s out per hour of
+  // timecode and this file passed.
+  const handler = readFileSync('src/main/ipc/videoHandlers.ts', 'utf8');
+  assert(
+    handler.includes("from '../../renderer/daw/model/timecode.js'")
+      && handler.includes('parseTimecode('),
+    'the probe imports the shared SMPTE conversion',
+  );
+  assert(
+    !/function\s+timecodeToSeconds/.test(handler),
+    'and does not carry a second one',
+  );
+
+  // What that second one computed, kept as an arithmetic fact rather than a
+  // memory: non-drop over a drop-frame hour is 108 frames long.
+  const nonDrop = (((1 * 60 + 0) * 60 + 0) * 30 + 0) / FPS_2997;
+  const correct = parseTimecode('01:00:00;00', FPS_2997);
+  assert(correct !== null, '01:00:00;00 parses');
+  eq(Math.round(correct! * 10) / 10, 3600, 'the shared one reads an hour as an hour');
+  eq(Math.round((nonDrop - correct!) * 10) / 10, 3.6,
+    'and the old one was 3.6 s long, which is the 108 frames drop-frame gives back');
+});
+
 check('timecode round-trips through parsing', () => {
   for (const tc of ['01:00:00;00', '00:01:00;02', '00:10:00;00', '00:00:59;29']) {
     const sec = parseTimecode(tc, FPS_2997);
@@ -155,7 +184,9 @@ check('snapping puts a time on a frame boundary, at the real rate', () => {
 check('one frame is one frame', () => {
   close(frameSec(25), 0.04, '25 fps');
   close(frameSec(FPS_2398), 1001 / 24000, '23.976 is the rational, not the rounding', 1e-12);
-  eq(frameAt(1, 25), 25, 'the 25th frame is at one second');
+  // Was `frameAt(1, 25) === 25`.  `frameAt` is gone — nothing in the app ever
+  // called it — and the fact it asserted is the same one `frameSec` carries.
+  eq(Math.round(1 / frameSec(25)), 25, 'one second is 25 frames at 25 fps');
   eq(frameSec(0), 0, 'and a zero rate does not divide by zero');
 });
 

@@ -145,11 +145,21 @@ export const autosaveDriver = new AutosaveDriver();
 // ── Recovery ──────────────────────────────────────────────────────────────────
 
 import { deserializeDawSession } from '../model/session-io.js';
-import { describeRecovery, isRecoverable, type RecoveryInfo } from '../model/autosave.js';
+import {
+  describePrevious, describeRecovery, isRecoverable, pairGenerations, type RecoveryInfo,
+} from '../model/autosave.js';
 
 export interface RecoveryOffer {
   info: RecoveryInfo;
   label: string;
+  /**
+   * The autosave before this one, when the main process still has it.
+   *
+   * Offered as a second choice rather than a separate row: it is the same
+   * project, and it is what the newest one cannot be — a copy from before
+   * whatever broke the session that the newest one faithfully preserved.
+   */
+  previous?: { info: RecoveryInfo; label: string };
 }
 
 /**
@@ -165,15 +175,24 @@ export async function findRecoveries(
   try {
     const raw = await invoke('autosave:list');
     if (!Array.isArray(raw)) return [];
+    const records = (raw as RecoveryInfo[]).filter((e) => e && typeof e.path === 'string');
     const out: RecoveryOffer[] = [];
-    for (const entry of raw as RecoveryInfo[]) {
-      if (!entry || typeof entry.path !== 'string') continue;
+    for (const pair of pairGenerations(records)) {
+      const entry = pair.latest;
       // A project saved by hand after this file was written makes it stale,
       // and offering a stale one is how somebody loses the save they made on
       // purpose.  A clean save deletes the file outright; this is what
       // catches the case where that delete did not happen.
-      if (!isRecoverable(entry, lastManualSaveMs(entry.sessionId ?? '')).offer) continue;
-      out.push({ info: entry, label: describeRecovery(entry, nowMs) });
+      const manual = lastManualSaveMs(entry.sessionId ?? '');
+      if (!isRecoverable(entry, manual).offer) continue;
+      const offer: RecoveryOffer = { info: entry, label: describeRecovery(entry, nowMs) };
+      // The same two rules decide the older copy: an interrupted write is no
+      // more useful for being older, and a manual save newer than the newest
+      // autosave is newer than this one too.
+      if (pair.previous && isRecoverable(pair.previous, manual).offer) {
+        offer.previous = { info: pair.previous, label: describePrevious(pair.previous, nowMs) };
+      }
+      out.push(offer);
     }
     return out;
   } catch {

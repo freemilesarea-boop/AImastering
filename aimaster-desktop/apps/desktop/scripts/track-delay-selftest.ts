@@ -23,7 +23,7 @@
  * Run: pnpm --filter @aimaster/desktop test:track-delay
  */
 
-import { OfflineAudioContext } from 'node-web-audio-api';
+import { OfflineAudioContext } from './lib/offline-audio-context.js';
 
 // renderSession reads OfflineAudioContext off globalThis (the browser has it).
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;

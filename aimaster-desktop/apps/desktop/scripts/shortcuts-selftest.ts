@@ -12,14 +12,24 @@
 
 import {
   parseChord, matchesChord, normalizeKeyToken, formatChord, keyLabel,
-  type KeyEventLike,
+  type KeyEventLike, type Platform,
 } from '../src/renderer/shortcuts/keys.js';
 import { readFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { SHORTCUTS, BINDINGS, findShortcut, type CommandId } from '../src/renderer/shortcuts/definitions.js';
 import { buildCommands, buildSession, type CommandDeps, type AudioSnapshot } from '../src/renderer/shortcuts/commands.js';
+import type { SaveDepth, SaveDither } from '../src/renderer/audio/save-format.js';
+import { searchCommands } from '../src/renderer/shortcuts/command-search.js';
+import { LESSONS, stageOf } from '../src/renderer/shortcuts/lesson-plan.js';
+import { buildCheatSheet } from '../src/renderer/shortcuts/cheat-sheet.js';
 import {
-  useWorkspaceStore, snapTime, registerTransportElement,
+  resetHints, takeHintTurn, MAX_HINTS_PER_COMMAND,
+} from '../src/renderer/shortcuts/chord-hints.js';
+import {
+  describeSpec, effectiveChords, NO_OVERRIDES, type Overrides,
+} from '../src/renderer/shortcuts/key-overrides.js';
+import {
+  useWorkspaceStore, snapTime, registerTransportElement, panelsSharingSlot,
 } from '../src/renderer/stores/workspaceStore.js';
 import {
   initHistory, record, undo, redo, canUndo, canRedo, HISTORY_LIMIT,
@@ -30,9 +40,34 @@ import type { MasteringResult } from '@aimaster/shared-types';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
-function check(name: string, fn: () => void): void {
-  try { fn(); results.push({ name, pass: true, detail: '' }); }
-  catch (e) { results.push({ name, pass: false, detail: e instanceof Error ? e.message : String(e) }); }
+/**
+ * Run one check.
+ *
+ * It used to take `() => void` and call it bare.  Three checks in this file
+ * are `async`, so `fn()` handed back a promise, the result was recorded as a
+ * PASS before the body had run, and every assertion inside became an
+ * unhandled rejection that never reached the tally.  Found by changing the
+ * channel `file.export` calls and watching 38/38 pass anyway — the check that
+ * named that channel was one of the three.
+ *
+ * So a promise is awaited, through the same list the summary waits on.
+ */
+const pending: Promise<void>[] = [];
+
+function check(name: string, fn: () => void | Promise<void>): void {
+  const record = (e?: unknown): void => {
+    results.push(e === undefined
+      ? { name, pass: true, detail: '' }
+      : { name, pass: false, detail: e instanceof Error ? e.message : String(e) });
+  };
+  try {
+    const out = fn();
+    if (out !== undefined && typeof (out as Promise<void>).then === 'function') {
+      pending.push((out as Promise<void>).then(() => { record(); }, (e: unknown) => { record(e); }));
+      return;
+    }
+    record();
+  } catch (e) { record(e); }
 }
 function assert(c: unknown, m: string): void { if (!c) throw new Error(m); }
 function eq<T>(a: T, b: T, m: string): void {
@@ -262,6 +297,8 @@ interface Harness {
   durationSec: number;
   hasElement: boolean;
   toggles: number;
+  /** What the result screen is set to write — read by file.export. */
+  saveFormat: { depth: SaveDepth; dither: SaveDither };
 }
 
 function harness(over: Partial<AudioSnapshot> = {}, invokeResult: unknown = null): Harness {
@@ -273,12 +310,14 @@ function harness(over: Partial<AudioSnapshot> = {}, invokeResult: unknown = null
       selectedFile: null, masteringResult: null, options: opts(), referenceFilePath: null, ...over,
     },
     muted: false, positionSec: 0, durationSec: 120, hasElement: true, toggles: 0,
+    saveFormat: { depth: '24', dither: 'tpdf' },
   };
   h.options = h.audioSnapshot.options;
   h.deps = {
     notify: (message, type) => { h.notes.push({ message, type }); },
     setPage: (p) => { h.pages.push(p); },
     getAudio: () => ({ ...h.audioSnapshot, options: h.options }),
+    saveFormat: () => h.saveFormat,
     audio: {
       reset: () => { h.audioSnapshot.selectedFile = null; },
       setFile: (p) => { h.audioSnapshot.selectedFile = p; },
@@ -469,19 +508,41 @@ check('panel commands toggle their panel', () => {
   cmds['window.shortcutHelp']();
 });
 
-check('export refuses without a master and calls file:save-wav with one', async () => {
+check('export refuses without a master, and carries the chosen depth and dither', async () => {
   const h = harness();
   const cmds = buildCommands(h.deps);
   await cmds['file.export']();
   eq(h.invocations.length, 0, 'no IPC without a result');
   eq(h.notes[0]!.type, 'warning', 'warned');
 
-  const h2 = harness({ masteringResult: { outputPath: '/tmp/master.wav' } as MasteringResult }, '/out/master.wav');
-  const cmds2 = buildCommands(h2.deps);
-  await cmds2['file.export']();
-  eq(h2.invocations[0]!.channel, 'file:save-wav', 'channel');
-  eq(h2.invocations[0]!.args[0], '/tmp/master.wav', 'source path');
+  // The result screen's own choice has to reach the file.  This command used
+  // to call `file:save-wav`, which is a plain copy: 16-bit with TPDF dither,
+  // picked on that very screen, was written as the 24-bit render with no
+  // dither and nothing said a word.  The 저장 button beside it was right.
+  const h2 = harness({ masteringResult: { outputPath: '/tmp/master.wav' } as MasteringResult },
+    { savedPath: '/out/master.wav' });
+  h2.saveFormat = { depth: '16', dither: 'tpdf' };
+  await buildCommands(h2.deps)['file.export']();
+  eq(h2.invocations[0]!.channel, 'file:save-audio', 'channel');
+  const req = h2.invocations[0]!.args[0] as { sourcePath: string; bitDepth: number; dither: string };
+  eq(req.sourcePath, '/tmp/master.wav', 'source path');
+  eq(req.bitDepth, 16, 'the chosen depth');
+  eq(req.dither, 'tpdf', 'and the dither that goes with it');
   eq(h2.notes[0]!.type, 'success', 'success toast');
+
+  // At the render's own depth there is nothing to dither, so the payload must
+  // say none rather than name a shape the file will not get.
+  const h3 = harness({ masteringResult: { outputPath: '/tmp/m.wav' } as MasteringResult },
+    { savedPath: '/out/m.wav' });
+  h3.saveFormat = { depth: '24', dither: 'shaped' };
+  await buildCommands(h3.deps)['file.export']();
+  eq((h3.invocations[0]!.args[0] as { dither: string }).dither, 'none', '24-bit carries no dither');
+
+  // A cancelled dialog answers with no path and must not claim a success.
+  const h4 = harness({ masteringResult: { outputPath: '/tmp/m.wav' } as MasteringResult },
+    { savedPath: null });
+  await buildCommands(h4.deps)['file.export']();
+  eq(h4.notes.length, 0, 'a cancelled export says nothing');
 });
 
 check('save serialises a loadable session', async () => {
@@ -592,9 +653,320 @@ check('and the DAW override still zooms the way it is named', () => {
     'zoomOutH no longer divides pxPerSec');
 });
 
-const passed = results.filter((r) => r.pass).length;
-const failed = results.length - passed;
-console.log('\n=== DAW keyboard layer ===');
-for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);
-console.log(`\n${passed}/${results.length} passed${failed ? `, ${failed} FAILED` : ''}`);
-if (failed > 0) process.exit(1);
+// ── Teaching the keyboard ────────────────────────────────────────────────────
+
+check('the palette and the "?" overlay search the same way', () => {
+  // One function, two surfaces.  A second copy is how the two would start
+  // disagreeing about whether a remapped key is findable — the duplication
+  // that bit the session save, the WAV export and the MIDI import.
+  const help = readFileSync('src/renderer/components/daw/DawShortcutHelp.tsx', 'utf8');
+  const palette = readFileSync('src/renderer/components/daw/DawCommandPalette.tsx', 'utf8');
+  for (const [name, src] of [['help', help], ['palette', palette]] as const) {
+    assert(/searchCommands\(/.test(src), `${name} calls searchCommands`);
+    assert(!/\.note\.toLowerCase\(\)\.includes/.test(src),
+      `${name} does not carry its own copy of the matcher`);
+  }
+});
+
+check('a command is found by its name, its note and the key as printed', () => {
+  const platform: Platform = 'win';
+  const freeze = findShortcut('daw.freeze')!;
+  const byName = searchCommands('프리즈', NO_OVERRIDES, platform);
+  assert(byName.some((d) => d.id === 'daw.freeze'), 'by name');
+
+  const printed = describeSpec(freeze.chords[0]!, platform);
+  const byKey = searchCommands(printed, NO_OVERRIDES, platform);
+  assert(byKey.some((d) => d.id === 'daw.freeze'), `by the key as printed (${printed})`);
+
+  // The note is the sentence under the row, and it is what somebody who does
+  // not know the app's word for a thing will type.
+  const byNote = searchCommands('인서트를', NO_OVERRIDES, platform);
+  assert(byNote.length > 0, 'by words from the note');
+
+  eq(searchCommands('', NO_OVERRIDES, platform).length, SHORTCUTS.length, 'an empty query is everything');
+  eq(searchCommands('프리즈', NO_OVERRIDES, platform, 1).length, 1, 'the limit is honoured');
+});
+
+check('a remapped command is found by the key it has now, not the one it had', () => {
+  const platform: Platform = 'win';
+  const freeze = findShortcut('daw.freeze')!;
+  const was = describeSpec(freeze.chords[0]!, platform);
+  const overrides: Overrides = Object.freeze({ 'daw.freeze': ['Mod+Alt+Shift+KeyV'] });
+  const now = describeSpec('Mod+Alt+Shift+KeyV', platform);
+
+  assert(searchCommands(now, overrides, platform).some((d) => d.id === 'daw.freeze'),
+    `found by the new key (${now})`);
+  assert(!searchCommands(was, overrides, platform).some((d) => d.id === 'daw.freeze'),
+    `no longer found by the old one (${was})`);
+});
+
+check('every command id the toolbar names is a real one', () => {
+  // A typo here is a button that does nothing AND has no tooltip, which is
+  // two silent failures for the price of one.
+  const page = readFileSync('src/renderer/pages/DawPage.tsx', 'utf8');
+  const ids = [...page.matchAll(/<ToolbarButton cmd="([^"]+)"/g)].map((m) => m[1]!);
+  assert(ids.length >= 15, `the toolbar names ${ids.length} commands`);
+  for (const id of ids) {
+    assert(findShortcut(id as CommandId) !== undefined, `${id} is in the table`);
+  }
+});
+
+check('no tooltip spells a chord out by hand', () => {
+  // Twenty-two of them did.  Two ways wrong: "(Mod+Alt+D)" shows the person
+  // the word "Mod", which is a token from this codebase and not a key on
+  // anybody's keyboard; and all of them were frozen text, so the moment a
+  // student remapped the command the tooltip told them the wrong key with
+  // complete confidence — worse than saying nothing.
+  //
+  // One of them named a key bound to NOTHING: 가로 확대 is KeyF, the way 가로
+  // 축소 next to it is KeyG, and both its tooltip and its face said H.  A
+  // student pressing H got silence.
+  //
+  // So tooltips ask the keymap (`commandTitle`), and this check keeps it that
+  // way.  A mouse gesture is still allowed to be written out — "Alt+클릭" is
+  // not a chord and the keymap has nothing to say about it.
+  const files = execSync('grep -rl \'title="\' src/renderer --include=*.tsx', { encoding: 'utf8' })
+    .trim().split('\n');
+  const chordish = [
+    /(?:Mod|Cmd|Ctrl)\+/,          // the modifier spelled as a token
+    /⌘|⌥/,                         // or as a glyph
+    /Alt\+(?![가-힣])/,             // Alt+KEY, but not Alt+클릭
+    /\((?:Home|End|Space|Tab|Enter|Esc|Escape|Del|Delete|Numpad[^)]*|F\d+|[A-Z])\)/,
+  ];
+  const offenders: string[] = [];
+  for (const f of files) {
+    const src = readFileSync(f, 'utf8');
+    // Three forms, because the one this check first missed was the third:
+    // a conditional inside title={...} with the chord in both branches.  The
+    // app itself gave it away — four "×" buttons still saying (Mod+Backspace)
+    // while this check reported none.
+    const texts = [
+      ...[...src.matchAll(/title="([^"]*)"/g)].map((m) => m[1]!),
+      ...[...src.matchAll(/title=\{'([^']*)'\}/g)].map((m) => m[1]!),
+      ...[...src.matchAll(/title=\{(?:(?!\}\s*$)[\s\S]){0,400}?\}/g)].map((m) => m[0]),
+    ];
+    for (const text of texts) {
+      // `commandTitle(...)` naming a command id is the right answer, not an
+      // offender: ids like 'daw.open' contain no chord, and the chord it
+      // renders comes from the keymap at run time.
+      const bare = text.replace(/commandTitle\([^)]*\)/g, '');
+      if (chordish.some((re) => re.test(bare))) {
+        offenders.push(`${f.replace('src/renderer/', '')}: "${bare.slice(0, 56).trim()}"`);
+      }
+    }
+  }
+  assert(offenders.length === 0,
+    `${offenders.length} tooltip(s) write a key out instead of asking the keymap:\n    `
+    + offenders.join('\n    '));
+});
+
+check('the cheat sheet prints what the keyboard actually is', () => {
+  const platform: Platform = 'win';
+  const ids: CommandId[] = ['file.save', 'transport.playPause', 'daw.freeze'];
+  const html = buildCheatSheet({
+    title: '시험', commands: ids, overrides: NO_OVERRIDES, platform,
+    printedAt: new Date('2026-01-02T03:04:05Z'),
+  });
+  for (const id of ids) {
+    const def = findShortcut(id)!;
+    assert(html.includes(def.label), `${id}: the label is on the page`);
+    const chord = describeSpec(def.chords[0]!, platform);
+    assert(html.includes(chord), `${id}: its key (${chord}) is on the page`);
+  }
+  assert(html.includes('2026-01-02 03:04'), 'and when it was printed');
+});
+
+check('a remapped key prints as the remapped key, and is marked', () => {
+  const platform: Platform = 'win';
+  const overrides: Overrides = Object.freeze({ 'daw.freeze': ['Mod+Alt+Shift+KeyV'] });
+  const html = buildCheatSheet({
+    title: '시험', commands: ['daw.freeze'], overrides, platform, printedAt: new Date(),
+  });
+  // A sheet of factory defaults is wrong for anybody who changed a key, which
+  // is the whole reason this is generated rather than shipped as a picture.
+  assert(html.includes(describeSpec('Mod+Alt+Shift+KeyV', platform)), 'the new key');
+  assert(!html.includes(describeSpec(findShortcut('daw.freeze')!.chords[0]!, platform)),
+    'and not the one it replaced');
+  assert(/class="row changed"/.test(html), 'and the row says it was changed');
+});
+
+check('the page escapes the text it is given', () => {
+  // Real data, not a synthetic case: one note in the table carries double
+  // quotes, so this check has something to prove.
+  const html = buildCheatSheet({
+    title: '시험', commands: ['daw.tuneToGuide'], overrides: NO_OVERRIDES,
+    platform: 'win', printedAt: new Date(),
+  });
+  assert(html.includes('&quot;의도한 음&quot;'), 'the quotes came through escaped');
+  assert(!html.includes('"의도한 음"'), 'and not raw');
+});
+
+check('the page is self-contained, because a classroom machine has no network', () => {
+  const html = buildCheatSheet({
+    title: '전체', commands: SHORTCUTS.map((s) => s.id), overrides: NO_OVERRIDES,
+    platform: 'mac', printedAt: new Date(),
+  });
+  for (const bad of ['http://', 'https://', '<script', '@import', 'url(']) {
+    assert(!html.includes(bad), `nothing to fetch: found ${bad}`);
+  }
+  assert(/@page/.test(html) && /columns: 2/.test(html), 'and it is laid out for paper');
+});
+
+check('a stage prints as that stage, not as the whole table', () => {
+  const first = LESSONS.find((l) => l.stage === 1)!;
+  const html = buildCheatSheet({
+    title: first.title, commands: first.commands, overrides: NO_OVERRIDES,
+    platform: 'win', printedAt: new Date(),
+  });
+  assert(html.includes(first.title), 'the stage names itself');
+  eq((html.match(/class="row/g) ?? []).length, first.commands.length, 'one row per command');
+  // Rendered and looked at: every row carried an identical "1단계" chip while
+  // the title above already said it.  A badge that is the same on every row
+  // says nothing, so a stage's sheet drops it — and the whole table, where
+  // the stages differ, keeps it as the map of the course.
+  assert(!/class="stage"/.test(html), 'a stage sheet does not repeat the stage on every row');
+  const whole = buildCheatSheet({
+    title: '전체', commands: SHORTCUTS.map((x) => x.id), overrides: NO_OVERRIDES,
+    platform: 'win', printedAt: new Date(),
+  });
+  assert(/class="stage"/.test(whole), 'but the whole table marks which rows a stage teaches');
+});
+
+check('the lesson plan teaches real commands, each in one place', () => {
+  // The curriculum is data in its own file so a course can change without
+  // touching the table the dispatcher reads.  Data rots: an id that no longer
+  // exists is a stage with a hole in it, and a command in two stages means a
+  // student is taught it twice and the counts on the chips are wrong.
+  const seen = new Map<string, number>();
+  for (const lesson of LESSONS) {
+    assert(lesson.commands.length > 0, `${lesson.title} is empty`);
+    for (const id of lesson.commands) {
+      assert(findShortcut(id) !== undefined, `${lesson.title}: ${id} is not in the table`);
+      const prev = seen.get(id);
+      assert(prev === undefined, `${id} is taught in stage ${prev} and stage ${lesson.stage}`);
+      seen.set(id, lesson.stage);
+    }
+  }
+  // Stage 1 is "a dozen", which is the whole point — a stage that grows into
+  // a reference manual is the thing this replaced.
+  const first = LESSONS.find((l) => l.stage === 1)!;
+  assert(first.commands.length <= 15, `stage 1 has ${first.commands.length} commands`);
+  eq(LESSONS.map((l) => l.stage).join(), '1,2,3', 'three stages, in order');
+});
+
+check('stage 1 is a whole first lesson, and names the way out', () => {
+  // Not a style check: these five are the loop of a first session — get a
+  // sound in, hear it, cut it, undo, save — and the palette is how the other
+  // 229 commands are reachable by somebody who knows none of their keys.
+  const first = LESSONS.find((l) => l.stage === 1)!;
+  for (const id of ['daw.importAudio', 'transport.playPause', 'edit.undo',
+                    'file.save', 'daw.palette'] as CommandId[]) {
+    assert(first.commands.includes(id), `stage 1 is missing ${id}`);
+  }
+  // And every command it teaches has a key to teach.
+  for (const id of first.commands) {
+    assert(effectiveChords(findShortcut(id)!, NO_OVERRIDES).length > 0,
+      `${id} has no key, so there is nothing to teach`);
+  }
+});
+
+check('stageOf answers for a taught command and says nothing for the rest', () => {
+  eq(stageOf('file.save'), 1, 'save is stage 1');
+  eq(stageOf('daw.exportStems'), 3, 'stems is stage 3');
+  eq(stageOf('daw.memStore.7'), null, 'a memory slot is taught by nobody');
+});
+
+check('the overlay offers the stages and renders one row renderer', () => {
+  const overlay = readFileSync('src/renderer/components/daw/DawShortcutHelp.tsx', 'utf8');
+  assert(/LESSONS\.map/.test(overlay), 'the chips come from the lesson plan');
+  assert(/stageRows\.map\(renderRow\)/.test(overlay) && /rows\.map\(renderRow\)/.test(overlay),
+    'both views use the same row renderer');
+  // A stage in Cubase grouping would lose the teaching order, which is the
+  // only thing a stage has that the search box does not.
+  assert(/lesson\?\.commands/.test(overlay) || /lesson\.commands/.test(overlay),
+    'a stage is mapped from the lesson, not filtered out of the table');
+});
+
+check('no message spells a chord out by hand either', () => {
+  // The tooltip check below found 22 of these; the MESSAGE surface had twelve
+  // more — "먼저 Mod+Alt+Shift+C", which shows the person a token out of this
+  // codebase and goes wrong the moment a key moves.  Keymap presets move six
+  // keys at once, so the day presets shipped this stopped being theoretical:
+  // switching to Logic took R off 녹음 무장, and a message was still telling
+  // students to press R to arm — which now starts recording instead.
+  const files = execSync("grep -rl 'notify(' src/renderer --include=*.ts --include=*.tsx",
+    { encoding: 'utf8' }).trim().split('\n');
+  const chordish = [
+    /(?:Mod|Cmd|Ctrl)\+/, /⌘|⌥/, /Alt\+(?![가-힣])/,
+    /\((?:Home|End|Space|Tab|Enter|Esc|Del|Numpad[^)]*|F\d+|[A-Z])\)/,
+  ];
+  const offenders: string[] = [];
+  for (const f of files) {
+    const src = readFileSync(f, 'utf8');
+    for (const m of src.matchAll(/notify\(\s*(`[^`]*`|'[^']*')/g)) {
+      // An interpolation that asks the keymap is the right answer, so it comes
+      // out before the text is judged.
+      const text = m[1]!.replace(/\$\{[^}]*\}/g, '');
+      if (chordish.some((re) => re.test(text))) {
+        offenders.push(`${f.replace('src/renderer/', '')}: ${text.slice(0, 52)}`);
+      }
+    }
+  }
+  assert(offenders.length === 0,
+    `${offenders.length} message(s) write a key out instead of asking the keymap:\n    `
+    + offenders.join('\n    '));
+});
+
+check('a key hint stops after three showings and remembers that it did', () => {
+  // The count lives in localStorage so the fourth session does not start the
+  // three over again; Node has no such thing, so give it one.
+  const mem = new Map<string, string>();
+  (globalThis as unknown as { localStorage: unknown }).localStorage = {
+    getItem: (k: string) => mem.get(k) ?? null,
+    setItem: (k: string, v: string) => { mem.set(k, v); },
+    removeItem: (k: string) => { mem.delete(k); },
+    clear: () => { mem.clear(); },
+    key: () => null,
+    length: 0,
+  };
+  resetHints();
+  for (let i = 1; i <= MAX_HINTS_PER_COMMAND; i++) {
+    assert(takeHintTurn('daw.freeze'), `showing ${i} is allowed`);
+  }
+  assert(!takeHintTurn('daw.freeze'), 'and the fourth is not');
+  assert(!takeHintTurn('daw.freeze'), 'nor the fifth — the refusal did not count itself');
+  // One command reaching its limit must not silence another.
+  assert(takeHintTurn('daw.commit'), 'a different command still gets its turn');
+  // And the overlay's "키 힌트 다시 보기" really brings them back.
+  resetHints();
+  assert(takeHintTurn('daw.freeze'), 'after a reset the hints come back');
+});
+
+check('the palette and the shortcut list cannot be open at once', () => {
+  // Two full-screen overlays at the same z-index are one overlay with
+  // clickable buttons hidden under it — the slot mechanism exists for this.
+  eq(panelsSharingSlot('palette').join(), 'help', 'opening the palette closes the list');
+  eq(panelsSharingSlot('help').join(), 'palette', 'and the other way round');
+
+  const ws = useWorkspaceStore.getState();
+  ws.setPanel('help', true);
+  ws.setPanel('palette', true);
+  assert(useWorkspaceStore.getState().panels.palette, 'the palette is open');
+  assert(!useWorkspaceStore.getState().panels.help, 'and the list closed itself');
+  useWorkspaceStore.getState().setPanel('palette', false);
+});
+
+// Nothing is counted until every async body has finished — the summary used to
+// print while three of them were still running, which is exactly how their
+// failures went missing.  In an IIFE because this file compiles to cjs, where
+// a top-level await is a build error.
+void (async (): Promise<void> => {
+  await Promise.all(pending);
+
+  const passed = results.filter((r) => r.pass).length;
+  const failed = results.length - passed;
+  console.log('\n=== DAW keyboard layer ===');
+  for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);
+  console.log(`\n${passed}/${results.length} passed${failed ? `, ${failed} FAILED` : ''}`);
+  if (failed > 0) process.exit(1);
+})();

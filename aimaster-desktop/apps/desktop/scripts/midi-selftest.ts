@@ -651,12 +651,20 @@ check('the MIDI import button opens a dialog that can SEE a MIDI file', () => {
   // 가져오기" called `file:open-dialog-multi`, whose only filter is Audio, so
   // every .mid in the folder was greyed out.  Nothing in the parser could
   // ever have caught that — the bug was the door, not the room.
-  const page = readFileSync('src/renderer/pages/DawPage.tsx', 'utf8');
-  const fn = page.slice(page.indexOf('const handleImportMidi'),
-    page.indexOf('const handleCreateStack'));
-  assert(fn.length > 0, 'the import handler is still there to check');
+  //
+  // This used to read the handler out of DawPage by name, and broke the day
+  // the implementation moved to the command layer so a key could reach it —
+  // a test pinned to WHERE the code lives rather than to what it does.  It
+  // asks the command now.  The channel is also checked by running the command
+  // against a fake IPC in told-the-truth-selftest; this one stays because it
+  // is the check that knows WHY the channel matters (the filters below).
+  const cmds = readFileSync('src/renderer/shortcuts/daw-commands.ts', 'utf8');
+  const cmdAt = cmds.indexOf("'daw.importMidi':");
+  assert(cmdAt >= 0, 'the MIDI import command is still there to check');
+  const fn = cmds.slice(cmdAt, cmds.indexOf("\n    'daw.", cmdAt + 10));
+  assert(fn.length > 0, 'and its body could be read');
   assert(/invoke\('file:open-dialog-midi'\)/.test(fn),
-    'the MIDI button asks the MIDI picker');
+    'MIDI 가져오기 asks the MIDI picker');
   assert(!/open-dialog-multi/.test(fn), 'and not the audio one');
 
   const handlers = readFileSync('src/main/ipc/fileHandlers.ts', 'utf8');

@@ -116,3 +116,28 @@ python3 tests/qa/run_qa.py
 - shared-types 의 v3.2 옵셔널 필드는 **모두 옵셔널** — UI 가 사용하지 않아도 깨지지 않음.
 - `adynamicequalizer` 미가용 빌드는 자동으로 정적 EQ fallback (60% 강도).
 - ISP safety 의 `numpy` 미설치 환경은 자동 스킵 — 마스터링 자체는 진행.
+
+## 테스트
+
+```bash
+python3 -m pip install -r services/python-audio/requirements.txt   # 한 번
+pnpm --filter @aimaster/desktop test:python                        # 전체, 약 14분
+```
+
+2026-10-18 측정: **526 passed / 0 skipped**.
+
+`pnpm test` (데스크톱 체인)은 이 14분을 포함하지 않는다. 대신 그 안에
+`test:python-suite` (2초)가 들어 있고, 이것이 `pytest --setup-plan` 으로 전체
+수집을 계획해 **스스로를 skip 하는 테스트가 하나라도 생기면 실패**한다.
+
+그 검사가 있는 이유: `tests/mastering/test_extract_commercial_reference.py`
+30개가 collection 시점에 스스로를 빼고 있었다. 파일 머리의
+
+```python
+pytestmark = pytest.mark.skipif(not os.environ.get("AIMASTER_FFMPEG"), ...)
+```
+
+조건은 모듈 import 때 평가되는 bool 인데, 그 변수를 넣어 주는 `conftest.py` 의
+코드가 session fixture 안에 있어서 항상 한발 늦었다. 손으로
+`AIMASTER_FFMPEG` 를 export 한 사람만 그 30개를 돌렸고, 런북에 적힌
+`79 passed, 41 skipped` 기준선이 그걸 정상처럼 보이게 했다.

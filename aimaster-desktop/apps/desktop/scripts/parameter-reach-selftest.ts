@@ -170,12 +170,13 @@ check('and nothing claims to be unimplemented after it starts working', () => {
 });
 
 check('a parameter marked wired moves the config the render is built from', () => {
-  // What this does NOT catch: a wrong `binding.path`.  The measure is
-  // state → config, and the config is built by `chain-config.ts` reading
-  // parameter IDs, not binding paths — so renaming a path to nonsense
-  // leaves this green.  Tried it, to see.  What it does catch is the
-  // regression that matters: a field dropped from the render's config while
-  // the definition still claims the render carries it.
+  // This measure is state → config, and the config is built by
+  // `chain-config.ts` reading parameter IDs, not binding paths — so it is
+  // blind to a path renamed to nonsense.  That used to be the end of the
+  // note; the check below now closes it by comparing each declared path
+  // against the config key that actually moves.  What THIS one catches is
+  // the regression that matters here: a field dropped from the render's
+  // config while the definition still claims the render carries it.
   const lying = measured.filter((m) => m.status === 'wired' && !m.render).map((m) => m.id);
   assert(lying.length === 0,
     `${lying.length} parameter(s) say 'wired' and move no render config: ${lying.join(', ')}`);
@@ -241,6 +242,154 @@ check('an unimplemented parameter tells the user, in Korean', () => {
 // `reaches` below still looks at both configs, which is right for its own
 // question — does anything at all read this parameter — because a selftest
 // reading the test-only config is exactly who that config is for.
+
+// ── Does the declared path name the field that actually moves? ───────────
+//
+// `binding.path` is the one part of a definition that says WHERE the value
+// goes, and nothing checked it.  `module-suite-selftest` stood in with "the
+// path contains a dot", which `dehum.anything` satisfies as happily as
+// `dehum.frequencyHz`.
+//
+// This asks the config instead.  Move the parameter, diff every leaf of the
+// chain config before and after, and the leaves that changed ARE the
+// parameter's address.  Measured: 190 of the 193 chain-config-vocabulary
+// bindings name exactly what moves, two move nothing (the check above's
+// business, not this one's), and one disagrees on purpose.  Validated by
+// renaming `dehum.frequencyHz` to `dehum.freqHz`: caught, with both
+// addresses in the message.
+
+/** Every leaf of an object as a dotted path, arrays indexed. */
+function leaves(o: unknown, pre = ''): Map<string, unknown> {
+  const out = new Map<string, unknown>();
+  if (o === null || typeof o !== 'object') { if (pre) out.set(pre, o); return out; }
+  if (Array.isArray(o)) {
+    o.forEach((v, i) => leaves(v, `${pre}[${i}]`).forEach((x, k) => out.set(k, x)));
+    return out;
+  }
+  for (const [k, v] of Object.entries(o as Record<string, unknown>)) {
+    leaves(v, pre ? `${pre}.${k}` : k).forEach((x, kk) => out.set(kk, x));
+  }
+  return out;
+}
+
+/** The chain-config leaves that move when this parameter moves. */
+function movedAddresses(moduleId: ModuleId, def: ParameterDef): Set<string> {
+  const moved = elsewhere(def, base[moduleId].parameters[def.id]);
+  const hit = new Set<string>();
+  if (moved === null) return hit;
+  for (const bypass of [true, false]) {
+    const ref: AllModulesParameterState = { ...base, [moduleId]: { ...base[moduleId], bypass } };
+    const aft: AllModulesParameterState = {
+      ...base,
+      [moduleId]: { ...base[moduleId], bypass,
+        parameters: { ...base[moduleId].parameters, [def.id]: moved } },
+    };
+    const A = leaves(buildChainConfig({ state: ref, matchTargetCurveDb: MATCH_TARGET }));
+    const B = leaves(buildChainConfig({ state: aft, matchTargetCurveDb: MATCH_TARGET }));
+    for (const [k, v] of B) if (!A.has(k) || JSON.stringify(A.get(k)) !== JSON.stringify(v)) hit.add(k);
+    for (const k of A.keys()) if (!B.has(k)) hit.add(k);
+  }
+  return hit;
+}
+
+/**
+ * The one parameter whose declared path is not where its effect lands, with
+ * the reason.  `export.bitDepth` is a decision about the FILE; what it does
+ * to the chain is gate the dither block, so the config moves under `dither`
+ * while the path correctly names the export field the user set.
+ */
+const ADDRESS_EXCEPTIONS = new Map<string, string>([
+  ['export.bitDepth', 'gates the dither block — the effect lands in dither.*, the path names the export field'],
+]);
+
+check('a declared binding path names the config field that actually moves', () => {
+  const wrong: string[] = [];
+  let compared = 0;
+  for (const moduleId of MODULE_IDS) {
+    const defs = ALL_MODULE_PARAMETER_DEFS[moduleId];
+    if (!defs) continue;
+    for (const def of defs.parameters) {
+      const b = def.binding;
+      // The five original modules address the EngineSchema instead of the
+      // chain config (`adaptive-eq:bands[lowCut].freqHz`), which this config
+      // has no field for; their own harnesses cover them.
+      if (!b || b.moduleType !== null) continue;
+      const key = `${moduleId}.${def.id}`;
+      if (ADDRESS_EXCEPTIONS.has(key)) continue;
+      const addr = movedAddresses(moduleId, def);
+      if (addr.size === 0) continue;               // moves nothing — checked above
+      compared++;
+      const named = [...addr].some(
+        (a) => a === b.path || a.startsWith(`${b.path}[`) || a.startsWith(`${b.path}.`),
+      );
+      if (!named) wrong.push(`${key}: declared "${b.path}", moved ${[...addr].sort().join(', ')}`);
+    }
+  }
+  assert(compared > 100, `only ${compared} bindings were compared — the rig stopped reaching them`);
+  assert(wrong.length === 0,
+    `${wrong.length} binding(s) name a field they do not move:\n    ${wrong.join('\n    ')}`);
+});
+
+/**
+ * The EngineSchema vocabulary, which this file can measure the EFFECT of but
+ * not the ADDRESS.
+ *
+ * Thirty-five bindings name a module type and a path in a second address
+ * space — `adaptive-eq:bands[lowCut].freqHz`, `bus-comp:thresholdDb`,
+ * `stereo-imager:bands[0].width` — and the chain config has no such fields.
+ * `module-suite-selftest` skips them saying they "are checked by their own
+ * harnesses, not here".  Their BEHAVIOUR is: presets, DSP and the reach
+ * checks above all exercise these parameters.  Their PATHS are not, by
+ * anything, anywhere — searched: the only mentions of `adaptive-eq` or
+ * `stereo-imager` under `scripts/` use them as preset module-type names, and
+ * nothing resolves a `bands[lowCut].freqHz` against a schema.  The schema
+ * they address is not in this repository.
+ *
+ * So the honest statement is the one held below: the value lands somewhere
+ * real, and the string saying where is documentation.  The count is pinned
+ * so the vocabulary can only shrink — a new binding in an address space
+ * nothing can check should be a decision, not a default.
+ */
+const ENGINE_SCHEMA_BINDINGS = 35;
+
+check('every EngineSchema-vocabulary binding at least moves a config', () => {
+  // Counted from the DECLARATIONS, not from `measured` — the export module's
+  // parameters are graded on their own terms above and left out of that
+  // array, so counting there gave 33 for 35 declared and would have drifted
+  // with an unrelated change to the rig.
+  const declared: string[] = [];
+  for (const moduleId of MODULE_IDS) {
+    for (const def of ALL_MODULE_PARAMETER_DEFS[moduleId]?.parameters ?? []) {
+      if (def.binding && def.binding.moduleType !== null) declared.push(`${moduleId}.${def.id}`);
+    }
+  }
+  assert(declared.length === ENGINE_SCHEMA_BINDINGS,
+    `${declared.length} EngineSchema-vocabulary bindings, pinned at ${ENGINE_SCHEMA_BINDINGS}.`
+    + (declared.length > ENGINE_SCHEMA_BINDINGS
+      ? '  One was ADDED — put it in the chain-config vocabulary instead, where a path can be checked.'
+      : '  One migrated or went: lower the pin.'));
+  // And the knob works, even though its declared address is unverifiable
+  // here.  Only the ones the reach rig grades can be asked.
+  const graded = new Set(measured.map((m) => m.id));
+  const dead = declared.filter((id) => graded.has(id) && !measured.find((m) => m.id === id)!.reaches);
+  assert(dead.length === 0,
+    `${dead.length} binding(s) address the EngineSchema and move no config at all: ${dead.join(', ')}`);
+});
+
+check('and the one documented exception is still the only one', () => {
+  // An exception list that nobody re-measures is how the next wrong path
+  // gets in.  Each entry must still disagree — if it starts agreeing, the
+  // special case is gone and the line should be too.
+  for (const [key, why] of ADDRESS_EXCEPTIONS) {
+    const [moduleId, paramId] = key.split('.') as [ModuleId, string];
+    const def = ALL_MODULE_PARAMETER_DEFS[moduleId]?.parameters.find((d) => d.id === paramId);
+    assert(def !== undefined, `${key} is on the exception list and no longer exists`);
+    const addr = movedAddresses(moduleId, def!);
+    const named = [...addr].some((a) => a === def!.binding.path);
+    assert(!named,
+      `${key} now moves exactly what it declares — delete its exception (was: ${why})`);
+  }
+});
 
 console.log('');
 for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);

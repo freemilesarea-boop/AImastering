@@ -21,6 +21,7 @@
 // seconds off at the ten-minute mark is worse than one with no timecode at all.
 
 import type { DawSession } from './types.js';
+import { formatTimecode } from './timecode.js';
 
 export interface VideoRef {
   id: string;
@@ -98,100 +99,17 @@ export function nearestFrameRate(fps: number): FrameRate {
   return best;
 }
 
-/** Frames per second COUNTED, which is not the same as frames per second. */
-function nominalRate(fps: number): number {
-  return Math.round(fps);
-}
-
 // ── SMPTE timecode ────────────────────────────────────────────────────────────
-
-/**
- * Seconds → `HH:MM:SS:FF`.
- *
- * Non-drop is the easy case: a frame count divided out into fields at the
- * NOMINAL rate (30 for 29.97), which is why non-drop timecode slowly runs
- * ahead of the clock — an hour of 29.97 material reads 01:00:03:18.
- *
- * Drop-frame fixes that by skipping frame NUMBERS: the numbers 00 and 01 are
- * never used at the top of a minute, except every tenth minute.  Nothing is
- * dropped from the picture; only the labels move.  Over an hour that recovers
- * 108 frames, which is the 3.6 seconds non-drop was losing.
- */
-export function formatTimecode(
-  timeSec: number, fps: number, dropFrame = false,
-): string {
-  const nominal = nominalRate(fps);
-  const negative = timeSec < 0;
-  let frames = Math.round(Math.abs(timeSec) * fps);
-
-  if (dropFrame) {
-    // 2 frames per minute at 30-ish, 4 at 60-ish.
-    const dropPerMinute = Math.round(nominal / 15);
-    const framesPer10Min = Math.round(nominal * 60 * 10) - dropPerMinute * 9;
-    const framesPerMin = Math.round(nominal * 60) - dropPerMinute;
-
-    const tenMinBlocks = Math.floor(frames / framesPer10Min);
-    const rest = frames % framesPer10Min;
-    // `>` and not `>=`: the two frames at the very top of a ten-minute block
-    // are inside the minute that does NOT drop, and counting them as dropped
-    // shifts everything after by two frames.
-    frames += dropPerMinute * 9 * tenMinBlocks;
-    if (rest > dropPerMinute) {
-      frames += dropPerMinute * Math.floor((rest - dropPerMinute) / framesPerMin);
-    }
-  }
-
-  const ff = frames % nominal;
-  const totalSeconds = Math.floor(frames / nominal);
-  const ss = totalSeconds % 60;
-  const mm = Math.floor(totalSeconds / 60) % 60;
-  const hh = Math.floor(totalSeconds / 3600) % 24;
-  const pad = (n: number): string => String(n).padStart(2, '0');
-  return `${negative ? '-' : ''}${pad(hh)}:${pad(mm)}:${pad(ss)}${dropFrame ? ';' : ':'}${pad(ff)}`;
-}
-
-/**
- * `HH:MM:SS:FF` → seconds, or null when it is not timecode.
- *
- * Accepts `;` or `.` before the frames as the drop-frame marker, which is what
- * every other tool writes, and tolerates a missing hours field.
- */
-export function parseTimecode(text: string, fps: number): number | null {
-  const trimmed = text.trim();
-  const match = /^(?:(\d{1,2})[:;.])?(\d{1,2})[:;.](\d{1,2})[:;.](\d{1,2})$/.exec(trimmed);
-  if (!match) return null;
-  const [, h, m, s, f] = match;
-  const hh = Number(h ?? 0);
-  const mm = Number(m);
-  const ss = Number(s);
-  const ff = Number(f);
-  const nominal = nominalRate(fps);
-  if (mm > 59 || ss > 59 || ff >= nominal) return null;
-
-  const dropFrame = /[;.]\d{1,2}$/.test(trimmed);
-  let frames = ((hh * 60 + mm) * 60 + ss) * nominal + ff;
-  if (dropFrame) {
-    const dropPerMinute = Math.round(nominal / 15);
-    const totalMinutes = hh * 60 + mm;
-    frames -= dropPerMinute * (totalMinutes - Math.floor(totalMinutes / 10));
-  }
-  return frames / fps;
-}
-
-/** Snap a time to the nearest frame boundary — where a hit point can live. */
-export function snapToFrame(timeSec: number, fps: number): number {
-  if (!(fps > 0)) return timeSec;
-  return Math.round(timeSec * fps) / fps;
-}
-
-export function frameAt(timeSec: number, fps: number): number {
-  return Math.round(timeSec * fps);
-}
-
-/** One frame, in seconds — the smallest meaningful nudge against picture. */
-export function frameSec(fps: number): number {
-  return fps > 0 ? 1 / fps : 0;
-}
+//
+// In `model/timecode.ts`, which imports nothing, so the main process can use
+// the same rules — see that file's header for what happened when it didn't.
+// Re-exported here because this is where the rest of the app looks for them.
+export {
+  formatTimecode, frameSec, parseTimecode, snapToFrame,
+} from './timecode.js';
+// NOT `frameAt`: nothing in the app calls it, and re-exporting it from here
+// would have made the dead-exports ratchet read it as reached.  It keeps its
+// line in `test-only-exports.txt`, under its new path.
 
 // ── Placing the picture ───────────────────────────────────────────────────────
 

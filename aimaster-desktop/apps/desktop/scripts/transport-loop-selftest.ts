@@ -50,7 +50,7 @@
  * Run:  pnpm --filter @aimaster/desktop test:transport-loop
  */
 
-import { OfflineAudioContext } from 'node-web-audio-api';
+import { OfflineAudioContext } from './lib/offline-audio-context.js';
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 
 import { MixerEngine } from '../src/renderer/daw/engine/mixer-engine.js';

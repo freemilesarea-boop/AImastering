@@ -28,7 +28,7 @@
  * to a client, so the render refuses.
  */
 
-import { OfflineAudioContext } from 'node-web-audio-api';
+import { OfflineAudioContext } from './lib/offline-audio-context.js';
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 
 import * as fs from 'node:fs';
@@ -40,8 +40,8 @@ import {
 } from '../src/renderer/daw/model/session-ops.js';
 import { renderSession } from '../src/renderer/daw/engine/offline-render.js';
 import {
-  clearAudioCache, forgetMissing, missingFileIds, noteLoadFailure, onMissingFile,
-  preloadAll,
+  clearAudioCache, decodeForDisplay, forgetMissing, missingFileIds, missingFiles,
+  noteLoadFailure, onMissingFile, preloadAll,
 } from '../src/renderer/daw/engine/audio-cache.js';
 import { buildPool } from '../src/renderer/daw/model/clip-pool.js';
 import { analyzeBuffer } from '../src/renderer/daw/engine/audio-cache.js';
@@ -106,9 +106,65 @@ async function main(): Promise<void> {
   const failures = first.failures;
   check('a file that cannot be read comes back as a failure',
     failures.length === 1 && failures[0]?.id === GONE.id, JSON.stringify(failures));
+  // Not "is it non-empty": the version of this check that asked only that
+  // passed happily while the store path recorded the words "소스를 준비하지
+  // 못했습니다" for every cause there is.  A reason has to be ABOUT the file.
   check('with a reason worth reading',
-    (failures[0]?.reason ?? '').length > 0, failures[0]?.reason);
+    (failures[0]?.reason ?? '').length > 0
+    && /gone\.wav|ENOENT|no such file|열 수 없|읽을 수 없/i.test(failures[0]?.reason ?? ''),
+    failures[0]?.reason);
   check('and it is remembered', missingFileIds().has(GONE.id));
+
+  // ── 1b. The store path: main already worked out why ──────────────────────
+  // `decodeForDisplay` goes through main when there is a store, which is the
+  // path a real session takes and the one no test could reach before — the
+  // bridge is simply absent in Node, so `canUseStore()` said no and the whole
+  // branch was skipped.  Stubbed here, because the line that matters is what
+  // it does with main's answer: it used to replace it.
+  {
+    const asked: string[] = [];
+    const bridge = {
+      invoke: (channel: string, arg: unknown): Promise<unknown> => {
+        asked.push(channel);
+        const filePath = String((arg as { path?: unknown }).path ?? '');
+        if (filePath.endsWith('fine.wav')) {
+          return Promise.resolve({
+            key: 'k1', pcmPath: '/tmp/k1.f32', sampleRate: 48_000,
+            channels: 2, frames: 48_000, peaks: [0.5, 0.25],
+          });
+        }
+        // Exactly what the running app delivers: the Korean sentence
+        // `classifyFFmpegError` produced from ffmpeg's stderr, inside the
+        // envelope Electron puts around every handler error.  Measured on
+        // device — without the unwrapping in `pcm-store`, the reason the DAW
+        // remembers starts with "Error invoking remote method".
+        return Promise.reject(new Error(
+          "Error invoking remote method 'daw:pcm-source': Error: "
+          + '오디오 파일을 읽을 수 없습니다. 파일이 손상되었거나 지원하지 않는 형식일 수 있습니다.'));
+      },
+    };
+    const g = globalThis as unknown as { electronAPI?: unknown };
+    g.electronAPI = bridge;
+    clearAudioCache();
+    const report = await decodeForDisplay([
+      { id: 'broken' as typeof GONE.id, path: '/songs/깨진 파일.wav' },
+      { id: 'fine'   as typeof GONE.id, path: '/songs/fine.wav' },
+    ]);
+    const remembered = missingFiles().find((f) => f.id === 'broken');
+    delete g.electronAPI;
+    clearAudioCache();
+
+    check('the store path decodes what it can and reports what it cannot',
+      report.decoded === 1 && report.failed.length === 1
+      && asked.filter((c) => c === 'daw:pcm-source').length === 2,
+      `decoded=${report.decoded}, failed=${report.failed.length}, ${asked.length} IPC call(s)`);
+    check("and the reason it remembers is main's, not a sentence of its own",
+      (remembered?.reason ?? '').includes('손상되었거나'),
+      remembered?.reason ?? '(nothing was recorded)');
+    check('with Electron\u2019s envelope taken off it',
+      (remembered?.reason ?? '').startsWith('오디오 파일을'),
+      remembered?.reason ?? '(nothing was recorded)');
+  }
 
   check('forgetting one drops it', (() => {
     forgetMissing(GONE.id);

@@ -35,6 +35,9 @@ import { tempoMapOf } from '../../../daw/model/tempo-map.js';
 
 const CELL = 26;
 
+/** One empty list, not a fresh one per render — it feeds a memo's deps. */
+const NO_GRIDS: readonly StepPattern[] = [];
+
 export default function StepSequencer() {
   const session = useDawStore((s) => s.session);
   const apply = useDawStore((s) => s.apply);
@@ -43,7 +46,7 @@ export default function StepSequencer() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [addPitch, setAddPitch] = useState(GM_DRUM_MAP[4]?.pitch ?? 46);
 
-  const grids = session.stepPatterns ?? [];
+  const grids = session.stepPatterns ?? NO_GRIDS;
   const grid = useMemo(
     () => grids.find((g) => g.id === activeId) ?? grids[0] ?? null,
     [grids, activeId]);

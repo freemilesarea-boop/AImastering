@@ -140,7 +140,7 @@ them; verify only that the UI does not crash when the fields are absent
 | H4 | P0 | `pnpm --filter @aimaster/desktop test:release-smoke` exits 0; "license gate" check is informational PASS only (gate disabled in v3.6.0-rc.1+1). |  |  |
 | H5 | P0 | `PRODUCTION=true pnpm --filter @aimaster/desktop test:release-smoke` (NO `LICENSE_HMAC_SECRET` set) **also exits 0** — proves the gate is no longer enforced. |  |  |
 | H6 | — | (removed) The previous "PRODUCTION=true + LICENSE_HMAC_SECRET=<32-char> exits 0" case is no longer applicable; the secret is not consumed by anything. | N/A |  |
-| H7 | P0 | `pytest -q` in `services/python-audio` is green (`79 passed, 41 skipped` baseline). |  |  |
+| H7 | P0 | `pnpm --filter @aimaster/desktop test:python` is green — exit 0 is the criterion, not a count. Measured 2026-10-18: **526 passed, 0 skipped** (~14 min). The old `79 passed, 41 skipped` baseline was stale AND hid a defect: thirty tests in `test_extract_commercial_reference.py` removed themselves at collection because `conftest.py` resolved `AIMASTER_FFMPEG` in a fixture, too late for a `skipif`. Any skip here is now a failure — `test:python-suite` in the main chain checks it in two seconds. |  |  |
 | H8 | P1 | `node scripts/prebuild.cjs` copies `ffmpeg` and `ffprobe` into `apps/desktop/public/bin/` (size > 0, executable bit set on POSIX). |  |  |
 | H9 | P1 | `electron-builder.yml` win target list contains **only** `nsis`, no legacy `portable` target. |  |  |
 | H10 | P0 | All `package.json` files report version `3.6.0-rc.1` (or `0.2.0` for `@aimaster/shared-types`). |  |  |
