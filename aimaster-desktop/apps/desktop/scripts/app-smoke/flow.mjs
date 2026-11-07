@@ -1888,6 +1888,80 @@ try {
     );
   }
 
+  // ── The shortcut overlay's lesson stages ────────────────────────────────
+  //
+  // This block exists because of what it caught on its first run.  The stage
+  // filter computed its rows from a `const` declared BELOW it, which is a
+  // temporal-dead-zone error — and only when a stage was chosen, because with
+  // no stage the list is empty and the reference is never evaluated.  So it
+  // typechecked, it linted, and four selftests over the source text passed,
+  // while clicking "1단계" in the real app threw and React unmounted the whole
+  // overlay.  The renderer-error check below would have caught it the moment
+  // the smoke opened this panel, and the smoke had never opened it.
+  {
+    const staged = await page.evaluate(async () => {
+      const app = await import('/stores/appStore.ts');
+      const ws = await import('/stores/workspaceStore.ts');
+      app.useAppStore.getState().setPage('daw');
+      await new Promise((r) => setTimeout(r, 700));
+      ws.useWorkspaceStore.getState().setPanel('help', true);
+      await new Promise((r) => setTimeout(r, 700));
+
+      const search = 'input[placeholder="기능 · 설명 · 키 검색"]';
+      const boxOf = () => document.querySelector(search)?.closest('div.rounded-2xl') ?? null;
+      const opened = boxOf();
+      if (!opened) return { error: 'the overlay did not open' };
+
+      const rowsIn = (box) => [...box.querySelectorAll('section > div > div')]
+        .map((d) => d.querySelector('p')?.textContent?.trim() ?? '').filter(Boolean);
+      const whole = { sections: opened.querySelectorAll('section').length, rows: rowsIn(opened).length };
+
+      const chip = (text) => {
+        const box = boxOf();
+        const b = box && [...box.querySelectorAll('button')].find((x) => x.textContent.includes(text));
+        if (b) b.click();
+        return Boolean(b);
+      };
+      if (!chip('1단계')) return { error: 'no stage chip', whole };
+      await new Promise((r) => setTimeout(r, 400));
+
+      // Alive AT ALL is the point: a render error takes the overlay with it.
+      const afterBox = boxOf();
+      if (!afterBox) return { error: 'the overlay vanished when a stage was chosen', whole };
+      const stageRows = rowsIn(afterBox);
+
+      if (!chip('전체 (')) return { error: 'no all chip', whole, stageRows };
+      await new Promise((r) => setTimeout(r, 400));
+      const backBox = boxOf();
+      const back = backBox
+        ? { sections: backBox.querySelectorAll('section').length, rows: rowsIn(backBox).length }
+        : null;
+      ws.useWorkspaceStore.getState().setPanel('help', false);
+      return { whole, stageRows, back };
+    });
+
+    if (expect(staged.error === undefined,
+      'the shortcut overlay survives a lesson stage being chosen',
+      staged.error ?? `whole ${staged.whole?.rows} rows → stage ${staged.stageRows?.length}`)) {
+      expect(
+        staged.stageRows.length > 0 && staged.stageRows.length <= 15,
+        'and a stage is a dozen rows, not the whole table',
+        `${staged.stageRows.length} rows (table has ${staged.whole.rows})`,
+      );
+      expect(
+        staged.stageRows[0] === '오디오 가져오기',
+        'in teaching order — the first row is the first thing a first lesson does',
+        staged.stageRows.slice(0, 3).join(' → '),
+      );
+      expect(
+        staged.back !== null && staged.back.sections === staged.whole.sections
+          && staged.back.rows === staged.whole.rows,
+        'and the whole table comes back',
+        staged.back ? `${staged.back.sections} sections · ${staged.back.rows} rows` : '(gone)',
+      );
+    }
+  }
+
   await page.waitForTimeout(500);
   expect(
     rendererErrors.length === 0,

@@ -20,10 +20,13 @@ import { SHORTCUTS, BINDINGS, findShortcut, type CommandId } from '../src/render
 import { buildCommands, buildSession, type CommandDeps, type AudioSnapshot } from '../src/renderer/shortcuts/commands.js';
 import type { SaveDepth, SaveDither } from '../src/renderer/audio/save-format.js';
 import { searchCommands } from '../src/renderer/shortcuts/command-search.js';
+import { LESSONS, stageOf } from '../src/renderer/shortcuts/lesson-plan.js';
 import {
   resetHints, takeHintTurn, MAX_HINTS_PER_COMMAND,
 } from '../src/renderer/shortcuts/chord-hints.js';
-import { describeSpec, NO_OVERRIDES, type Overrides } from '../src/renderer/shortcuts/key-overrides.js';
+import {
+  describeSpec, effectiveChords, NO_OVERRIDES, type Overrides,
+} from '../src/renderer/shortcuts/key-overrides.js';
 import {
   useWorkspaceStore, snapTime, registerTransportElement, panelsSharingSlot,
 } from '../src/renderer/stores/workspaceStore.js';
@@ -754,6 +757,61 @@ check('no tooltip spells a chord out by hand', () => {
   assert(offenders.length === 0,
     `${offenders.length} tooltip(s) write a key out instead of asking the keymap:\n    `
     + offenders.join('\n    '));
+});
+
+check('the lesson plan teaches real commands, each in one place', () => {
+  // The curriculum is data in its own file so a course can change without
+  // touching the table the dispatcher reads.  Data rots: an id that no longer
+  // exists is a stage with a hole in it, and a command in two stages means a
+  // student is taught it twice and the counts on the chips are wrong.
+  const seen = new Map<string, number>();
+  for (const lesson of LESSONS) {
+    assert(lesson.commands.length > 0, `${lesson.title} is empty`);
+    for (const id of lesson.commands) {
+      assert(findShortcut(id) !== undefined, `${lesson.title}: ${id} is not in the table`);
+      const prev = seen.get(id);
+      assert(prev === undefined, `${id} is taught in stage ${prev} and stage ${lesson.stage}`);
+      seen.set(id, lesson.stage);
+    }
+  }
+  // Stage 1 is "a dozen", which is the whole point — a stage that grows into
+  // a reference manual is the thing this replaced.
+  const first = LESSONS.find((l) => l.stage === 1)!;
+  assert(first.commands.length <= 15, `stage 1 has ${first.commands.length} commands`);
+  eq(LESSONS.map((l) => l.stage).join(), '1,2,3', 'three stages, in order');
+});
+
+check('stage 1 is a whole first lesson, and names the way out', () => {
+  // Not a style check: these five are the loop of a first session — get a
+  // sound in, hear it, cut it, undo, save — and the palette is how the other
+  // 229 commands are reachable by somebody who knows none of their keys.
+  const first = LESSONS.find((l) => l.stage === 1)!;
+  for (const id of ['daw.importAudio', 'transport.playPause', 'edit.undo',
+                    'file.save', 'daw.palette'] as CommandId[]) {
+    assert(first.commands.includes(id), `stage 1 is missing ${id}`);
+  }
+  // And every command it teaches has a key to teach.
+  for (const id of first.commands) {
+    assert(effectiveChords(findShortcut(id)!, NO_OVERRIDES).length > 0,
+      `${id} has no key, so there is nothing to teach`);
+  }
+});
+
+check('stageOf answers for a taught command and says nothing for the rest', () => {
+  eq(stageOf('file.save'), 1, 'save is stage 1');
+  eq(stageOf('daw.exportStems'), 3, 'stems is stage 3');
+  eq(stageOf('daw.memStore.7'), null, 'a memory slot is taught by nobody');
+});
+
+check('the overlay offers the stages and renders one row renderer', () => {
+  const overlay = readFileSync('src/renderer/components/daw/DawShortcutHelp.tsx', 'utf8');
+  assert(/LESSONS\.map/.test(overlay), 'the chips come from the lesson plan');
+  assert(/stageRows\.map\(renderRow\)/.test(overlay) && /rows\.map\(renderRow\)/.test(overlay),
+    'both views use the same row renderer');
+  // A stage in Cubase grouping would lose the teaching order, which is the
+  // only thing a stage has that the search box does not.
+  assert(/lesson\?\.commands/.test(overlay) || /lesson\.commands/.test(overlay),
+    'a stage is mapped from the lesson, not filtered out of the table');
 });
 
 check('no message spells a chord out by hand either', () => {

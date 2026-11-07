@@ -13,7 +13,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { LAYER } from '../../theme/layers.js';
 import {
-  SHORTCUTS, GROUP_TITLES, type CommandId, type ShortcutGroupId,
+  SHORTCUTS, GROUP_TITLES, type CommandId, type ShortcutDef, type ShortcutGroupId,
 } from '../../shortcuts/definitions.js';
 import {
   describeSpec, effectiveChords, isOverridden, specFromEvent,
@@ -21,6 +21,7 @@ import {
 import { searchCommands } from '../../shortcuts/command-search.js';
 import { resetHints } from '../../shortcuts/chord-hints.js';
 import { KEYMAP_PRESETS, activePresetId } from '../../shortcuts/keymap-presets.js';
+import { LESSONS, findLesson, stageOf, type StageId } from '../../shortcuts/lesson-plan.js';
 import { detectPlatform } from '../../shortcuts/keys.js';
 import { useWorkspaceStore } from '../../stores/workspaceStore.js';
 import { useShortcutStore } from '../../stores/shortcutStore.js';
@@ -50,6 +51,14 @@ export default function DawShortcutHelp() {
   const active = useMemo(() => activePresetId(overrides), [overrides]);
   const platform = useMemo(() => detectPlatform(), []);
   const [filter, setFilter] = useState('');
+  /**
+   * Which lesson stage the overlay is showing, or null for the whole table.
+   *
+   * Not stored: a stage is where somebody is in a course, and remembering it
+   * across launches would quietly hide 229 commands from a person who has
+   * moved on and does not remember choosing a stage.
+   */
+  const [stage, setStage] = useState<StageId | null>(null);
   /** The command waiting for a keypress, or null. */
   const [capturing, setCapturing] = useState<CommandId | null>(null);
   const close = () => setPanel('help', false);
@@ -85,6 +94,85 @@ export default function DawShortcutHelp() {
   // remapped key is findable.
   const changedCount = Object.keys(overrides).length;
   const shown = searchCommands(filter, overrides, platform);
+
+  const lesson = stage === null ? undefined : findLesson(stage);
+  // A stage keeps its TEACHING order, so it is mapped from the lesson rather
+  // than filtered out of the table — and the search still applies, because
+  // "what was the key for save" is a question inside a stage too.
+  const stageRows = (lesson?.commands ?? [])
+    .map((id) => SHORTCUTS.find((x) => x.id === id))
+    .filter((x): x is ShortcutDef => x !== undefined)
+    .filter((x) => shown.includes(x));
+
+  // ONE row renderer.  The table groups by the Cubase sections and a stage
+  // lists in teaching order; two copies of this would drift the first time
+  // either grew a column, which is the shape of every defect this file's
+  // neighbourhood has had.
+  const renderRow = (s: ShortcutDef): React.ReactElement => {
+    // Which lesson teaches this one — shown only in the whole table, where it
+    // turns 242 rows into a map of the course.  Inside a stage every row would
+    // carry the same badge, which is noise, so there it is left off.
+    const taught = stage === null ? stageOf(s.id) : null;
+                    const chords = effectiveChords(s, overrides);
+                    const changed = isOverridden(s.id, overrides);
+                    return (
+                      <div key={s.id} className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className={`text-[12px] flex items-baseline gap-1.5 ${s.available
+                            ? 'text-zinc-300' : 'text-zinc-600 line-through'}`}>
+                            <span className="min-w-0">{s.label}</span>
+                            {taught !== null && (
+                              <span className="shrink-0 text-[9px] px-1 py-px rounded
+                                               border border-zinc-700 text-zinc-500">
+                                {taught}단계
+                              </span>
+                            )}
+                          </p>
+                          <p className="text-[10px] text-zinc-600 leading-snug">
+                            {s.available ? s.note : `해당 없음 — ${s.note}`}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0 pt-0.5">
+                          {capturing === s.id ? (
+                            <span className="px-1.5 py-0.5 rounded border border-emerald-500/60
+                                             bg-emerald-600/20 font-mono text-[10px] text-emerald-300
+                                             whitespace-nowrap animate-pulse">
+                              키를 누르세요 · ESC 취소
+                            </span>
+                          ) : (
+                            <>
+                              {chords.length === 0 ? (
+                                <span className="text-[10px] text-zinc-600 font-mono">없음</span>
+                              ) : chords.map((c, i) => (
+                                <React.Fragment key={c}>
+                                  {i > 0 && <span className="text-[9px] text-zinc-700">/</span>}
+                                  <Chip label={describeSpec(c, platform)} changed={changed} />
+                                </React.Fragment>
+                              ))}
+                              <button
+                                onClick={() => setCapturing(s.id)}
+                                title="이 기능의 단축키를 다른 키로 바꿉니다"
+                                className="hit-target w-5 h-5 rounded text-[10px] leading-none
+                                           text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800"
+                              >✎</button>
+                              {changed && (
+                                <button
+                                  onClick={() => {
+                                    const r = reset(s.id);
+                                    notify(r.ok ? `"${s.label}" 를 기본값으로 되돌렸습니다`
+                                      : (r.reason ?? '되돌리지 못했습니다'), r.ok ? 'success' : 'warning');
+                                  }}
+                                  title="기본값으로"
+                                  className="hit-target w-5 h-5 rounded text-[10px] leading-none
+                                             text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800"
+                                >↺</button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    );
+  };
 
   return (
     <div
@@ -190,6 +278,42 @@ export default function DawShortcutHelp() {
           </p>
         </div>
 
+        {/* ── 단계 ───────────────────────────────────────────────────────
+            241 rows is a reference manual, not a keyboard.  A stage is a
+            dozen, in the order they are taught, and stage 1 is the whole loop
+            of a first lesson: get a sound in, cut it, undo, save, send it to
+            mastering — and the palette, for the other 229. */}
+        <div className="flex items-center gap-1.5 flex-wrap mb-4">
+          <span className="text-[10px] text-zinc-500 mr-1">단계</span>
+          <button
+            onClick={() => setStage(null)}
+            className={`h-7 px-2.5 rounded-lg border text-[10px] transition-colors ${stage === null
+              ? 'border-emerald-600/60 bg-emerald-600/15 text-emerald-300'
+              : 'border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-600'}`}
+          >전체 ({SHORTCUTS.length})</button>
+          {LESSONS.map((l) => (
+            <button
+              key={l.stage}
+              onClick={() => setStage(l.stage)}
+              title={l.note}
+              className={`h-7 px-2.5 rounded-lg border text-[10px] transition-colors ${stage === l.stage
+                ? 'border-emerald-600/60 bg-emerald-600/15 text-emerald-300'
+                : 'border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-600'}`}
+            >{l.title} ({l.commands.length})</button>
+          ))}
+        </div>
+
+        {lesson !== undefined ? (
+          <section className="space-y-2">
+            <p className="text-[10px] text-zinc-500">{lesson.note}</p>
+            <div className="space-y-1.5">{stageRows.map(renderRow)}</div>
+            {stageRows.length === 0 && (
+              <p className="text-[11px] text-zinc-600 text-center py-6">
+                이 단계에는 "{filter}" 에 해당하는 기능이 없습니다
+              </p>
+            )}
+          </section>
+        ) : (
         <div className="grid gap-5 sm:grid-cols-2">
           {GROUP_ORDER.map((g) => {
             const rows = shown.filter((s) => s.group === g);
@@ -200,67 +324,15 @@ export default function DawShortcutHelp() {
                   {GROUP_TITLES[g]}
                 </p>
                 <div className="space-y-1.5">
-                  {rows.map((s) => {
-                    const chords = effectiveChords(s, overrides);
-                    const changed = isOverridden(s.id, overrides);
-                    return (
-                      <div key={s.id} className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className={`text-[12px] ${s.available ? 'text-zinc-300' : 'text-zinc-600 line-through'}`}>
-                            {s.label}
-                          </p>
-                          <p className="text-[10px] text-zinc-600 leading-snug">
-                            {s.available ? s.note : `해당 없음 — ${s.note}`}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-1 shrink-0 pt-0.5">
-                          {capturing === s.id ? (
-                            <span className="px-1.5 py-0.5 rounded border border-emerald-500/60
-                                             bg-emerald-600/20 font-mono text-[10px] text-emerald-300
-                                             whitespace-nowrap animate-pulse">
-                              키를 누르세요 · ESC 취소
-                            </span>
-                          ) : (
-                            <>
-                              {chords.length === 0 ? (
-                                <span className="text-[10px] text-zinc-600 font-mono">없음</span>
-                              ) : chords.map((c, i) => (
-                                <React.Fragment key={c}>
-                                  {i > 0 && <span className="text-[9px] text-zinc-700">/</span>}
-                                  <Chip label={describeSpec(c, platform)} changed={changed} />
-                                </React.Fragment>
-                              ))}
-                              <button
-                                onClick={() => setCapturing(s.id)}
-                                title="이 기능의 단축키를 다른 키로 바꿉니다"
-                                className="hit-target w-5 h-5 rounded text-[10px] leading-none
-                                           text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800"
-                              >✎</button>
-                              {changed && (
-                                <button
-                                  onClick={() => {
-                                    const r = reset(s.id);
-                                    notify(r.ok ? `"${s.label}" 를 기본값으로 되돌렸습니다`
-                                      : (r.reason ?? '되돌리지 못했습니다'), r.ok ? 'success' : 'warning');
-                                  }}
-                                  title="기본값으로"
-                                  className="hit-target w-5 h-5 rounded text-[10px] leading-none
-                                             text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800"
-                                >↺</button>
-                              )}
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
+                  {rows.map(renderRow)}
                 </div>
               </section>
             );
           })}
         </div>
+        )}
 
-        {shown.length === 0 && (
+        {stage === null && shown.length === 0 && (
           <p className="text-[11px] text-zinc-600 text-center py-6">
             "{filter}" 에 해당하는 기능이 없습니다
           </p>
