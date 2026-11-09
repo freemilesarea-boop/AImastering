@@ -54,23 +54,37 @@ console.log('\n=== the tools that check the app ===\n');
 // what they fix, which is how this codebase writes, so a grep for the word
 // finds the explanation and calls it the implementation.  `xdpyinfo -display`
 // and a removal naming both paths are things only the running code says.
-const probes: Record<string, { asks: RegExp; clears: RegExp }> = {
+const probes: Record<string, { asks: RegExp; clears: RegExp; falls: RegExp }> = {
   'boot.sh': {
     asks: /xdpyinfo -display ":\$DISP"/,
     clears: /rm -f "\/tmp\/\.X\$DISP-lock" "\/tmp\/\.X11-unix\/X\$DISP"/,
+    falls: /pgrep -f "Xvfb :\$DISP "/,
   },
   'ui-hit-test.mjs': {
     asks: /`xdpyinfo -display \$\{display\}/,
     clears: /\[`\/tmp\/\.X\$\{n\}-lock`, `\/tmp\/\.X11-unix\/X\$\{n\}`\]/,
+    falls: /pgrep -f "Xvfb \$\{display\} "/,
+  },
+  // Added after the Node rewrite dropped the fallback and this file did not
+  // notice: `xdpyinfo` is not installed on every machine, the probe therefore
+  // answered "dead" for a LIVE server, and the boot deleted that server's lock
+  // and socket before failing to start a second one on the same display.  The
+  // check existed, for two of the three harnesses.
+  'boot-packaged.mjs': {
+    asks: /run\('xdpyinfo', \['-display', `:\$\{DISP\}`\]\)/,
+    clears: /\[`\/tmp\/\.X\$\{DISP\}-lock`, sock\]/,
+    falls: /run\('pgrep', \['-f', `Xvfb :\$\{DISP\} `\]\)/,
   },
 };
-for (const [what, src] of [['boot.sh', boot], ['ui-hit-test.mjs', hit]] as const) {
-  const { asks, clears } = probes[what]!;
+for (const [what, src] of [
+  ['boot.sh', boot], ['ui-hit-test.mjs', hit], ['boot-packaged.mjs', bootPkg],
+] as const) {
+  const { asks, clears, falls } = probes[what]!;
   check(
     `${what} asks the X server whether it answers, with pgrep only as the fallback`,
-    asks.test(src) && /pgrep -f "Xvfb/.test(src),
+    asks.test(src) && falls.test(src),
     `runs xdpyinfo ${asks.test(src) ? '✓' : '✗'}`
-      + ` · pgrep fallback ${/pgrep -f "Xvfb/.test(src) ? '✓' : '✗'}`,
+      + ` · pgrep fallback ${falls.test(src) ? '✓' : '✗'}`,
   );
   check(
     `${what} clears a stale LOCK and a stale SOCKET in one go, not one of the two`,
@@ -172,6 +186,53 @@ check(
     && /xdpyinfo/.test(bootPkg),
   'Xvfb is a Linux answer to a Linux problem',
 );
+check(
+  'boot-packaged waits for a WINDOW, not only for the CDP endpoint',
+  /json\/list/.test(bootPkg) && /t\?\.type === 'page'/.test(bootPkg)
+    && /const n = await pageTargets\(\);/.test(bootPkg)
+    && /if \(pageAt === 0\)/.test(bootPkg)
+    && /opened no window within/.test(bootPkg),
+  'the browser process answers long before the first window exists — the first'
+    + ' Windows run reported "main died before createWindow" for an app that'
+    + ' was still starting',
+);
+// ── And the flow can read a path with a space in it ──────────────────────
+//
+// RUN, not grepped: the pattern is pulled out of the file and applied to the
+// line the app really logs on macOS.  `(\S+)` passed every text check anyone
+// would write for it and still read
+// `/Users/runner/work/_temp/pkg-smoke/installed/LV DAW.app/.../ffmpeg` as
+// `/Users/runner/work/_temp/pkg-smoke/installed/LV` — then reported that the
+// PRODUCT had pointed its engine at nothing.  Every path this app ships to on
+// macOS has that space in it.
+{
+  const flow = read('scripts/app-smoke/flow-packaged.mjs');
+  const WANT = '/Users/runner/work/_temp/pkg-smoke/installed/LV DAW.app/Contents/Resources/bin/ffmpeg';
+  const line = `[2026-11-09T03:04:10.123Z] [INFO] [python] [INFO] ffmpeg  binary: ${WANT}\r\n`;
+  const written = /const engineFfmpeg = \/(.+?)\/\.exec\(log\);/.exec(flow)?.[1];
+  let got: string | undefined;
+  try { got = written === undefined ? undefined : new RegExp(written).exec(line)?.[1]; }
+  catch { got = undefined; }
+  check(
+    'the packaged flow reads the engine\u2019s ffmpeg path up to the end of the line',
+    got === WANT,
+    written === undefined ? 'no pattern found in the flow' : `read back: ${String(got)}`,
+  );
+}
+
+check(
+  'and checks the copy finished, instead of trusting the copy tool',
+  /the copy's app.asar is/.test(bootPkg) && /did not finish/.test(bootPkg),
+  'robocopy reports success for "nothing was copied" as readily as for'
+    + ' "everything was"; a half-copied app starts and opens nothing',
+);
+check(
+  'and clears the CDP port before anything below it can fail',
+  bootPkg.indexOf('await clearThePort();') < bootPkg.indexOf('await startDisplay(WORK);'),
+  'the display step died once with the previous run\u2019s app still serving:'
+    + ' the flow attached to it and scored 20/22 for a build never launched',
+);
+
 check(
   'and writes down where it put the app, rather than having the flow guess',
   /packaged\.json/.test(bootPkg) && /packaged\.json/.test(read('scripts/app-smoke/flow-packaged.mjs')),

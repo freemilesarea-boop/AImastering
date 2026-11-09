@@ -80,6 +80,25 @@ const run = (cmd, args, opts = {}) =>
   spawnSync(cmd, args, { encoding: 'utf8', ...opts });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** The last lines of the app's own log — the only place that says why. */
+function logTail(lines = 25) {
+  try {
+    return fs.readFileSync(path.join(WORK, 'electron.log'), 'utf8')
+      .split(/\r?\n/).slice(-lines).join('\n');
+  } catch { return '(no electron.log)'; }
+}
+
+/** How many real pages the app has open; 0 while it is still starting. */
+async function pageTargets() {
+  try {
+    const r = await fetch(`http://127.0.0.1:${PORT}/json/list`, { signal: AbortSignal.timeout(3000) });
+    if (!r.ok) return 0;
+    const targets = await r.json();
+    if (!Array.isArray(targets)) return 0;
+    return targets.filter((t) => t?.type === 'page' && !String(t?.url ?? '').startsWith('devtools://')).length;
+  } catch { return 0; }
+}
+
 // ── Where the package is, per platform ────────────────────────────────────────
 //
 // Found rather than named.  The executable is called after `productName`, so
@@ -243,7 +262,20 @@ function refuseIfShadowed(mainDir) {
 async function startDisplay(work) {
   if (process.platform !== 'linux') return null;
   const sock = `/tmp/.X11-unix/X${DISP}`;
-  const alive = () => run('xdpyinfo', ['-display', `:${DISP}`]).status === 0;
+  // `xdpyinfo -display` is the real question — does this display ANSWER — and
+  // a socket file satisfies a plain existence check with no server behind it.
+  // But xdpyinfo is not installed everywhere, and where it is missing a check
+  // that always says "dead" is worse than no check: this script deleted a LIVE
+  // server's lock and socket, then failed to start a second Xvfb on the
+  // display the first one was still holding.  So the process is the fallback,
+  // and only in that direction — the same two-step `boot.sh` has carried for
+  // exactly this reason.
+  const alive = () => {
+    const asked = run('xdpyinfo', ['-display', `:${DISP}`]);
+    if (asked.error === undefined && asked.status !== null) return asked.status === 0;
+    const ps = run('pgrep', ['-f', `Xvfb :${DISP} `]);
+    return ps.status === 0;
+  };
   if (fs.existsSync(sock) && alive()) {
     console.log(`display  :${DISP} (reusing the one already running)`);
     return `:${DISP}`;
@@ -317,11 +349,28 @@ const copied = copyOut(where.copy, installed, where.copiedName);
 const APP = where.exeIn(copied);
 const RESOURCES = where.resourcesIn(copied);
 if (!fs.existsSync(APP)) die(`the copy has no executable at ${APP}`);
+// The copy is CHECKED, not assumed.  `robocopy` reports success for "nothing
+// was copied" (exit 0) as readily as for "everything was" (exit 1), so a copy
+// that half-happened would hand the launcher an app whose asar is missing or
+// truncated — which starts, fails to find its main script, and looks exactly
+// like a product that cannot open a window.
+{
+  const copiedAsar = path.join(RESOURCES, 'app.asar');
+  if (!fs.existsSync(copiedAsar)) die(`the copy has no app.asar at ${copiedAsar}`);
+  const was = fs.statSync(asar).size;
+  const now = fs.statSync(copiedAsar).size;
+  if (was !== now) die(`the copy's app.asar is ${now} bytes, the original is ${was} — the copy did not finish`);
+}
 refuseIfShadowed(path.join(RESOURCES, 'app.asar', 'dist-electron', 'main'));
 console.log(`install  ${APP}  (no workspace above it)`);
 
-const display = await startDisplay(WORK);
+// The port is cleared FIRST, before anything below can fail.  It used to be
+// cleared after the display came up, and when the display step died the
+// previous run's app was still serving CDP: the flow attached to it and
+// reported 20/22 for a build that had never been launched.  A boot that stops
+// must leave nothing behind for the next step to mistake for its own work.
 await clearThePort();
+const display = await startDisplay(WORK);
 
 // No AIMASTER_FFMPEG/AIMASTER_FFPROBE, unlike the dev boot: a packaged app
 // resolves both from <resources>/bin itself, and supplying them would hide it
@@ -342,10 +391,31 @@ for (let i = 0; i < 90; i++) {
   await sleep(1000);
 }
 if (!up) {
-  const tail = fs.readFileSync(logPath, 'utf8').split('\n').slice(-25).join('\n');
-  die(`CDP down after 90s — see ${logPath}`, tail);
+  die(`CDP down after 90s — see ${logPath}`, logTail());
 }
 console.log(`packaged CDP on ${PORT}`);
+
+// And then for a WINDOW.
+//
+// `/json/version` is answered by the browser process, which is up long before
+// the first window exists — so waiting only for it hands the flow a CDP
+// endpoint with no page in it, and the flow reports "main died before
+// createWindow" for an app that was merely still starting.  That is what the
+// first Windows run of this script said, and it was the harness talking.
+//
+// Waited for HERE rather than in the flow because this is where the app's log
+// is: if no window ever appears, the reason is in that log, and a failure
+// that prints the reason is worth more than one that names a file.
+let pageAt = 0;
+for (let i = 0; i < 60; i++) {
+  const n = await pageTargets();
+  if (n > 0) { pageAt = n; break; }
+  await sleep(1000);
+}
+if (pageAt === 0) {
+  die(`the app answered CDP but opened no window within 60s — see ${logPath}`, logTail());
+}
+console.log(`window   ${pageAt} page target(s)`);
 
 // What the flow needs to know, written down rather than recomputed from a
 // platform-shaped guess on the other side.

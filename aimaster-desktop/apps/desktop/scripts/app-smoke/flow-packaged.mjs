@@ -534,8 +534,17 @@ try {
     // while the analysis above failed.  So it asserts the two halves that
     // make the claim true — the engine was pointed inside resources, and
     // there is a binary there — and leaves "it worked" to the step above.
-    const engineFfmpeg = /\[INFO\] ffmpeg\s+binary: (\S+)/.exec(log);
-    const engineFfprobe = /\[INFO\] ffprobe binary: (\S+)/.exec(log);
+    // To the END OF THE LINE, not `\S+`: the first version stopped at the
+    // first space, and the moment this ran on macOS — where the app installs
+    // to `/Applications/LV DAW.app` — it read the engine's path as
+    // `/Users/runner/work/_temp/pkg-smoke/installed/LV` and reported that the
+    // product had pointed the engine at nothing.  The product was right; the
+    // harness could not read a path with a space in it, which is every path
+    // this app actually ships to on macOS and Windows.
+    // Written as `[^\r\n]+` rather than `.+` to say so out loud; in JS they
+    // behave the same here, because `.` already stops at CR as well as LF.
+    const engineFfmpeg = /\[INFO\] ffmpeg\s+binary: ([^\r\n]+)/.exec(log);
+    const engineFfprobe = /\[INFO\] ffprobe binary: ([^\r\n]+)/.exec(log);
     const present = ['ffmpeg', 'ffprobe']
       .filter((n) => fs.existsSync(path.join(bundled, process.platform === 'win32' ? `${n}.exe` : n)));
     expect(

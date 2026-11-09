@@ -677,6 +677,14 @@ jobs:
           node scripts/app-smoke/boot-packaged.mjs "$RUNNER_TEMP/pkg-smoke" 9444
           node scripts/app-smoke/flow-packaged.mjs 9444 "$RUNNER_TEMP/pkg-smoke"
 
+      # The app's own log, in the job log.  An artefact you have to download to
+      # learn why a step failed is a worse answer than the reason being right
+      # there — the first run of this step failed on Windows and the reason sat
+      # in a 781-byte zip behind a blob URL.
+      - name: Why it failed — the app's own log
+        if: failure()
+        run: tail -n 60 "$RUNNER_TEMP/pkg-smoke/electron.log" || echo '(no electron.log)'
+
       - name: Stop the app the packaged smoke left running
         if: always()
         run: pkill -f 'remote-debugging-port=9444' || true
@@ -991,6 +999,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/app-smoke/flow-packaged.mjs 9444 "$env:RUNNER_TEMP\pkg-smoke"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Why it failed — the app's own log
+        if: failure()
+        run: |
+          $log = "$env:RUNNER_TEMP\pkg-smoke\electron.log"
+          if (Test-Path $log) { Get-Content $log -Tail 60 } else { Write-Host '(no electron.log)' }
 
       - name: Stop the app the packaged smoke left running
         if: always()
