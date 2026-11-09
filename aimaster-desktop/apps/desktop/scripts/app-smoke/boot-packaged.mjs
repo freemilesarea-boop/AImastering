@@ -483,24 +483,41 @@ const SETTLE_MS = 4000;
 {
   const said = [];
   let watched = null;
+  let watchedPage = null;
   try {
     watched = await chromium.connectOverCDP(`http://127.0.0.1:${PORT}`);
     const pages = watched.contexts()[0]?.pages() ?? [];
-    const page = pages.find((p) => !p.url().startsWith('devtools://')) ?? pages[0];
-    if (page) {
-      page.on('pageerror', (e) => said.push(`pageerror: ${String(e?.message ?? e)}`));
-      page.on('console', (m) => { if (m.type() === 'error') said.push(`console: ${m.text()}`); });
-      page.on('crash', () => said.push('the page crashed'));
+    watchedPage = pages.find((p) => !p.url().startsWith('devtools://')) ?? pages[0] ?? null;
+    if (watchedPage) {
+      watchedPage.on('pageerror', (e) => said.push(`pageerror: ${String(e?.message ?? e)}`));
+      watchedPage.on('console', (m) => { if (m.type() === 'error') said.push(`console: ${m.text()}`); });
+      watchedPage.on('crash', () => said.push('the page crashed'));
     }
   } catch (err) {
     said.push(`could not watch the page: ${String(err?.message ?? err)}`);
   }
   await sleep(SETTLE_MS);
-  const still = await pageTargets();
-  if (still === 0) {
-    die(`the app opened a window and lost it within ${SETTLE_MS} ms — see ${logPath}`,
-      `${said.length > 0 ? `the renderer said:\n  ${said.join('\n  ')}\n\n` : 'the renderer said nothing\n\n'}`
-      + logTail());
+
+  // ASKED, not counted.  The first version of this check called
+  // `pageTargets()` again and passed — because `/json/list` goes on listing
+  // the target of a renderer that has already crashed.  On the Windows runner
+  // the renderer died at +1.6s, the count still said 1 at +4s, and the harness
+  // went on to repeat its old wrong sentence.  The only question that cannot
+  // be answered by a dead page is one the page has to run.
+  let alive = false;
+  if (watchedPage) {
+    try { alive = (await watchedPage.evaluate(() => 1)) === 1; } catch { alive = false; }
+  } else {
+    alive = (await pageTargets()) > 0;
+  }
+  if (!alive) {
+    const log = logTail();
+    const crashed = /render-process-gone/.test(log);
+    die(crashed
+      ? `the app opened a window and its RENDERER crashed within ${SETTLE_MS} ms — see ${logPath}`
+      : `the app opened a window and lost it within ${SETTLE_MS} ms — see ${logPath}`,
+    `${said.length > 0 ? `the renderer said:\n  ${said.join('\n  ')}\n\n` : 'the renderer said nothing on the way out\n\n'}`
+      + log);
   }
   if (said.length > 0) {
     console.log(`window   the renderer logged ${said.length} error(s) while settling:`);

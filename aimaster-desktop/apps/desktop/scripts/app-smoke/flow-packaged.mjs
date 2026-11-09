@@ -163,9 +163,21 @@ try {
   // and no step name.  Measured that way once — the asar built without
   // `node_modules/node-machine-id` logs `Cannot find module 'node-machine-id'`
   // and opens nothing — so say which it is and stop.
+  // Which of the two it is comes from the app's OWN log, not from a guess.
+  // "main died before createWindow" was said for three different failures in
+  // a row — a window that never opened, a window that opened and was handed
+  // over too late, and a renderer that crashed two seconds in — and it was
+  // wrong for all three.  The log knows the difference, so it is asked.
+  const whyNoPage = () => {
+    let log = '';
+    try { log = fs.readFileSync(path.join(WORK, 'electron.log'), 'utf8'); } catch { /* none */ }
+    const crash = /render-process-gone[^\n]*"exitCode":(-?\d+)/.exec(log);
+    if (crash) return `CDP answered and the RENDERER crashed (exitCode ${crash[1]}) — it is not a window that never opened`;
+    if (/Loading renderer from/.test(log)) return 'CDP answered, main loaded the renderer, and no page is here — see electron.log';
+    return 'CDP answered but there is no page — main died before createWindow; see electron.log in the smoke directory';
+  };
   expect(Boolean(page), 'the packaged app opened a window',
-    page ? 'one page attached' : 'CDP answered but there is no page — main died before createWindow; '
-      + 'see electron.log in the smoke directory');
+    page ? 'one page attached' : whyNoPage());
   if (!page) throw new Error('no page');
 
   expect(page.url().startsWith('file://'), 'the renderer is the packaged file:// bundle',

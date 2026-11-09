@@ -264,12 +264,29 @@ check(
 check(
   'boot-packaged watches the window it found, and refuses one that dies right after',
   /connectOverCDP/.test(bootPkg) && /await sleep\(SETTLE_MS\);/.test(bootPkg)
-    && /const still = await pageTargets\(\);/.test(bootPkg)
-    && /if \(still === 0\) \{/.test(bootPkg)
-    && /lost it within/.test(bootPkg) && /page\.on\('pageerror'/.test(bootPkg),
+    && /if \(!alive\) \{/.test(bootPkg)
+    && /lost it within/.test(bootPkg)
+    && /watchedPage\.on\('pageerror'/.test(bootPkg),
   'on the Windows runner the page appeared at +1.0s and the renderer died at'
     + ' +1.9s, in the gap between the two processes, with nobody listening',
 );
+check(
+  'and it asks the page to run something, rather than counting targets',
+  /watchedPage\.evaluate\(\(\) => 1\)/.test(bootPkg)
+    && /if \(!alive\) \{/.test(bootPkg)
+    && /RENDERER crashed within/.test(bootPkg),
+  '`/json/list` goes on listing the target of a renderer that has already'
+    + ' crashed: the count said 1 four seconds after the Windows renderer died,'
+    + ' and the harness repeated its old wrong sentence',
+);
+check(
+  'and the flow reads the app\u2019s log instead of guessing why there is no page',
+  /render-process-gone\[\^\\n\]\*"exitCode"/.test(read('scripts/app-smoke/flow-packaged.mjs'))
+    && /is not a window that never opened/.test(read('scripts/app-smoke/flow-packaged.mjs')),
+  '"main died before createWindow" was said for three different failures in a'
+    + ' row and was wrong for all three',
+);
+
 check(
   'and it does not close the app it is about to hand to the flow',
   !/watched\.close\(\)/.test(bootPkg) && /process\.exit\(0\)/.test(bootPkg),
