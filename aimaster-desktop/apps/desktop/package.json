@@ -28,7 +28,7 @@
     "lint": "eslint src scripts --ext .ts,.tsx,.mjs,.cjs --max-warnings 0",
     "test": "pnpm lint && pnpm typecheck && pnpm typecheck:scripts && node scripts/run-selftests.mjs",
     "smoke:flow": "bash scripts/app-smoke/boot.sh /tmp/loui-smoke 9333 98 && node scripts/app-smoke/flow.mjs 9333 /tmp/loui-smoke",
-    "smoke:packaged": "bash scripts/app-smoke/boot-packaged.sh /tmp/loui-pkg-smoke 9444 97 && node scripts/app-smoke/flow-packaged.mjs 9444 /tmp/loui-pkg-smoke",
+    "smoke:packaged": "node scripts/app-smoke/boot-packaged.mjs /tmp/loui-pkg-smoke 9444 97 && node scripts/app-smoke/flow-packaged.mjs 9444 /tmp/loui-pkg-smoke",
     "test:hardware-io": "tsx scripts/hardware-io-selftest.ts",
     "test:drum-map": "tsx scripts/drum-map-selftest.ts",
     "test:logical-editor": "tsx scripts/logical-editor-selftest.ts",

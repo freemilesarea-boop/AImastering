@@ -205,7 +205,7 @@ jobs:
           echo "korean-capable fonts: $(fc-list :lang=ko | wc -l)"
           fc-match -f '%{file}\n' ':lang=ko' || true
 
-      - name: App smoke (74 steps, real mouse and keyboard)
+      - name: App smoke (85 steps, real mouse and keyboard)
         working-directory: aimaster-desktop/apps/desktop
         run: pnpm -s smoke:flow
 
@@ -359,7 +359,7 @@ jobs:
       # Rust chain resolved from <resources>.  It goes here because it needs
       # `out/linux-unpacked`, which the packaging step above produces.
       #
-      # `boot-packaged.sh` refuses an app.asar older than the source it should
+      # `boot-packaged.mjs` refuses an app.asar older than the source it should
       # contain, so this step cannot pass against a stale package.
       - name: Packaged smoke (22 steps, from inside the asar)
         working-directory: aimaster-desktop/apps/desktop
@@ -655,6 +655,41 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      # ── THE APP IS ACTUALLY STARTED ──────────────────────────────────────────
+      #
+      # Everything above this line reads the .app as FILES: the arch gates run
+      # `lipo` over its binaries, the build gate checks that bundles exist.
+      # Until this step, no macOS build of this app had ever been launched by
+      # anything — not in CI, not before a release.  "It builds" was the whole
+      # of what was known, and it was being read as "it runs".
+      #
+      # The same 22 steps the Linux job runs, because what differs between the
+      # platforms is exactly what they look at: resource-path resolution for
+      # the shipped ffmpeg, the PyInstaller engine and the WASM, all resolved
+      # from inside `<app>/Contents/Resources` rather than a dev tree.
+      #
+      # After the upload on purpose — a launch failure must fail the job, but
+      # the artefact is what someone will want to look at when it does.
+      - name: Packaged smoke (22 steps, from inside the .app)
+        working-directory: aimaster-desktop/apps/desktop
+        run: |
+          set -e
+          node scripts/app-smoke/boot-packaged.mjs "$RUNNER_TEMP/pkg-smoke" 9444
+          node scripts/app-smoke/flow-packaged.mjs 9444 "$RUNNER_TEMP/pkg-smoke"
+
+      - name: Stop the app the packaged smoke left running
+        if: always()
+        run: pkill -f 'remote-debugging-port=9444' || true
+
+      - name: Upload packaged smoke log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaged-smoke-mac-${{ matrix.arch }}
+          path: ${{ runner.temp }}/pkg-smoke/electron.log
+          if-no-files-found: ignore
+          retention-days: 7
+
   # ── Windows (NSIS installer) ─────────────────────────────────────────────────
   # NSIS is intentionally disabled on this branch — see electron-builder.yml.
   build-win:
@@ -934,6 +969,44 @@ jobs:
             aimaster-desktop/apps/desktop/out/latest.yml
           if-no-files-found: error
           retention-days: 30
+
+      # ── THE APP IS ACTUALLY STARTED ──────────────────────────────────────────
+      #
+      # The first time any Windows build of this app has been launched by
+      # anything.  Up to here the job verified that files exist and that the
+      # installer was produced; whether the thing inside it opens a window was
+      # not known, on any build, ever.
+      #
+      # It runs against `out\win-unpacked` — what the installer installs —
+      # rather than installing the NSIS package, so a failure says "the app
+      # does not start" and not "the installer did something".  Installing it
+      # is a separate question and belongs in a separate step.
+      #
+      # After the upload on purpose: a launch failure must fail the job, and
+      # the artefact is what someone will want when it does.
+      - name: Packaged smoke (22 steps, from inside the asar)
+        run: |
+          cd D:\w\aimaster-desktop\apps\desktop
+          node scripts/app-smoke/boot-packaged.mjs "$env:RUNNER_TEMP\pkg-smoke" 9444
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/app-smoke/flow-packaged.mjs 9444 "$env:RUNNER_TEMP\pkg-smoke"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Stop the app the packaged smoke left running
+        if: always()
+        run: |
+          Get-CimInstance Win32_Process |
+            Where-Object { $_.CommandLine -like '*remote-debugging-port=9444*' } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+
+      - name: Upload packaged smoke log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaged-smoke-windows
+          path: ${{ runner.temp }}/pkg-smoke/electron.log
+          if-no-files-found: ignore
+          retention-days: 7
 
   # ── Release draft + artifact attach ─────────────────────────────────────────
   # Tag (v*) push 시에만 실행.  3 개 platform job 이 모두 성공해야 트리거.

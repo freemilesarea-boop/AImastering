@@ -118,7 +118,7 @@ check(
 //
 //     So this ordering is the reason an on-device packaged verification is
 //     only valid OUTSIDE the source tree, and
-//     `scripts/app-smoke/boot-packaged.sh` copies the app out before
+//     `scripts/app-smoke/boot-packaged.mjs` copies the app out before
 //     launching it.  Nothing else in the repo would have told you that.
 const resCandidate = path.join('/Res', WASM_NODE_RESOURCE_DIR, 'loui_dsp_wasm.cjs');
 const shadowing = wasmNodeCandidates(DESKTOP, '/Res');

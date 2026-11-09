@@ -26,7 +26,7 @@
  */
 export {};
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -41,7 +41,7 @@ const DESKTOP = path.resolve(__dirname, '..');
 const read = (p: string): string => readFileSync(path.join(DESKTOP, p), 'utf8');
 
 const boot = read('scripts/app-smoke/boot.sh');
-const bootPkg = read('scripts/app-smoke/boot-packaged.sh');
+const bootPkg = read('scripts/app-smoke/boot-packaged.mjs');
 const hit = read('scripts/ui-hit-test.mjs');
 
 console.log('\n=== the tools that check the app ===\n');
@@ -118,9 +118,64 @@ check(
 // session repair in it.  Refused rather than rebuilt: `pnpm dist` is minutes,
 // and a boot script that silently starts a package build is unpredictable.
 check(
-  'boot-packaged.sh refuses an app.asar older than the source it should contain',
-  /-newer "\$ASAR"/.test(bootPkg) && /run 'pnpm dist' first; 21\/21 on a stale package/.test(bootPkg),
+  'boot-packaged refuses an app.asar older than the source it should contain',
+  /stat\.mtimeMs > asarAt/.test(bootPkg)
+    && /run 'pnpm dist' first; 22\/22 on a stale package/.test(bootPkg),
   'it names the file that changed after packaging, and exits 1',
+);
+
+// ── And it can boot the package on the platform it was built for ─────────
+//
+// This is the check that would have existed two years earlier if anyone had
+// asked the obvious question.  `boot-packaged.sh` was bash, Xvfb, curl, ps
+// and `out/linux-unpacked/@aimasterdesktop`, so the only platform on which
+// the packaged app had ever been SEEN to start was Linux; macOS and Windows
+// were built, inspected as files, and shipped without ever being launched.
+// Rewritten in Node, it has to actually handle all three — and a rewrite
+// that quietly drops one is the same hole with a nicer file extension.
+//
+// Asked by RUNNING it, not by grepping it.  The first version of this check
+// matched the strings `'Contents', 'MacOS'` in the file, and deleting one of
+// the two places they appear — the one that builds the executable's path —
+// left it green with macOS broken.  So the layout is a table the script will
+// print for any platform, and this reads what the real code answers.
+const layoutOf = (platform: string): { container: string; exeDir: string[]; resources: string[] } => {
+  const r = spawnSync('node',
+    [path.join(DESKTOP, 'scripts/app-smoke/boot-packaged.mjs'), '--print-layout', platform],
+    { encoding: 'utf8' });
+  return JSON.parse(r.stdout) as { container: string; exeDir: string[]; resources: string[] };
+};
+{
+  const mac = layoutOf('darwin');
+  const win = layoutOf('win32');
+  const lin = layoutOf('linux');
+  check(
+    'boot-packaged knows where the package is on all three platforms',
+    mac.container === 'bundle'
+      && mac.exeDir.join('/') === 'Contents/MacOS'
+      && mac.resources.join('/') === 'Contents/Resources'
+      && win.container === 'win-unpacked' && win.resources.join('/') === 'resources'
+      && lin.container === 'linux-unpacked' && lin.resources.join('/') === 'resources',
+    `${mac.container}/${mac.exeDir.join('/')} · ${win.container} · ${lin.container}`,
+  );
+}
+check(
+  'and copies it with the tool that keeps that platform\u2019s package intact',
+  /run\('ditto', \[from, dest\]\)/.test(bootPkg)
+    && /run\('robocopy', \[from, dest/.test(bootPkg)
+    && /run\('cp', \['-a', from, dest\]\)/.test(bootPkg),
+  'ditto for the symlinks inside a .app, robocopy for long paths, cp -a for Linux',
+);
+check(
+  'and starts an X server only where there is one to start',
+  /process\.platform !== 'linux'\) return null/.test(bootPkg)
+    && /xdpyinfo/.test(bootPkg),
+  'Xvfb is a Linux answer to a Linux problem',
+);
+check(
+  'and writes down where it put the app, rather than having the flow guess',
+  /packaged\.json/.test(bootPkg) && /packaged\.json/.test(read('scripts/app-smoke/flow-packaged.mjs')),
+  'the resources path differs on all three; two guesses that must agree is how one goes wrong',
 );
 
 // ── And neither flow is tied to one machine ──────────────────────────────

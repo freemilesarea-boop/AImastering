@@ -36,7 +36,11 @@ const DESKTOP = path.resolve(__dirname, '..');
 const REPO = path.resolve(DESKTOP, '..', '..', '..');
 const WORKFLOW = path.join(REPO, '.github', 'workflows', 'build.yml');
 
-type Step = { name?: string; env?: Record<string, string>; run?: string; 'working-directory'?: string };
+type Step = {
+  name?: string; env?: Record<string, string>; run?: string; 'working-directory'?: string;
+  /** A step's condition — `always()` is what makes a cleanup step a cleanup step. */
+  if?: string;
+};
 type Job = { steps?: Step[] };
 const wf = yaml.load(fs.readFileSync(WORKFLOW, 'utf8')) as { jobs?: Record<string, Job> };
 const jobs = wf.jobs ?? {};
@@ -188,6 +192,39 @@ check(
       ? `${linux.length} steps, all four present`
       : `missing: ${absent.join(', ')}`,
   );
+  // ── And the two platforms that were never launched at all ──────────────
+  //
+  // For every release before this, "the Windows build" and "the macOS build"
+  // meant a file that had been produced, never a program anyone had seen
+  // start.  The mac job ran `lipo` over the .app's binaries and the win job
+  // listed its outputs; both read the package as FILES.  The gap was invisible
+  // because each job was green.
+  //
+  // So the launch is asserted here, in the same place that stops the Linux
+  // layers drifting back out, and it is asserted as the two commands that do
+  // it — a step whose NAME says "smoke" proves nothing.
+  for (const job of ['build-mac', 'build-win'] as const) {
+    const steps = jobs[job]?.steps ?? [];
+    const runs = steps.map((st) => String(st.run ?? '')).join('\n');
+    const starts = /boot-packaged\.mjs/.test(runs);
+    const drives = /flow-packaged\.mjs/.test(runs);
+    check(
+      `${job} starts the app it built, instead of only inspecting the files`,
+      starts && drives,
+      `boots it ${starts ? '✓' : '✗'} · drives it ${drives ? '✓' : '✗'}`,
+    );
+    // A left-running app holds the runner's CDP port and, on a reused
+    // runner, the next job measures it.  The stop must survive a failure,
+    // which is exactly when there is something left to stop.
+    const stop = steps.find((st) => /remote-debugging-port=9444/.test(String(st.run ?? ''))
+      && !/boot-packaged/.test(String(st.run ?? '')));
+    check(
+      `and ${job} stops it afterwards even when the smoke failed`,
+      stop !== undefined && String(stop.if ?? '') === 'always()',
+      stop ? `if: ${String(stop.if ?? '(none)')}` : 'no stop step',
+    );
+  }
+
   // Order is part of it: the packaged smoke reads `out/linux-unpacked`, which
   // does not exist until the packaging step has run.
   const at = (re: RegExp): number => linux.findIndex((st) => re.test(String(st.run ?? '')));

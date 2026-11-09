@@ -201,8 +201,19 @@ in a layer only packaging creates:
 | `resources/bin/engine` present, built with CI's own command | `ModuleNotFoundError: No module named 'backports'` on startup |
 | the loader counting `../../../../../` to `pkg-node` | right from `src/main/offline`, one level too high from `dist-electron/main` — so every packaged build silently took the Python path |
 
-So `boot-packaged.sh` + `flow-packaged.mjs` drive `out/linux-unpacked`
+So `boot-packaged.mjs` + `flow-packaged.mjs` drive the packaged app
 instead. It needs `pnpm dist` first.
+
+**It runs on all three platforms**, which is why the boot is Node and not
+bash. Until 2026-11-09 it was `boot-packaged.sh` — bash, Xvfb, curl, ps and
+`out/linux-unpacked/@aimasterdesktop` by name — so Linux was the only
+platform on which the packaged app had ever been seen to start. macOS and
+Windows were built, their binaries inspected as files by the arch gates, and
+shipped unlaunched. The boot now reads its layout from one table
+(`--print-layout <platform>` prints it), copies with the tool that keeps that
+platform's package intact (`ditto`, `robocopy`, `cp -a`), starts an X server
+only on Linux, and writes `packaged.json` into the work directory so the flow
+does not have to guess where the resources ended up.
 
 **It copies the app out of the source tree before launching it, and that is
 the point.** `wasmNodeCandidates()` walks *up* from the main bundle's

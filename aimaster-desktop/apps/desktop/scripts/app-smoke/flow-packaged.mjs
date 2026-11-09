@@ -14,7 +14,7 @@
 //   · `resources/bin/engine` present   → died on startup, "No module named
 //     and built with CI's command        'backports'" (pyi_rth_pkgres)
 //   · the chain resolved from the dev  → the shipped resources copy was
-//     tree when launched in place        never exercised; boot-packaged.sh
+//     tree when launched in place        never exercised; boot-packaged.mjs
 //                                        now copies the app out first
 //
 // The render step is judged by the OUTPUT AUDIO, not by the handler's
@@ -29,8 +29,24 @@ import asarApi from '@electron/asar';
 
 const PORT = process.argv[2] ?? '9444';
 const WORK = process.argv[3] ?? '/tmp/loui-pkg-smoke';
-/** Where boot-packaged.sh copied the app to.  Overridable as argv[4]. */
-const RESOURCES = process.argv[4] ?? path.join(WORK, 'installed', 'linux-unpacked', 'resources');
+/**
+ * Where the boot script copied the app to.
+ *
+ * It writes that down in `packaged.json` rather than having both sides
+ * compute the same platform-shaped path: the layout differs on all three
+ * (`linux-unpacked/resources`, `win-unpacked/resources`,
+ * `<name>.app/Contents/Resources`), and two guesses that must agree is how
+ * one of them ends up pointing at nothing.  argv[4] still wins, and the Linux
+ * layout stays as the fallback for a hand-run against an older workdir.
+ */
+function resourcesFromWork() {
+  try {
+    const note = JSON.parse(fs.readFileSync(path.join(WORK, 'packaged.json'), 'utf8'));
+    if (typeof note.resources === 'string' && note.resources.length > 0) return note.resources;
+  } catch { /* no note — fall through to the Linux layout */ }
+  return path.join(WORK, 'installed', 'linux-unpacked', 'resources');
+}
+const RESOURCES = process.argv[4] ?? resourcesFromWork();
 
 let step = 0, failed = 0;
 const ok  = (n, d = '') => { step++; console.log(`  ${String(step).padStart(2)}. ok    ${n}${d ? `  — ${d}` : ''}`); };
@@ -181,7 +197,7 @@ try {
   //
   // The path comes from the workdir, not from an IPC call: there is no
   // `app:resources-path` channel, and a step that shrugs when it cannot find
-  // the file is not a step.  `boot-packaged.sh` always installs to
+  // the file is not a step.  `boot-packaged.mjs` always installs to
   // <workdir>/installed/linux-unpacked.
   const engineBin = path.join(RESOURCES, 'bin', process.platform === 'win32' ? 'engine.exe' : 'engine');
   if (!fs.existsSync(engineBin)) {
