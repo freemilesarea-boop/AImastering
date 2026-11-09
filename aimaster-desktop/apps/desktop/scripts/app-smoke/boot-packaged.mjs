@@ -76,14 +76,26 @@ function layoutFor(platform) {
  * Everything else — the asar, the resources, the engine, the WASM, the
  * render path — it does.
  *
+ * `--disable-software-rasterizer` is NOT in that list, and the first attempt
+ * had it.  The GPU crash went away and the RENDERER then died with the same
+ * access violation two seconds after load — which is what those two switches
+ * together ask for: `--disable-gpu` sends rasterization to SwiftShader, and
+ * `--disable-software-rasterizer` takes SwiftShader away.  That pair leaves
+ * nothing to rasterize with.  The second switch exists to stop a silent
+ * fallback on a machine that HAS a GPU; here it removed the only path left.
+ *
  * Not applied anywhere else: Linux and macOS pass with the GPU on, and
  * turning it off for them would quietly shrink what they cover.
+ *
+ * `--enable-logging --v=1` is diagnostic only: it makes Chromium write its
+ * own account into the app's log, so the next failure on a machine nobody
+ * here can open says more than an exit code.
  */
 function launchArgs(platform, port) {
   const args = [`--remote-debugging-port=${port}`];
   if (platform === 'linux') args.unshift('--no-sandbox');
   if (platform === 'win32') {
-    args.push('--disable-gpu', '--disable-gpu-sandbox', '--disable-software-rasterizer');
+    args.push('--disable-gpu', '--disable-gpu-sandbox', '--enable-logging', '--v=1');
   }
   return args;
 }

@@ -221,11 +221,20 @@ then Chromium's GPU process dies with exit code `-1073741819` (0xC0000005, an
 access violation), taking the renderer with it — three seconds in, every time.
 A GitHub Windows runner has no real GPU and no ordinary desktop session; a
 Windows machine someone actually uses has both. So the app is launched there
-with `--disable-gpu --disable-gpu-sandbox --disable-software-rasterizer`, and
+with `--disable-gpu --disable-gpu-sandbox`, and
 the limit is stated rather than papered over: **on Windows this harness does
 not exercise GPU-accelerated rendering.** Everything else it does. The flags
 are Windows-only, and a check runs the launcher for all three platforms to
 keep them from leaking onto macOS or Linux, where the GPU path does run.
+
+`--disable-software-rasterizer` is deliberately **not** among them. The first
+attempt had it, the GPU crash went away, and the renderer then died with the
+same access violation two seconds after load — which is what the pair asks
+for: `--disable-gpu` sends rasterization to SwiftShader and
+`--disable-software-rasterizer` takes SwiftShader away. The second switch is
+for stopping a silent fallback on a machine that *has* a GPU; here it removed
+the only path left. `--enable-logging --v=1` rides along as diagnosis only, so
+a failure on a machine nobody here can open says more than an exit code.
 
 **It copies the app out of the source tree before launching it, and that is
 the point.** `wasmNodeCandidates()` walks *up* from the main bundle's

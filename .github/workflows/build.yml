@@ -683,7 +683,7 @@ jobs:
       # in a 781-byte zip behind a blob URL.
       - name: Why it failed — the app's own log
         if: failure()
-        run: tail -n 60 "$RUNNER_TEMP/pkg-smoke/electron.log" || echo '(no electron.log)'
+        run: tail -n 160 "$RUNNER_TEMP/pkg-smoke/electron.log" || echo '(no electron.log)'
 
       - name: Stop the app the packaged smoke left running
         if: always()
@@ -1004,7 +1004,7 @@ jobs:
         if: failure()
         run: |
           $log = "$env:RUNNER_TEMP\pkg-smoke\electron.log"
-          if (Test-Path $log) { Get-Content $log -Tail 60 } else { Write-Host '(no electron.log)' }
+          if (Test-Path $log) { Get-Content $log -Tail 160 } else { Write-Host '(no electron.log)' }
 
       - name: Stop the app the packaged smoke left running
         if: always()

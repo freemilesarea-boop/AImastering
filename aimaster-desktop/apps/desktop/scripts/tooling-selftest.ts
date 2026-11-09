@@ -207,7 +207,10 @@ check(
   check(
     'GPU acceleration is off on Windows, where the runner cannot keep it alive',
     win.includes('--disable-gpu') && win.includes('--disable-gpu-sandbox')
-      && win.includes('--disable-software-rasterizer'),
+      // And NOT --disable-software-rasterizer: with --disable-gpu it removes
+      // the fallback that --disable-gpu just switched to, and the renderer
+      // dies with the same access violation the GPU process used to.
+      && !win.includes('--disable-software-rasterizer'),
     win.join(' '),
   );
   check(
