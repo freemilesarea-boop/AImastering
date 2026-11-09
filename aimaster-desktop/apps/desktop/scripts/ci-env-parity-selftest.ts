@@ -246,6 +246,51 @@ check(
   );
 }
 
+// ── Nothing in the install compiles itself ──────────────────────────────
+//
+// On 2026-11-09 every job — Linux, both macOS arches, Windows — died at
+// `pnpm install`, and none of them at anything this repository had changed:
+//
+//     sharp: Integrity check passed for linux-x64
+//     prebuild-install warn install No prebuilt binaries found
+//                      (target=7 runtime=napi arch=x64 libc= platform=linux)
+//     -> node-gyp rebuild -> fatal error: vips/vips8: No such file or directory
+//
+// `sharp@0.32.6` fetches its native binary from a GitHub release at install
+// time, and when that lookup comes back empty it falls back to COMPILING
+// itself against libvips headers no runner has.  One failed download and
+// every platform's build stops.  It is reached from `@capacitor/assets`, so
+// the desktop jobs were taken down by a dependency of the mobile app's icon
+// generator — which is also why skipping sharp's build was the wrong fix:
+// `capacitor-assets generate --android` needs that binary to work.
+//
+// 0.33 ships its binaries as ordinary npm packages (`@img/sharp-linux-x64`
+// and friends), so there is no download and nothing to compile.  The override
+// is what keeps it there — `@capacitor/assets` still asks for 0.32.6.
+{
+  const MONO = path.resolve(DESKTOP, '..', '..');
+  const newEnough = (v: string): boolean => {
+    const [major, minor] = v.split('.').map(Number);
+    return (major ?? 0) > 0 || (minor ?? 0) >= 33;
+  };
+  const root = JSON.parse(fs.readFileSync(path.join(MONO, 'package.json'), 'utf8')) as {
+    pnpm?: { overrides?: Record<string, string> };
+  };
+  const pinned = root.pnpm?.overrides?.sharp ?? '';
+  check(
+    'sharp is pinned past the version that compiles itself when a download fails',
+    pinned !== '' && newEnough(pinned),
+    pinned === '' ? 'no override — 0.32.6 comes back with it' : `sharp ${pinned}`,
+  );
+  const lock = fs.readFileSync(path.join(MONO, 'pnpm-lock.yaml'), 'utf8');
+  const resolved = [...new Set([...lock.matchAll(/^ {2}sharp@(\S+):/gm)].map((m) => m[1] ?? ''))];
+  check(
+    'and the lockfile agrees, so the pin is not just a wish in package.json',
+    resolved.length > 0 && resolved.every(newEnough),
+    resolved.length === 0 ? 'sharp is not in the lockfile at all' : `resolved: ${resolved.join(', ')}`,
+  );
+}
+
 // ── And the DSP suite has a job that runs it ─────────────────────────────
 //
 // `test:python-suite` asks pytest to PLAN the suite and runs the 30

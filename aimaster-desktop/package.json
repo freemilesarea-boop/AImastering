@@ -35,7 +35,8 @@
       "builder-util-runtime": "9.2.4",
       "dmg-builder": "24.13.3",
       "electron-builder-squirrel-windows": "24.13.3",
-      "electron-publish": "24.13.1"
+      "electron-publish": "24.13.1",
+      "sharp": "0.33.5"
     },
     "peerDependencyRules": {
       "ignoreMissing": [
