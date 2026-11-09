@@ -141,8 +141,15 @@ const PRODUCT_ENTRIES = [
   'src/renderer/main.tsx', 'src/main/index.ts', 'src/preload/index.ts',
 ];
 
-/** Every program in scripts/ — a selftest, a benchmark or a hand-run harness. */
-const SCRIPT_ENTRIES = SOURCES.filter((f) => /^scripts\/[^/]+\.tsx?$/.test(f));
+/**
+ * Every program in scripts/ — a selftest, a benchmark or a hand-run harness.
+ *
+ * Nested ones count.  The pattern used to be `scripts/<one name>.ts`, so a
+ * program moved into a folder beside the `.mjs` harnesses it belongs with
+ * became, by this file's reckoning, a source file nothing reaches.  A program
+ * is a program wherever it is filed.
+ */
+const SCRIPT_ENTRIES = SOURCES.filter((f) => /^scripts\/(?:[^/]+\/)*[^/]+\.tsx?$/.test(f));
 
 /** Every story, matched the way `.storybook/main.ts` matches them. */
 const STORY_ENTRIES = SOURCES.filter((f) => /^src\/renderer\/.*\.stories\.tsx?$/.test(f));
