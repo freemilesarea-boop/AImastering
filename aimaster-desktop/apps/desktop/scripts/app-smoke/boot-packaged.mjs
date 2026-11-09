@@ -58,8 +58,43 @@ function layoutFor(platform) {
   return { container: 'linux-unpacked', exeDir: [], resources: ['resources'] };
 }
 
+/**
+ * The switches the app is launched with, per platform.
+ *
+ * `--no-sandbox` on Linux is the usual container answer.  The three GPU
+ * switches on Windows are NOT: they are here because of what the first
+ * Windows run of this harness found, and they cost real coverage, so they are
+ * written down rather than sprinkled in.
+ *
+ * On windows-latest the app started, loaded its renderer out of the asar and
+ * resolved its bundled ffmpeg — and then Chromium's GPU process died with
+ * exit code -1073741819 (0xC0000005, an access violation), which took the
+ * renderer with it.  A GitHub Windows runner has no real GPU and no ordinary
+ * desktop session; a Windows machine someone actually uses has both.  So the
+ * app is run with GPU acceleration OFF there, and the limit is stated out
+ * loud: on Windows this harness does not exercise GPU-accelerated rendering.
+ * Everything else — the asar, the resources, the engine, the WASM, the
+ * render path — it does.
+ *
+ * Not applied anywhere else: Linux and macOS pass with the GPU on, and
+ * turning it off for them would quietly shrink what they cover.
+ */
+function launchArgs(platform, port) {
+  const args = [`--remote-debugging-port=${port}`];
+  if (platform === 'linux') args.unshift('--no-sandbox');
+  if (platform === 'win32') {
+    args.push('--disable-gpu', '--disable-gpu-sandbox', '--disable-software-rasterizer');
+  }
+  return args;
+}
+
 if (process.argv[2] === '--print-layout') {
   console.log(JSON.stringify(layoutFor(process.argv[3] ?? process.platform)));
+  process.exit(0);
+}
+
+if (process.argv[2] === '--print-args') {
+  console.log(JSON.stringify(launchArgs(process.argv[3] ?? process.platform, 9444)));
   process.exit(0);
 }
 
@@ -379,8 +414,10 @@ const env = { ...process.env };
 if (display) env.DISPLAY = display;
 const logPath = path.join(WORK, 'electron.log');
 const log = fs.openSync(logPath, 'w');
-const args = [`--remote-debugging-port=${PORT}`];
-if (process.platform === 'linux') args.unshift('--no-sandbox');
+const args = launchArgs(process.platform, PORT);
+if (args.includes('--disable-gpu')) {
+  console.log('gpu      OFF — this runner\u2019s GPU process crashes; GPU rendering is not covered here');
+}
 const app = spawn(APP, args, { env, stdio: ['ignore', log, log], detached: true });
 app.unref();
 console.log(`pid      ${app.pid}`);

@@ -215,6 +215,18 @@ platform's package intact (`ditto`, `robocopy`, `cp -a`), starts an X server
 only on Linux, and writes `packaged.json` into the work directory so the flow
 does not have to guess where the resources ended up.
 
+**What the Windows run does not cover.** On `windows-latest` the app starts,
+loads its renderer out of the asar and resolves its bundled `ffmpeg.exe`, and
+then Chromium's GPU process dies with exit code `-1073741819` (0xC0000005, an
+access violation), taking the renderer with it — three seconds in, every time.
+A GitHub Windows runner has no real GPU and no ordinary desktop session; a
+Windows machine someone actually uses has both. So the app is launched there
+with `--disable-gpu --disable-gpu-sandbox --disable-software-rasterizer`, and
+the limit is stated rather than papered over: **on Windows this harness does
+not exercise GPU-accelerated rendering.** Everything else it does. The flags
+are Windows-only, and a check runs the launcher for all three platforms to
+keep them from leaking onto macOS or Linux, where the GPU path does run.
+
 **It copies the app out of the source tree before launching it, and that is
 the point.** `wasmNodeCandidates()` walks *up* from the main bundle's
 directory before it tries `process.resourcesPath`. `out/linux-unpacked`

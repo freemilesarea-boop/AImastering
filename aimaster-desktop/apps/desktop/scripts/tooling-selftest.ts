@@ -186,6 +186,44 @@ check(
     && /xdpyinfo/.test(bootPkg),
   'Xvfb is a Linux answer to a Linux problem',
 );
+// ── The switches it launches with, per platform ──────────────────────────
+//
+// Asked by running it, like the layout above.  GPU acceleration is turned OFF
+// on Windows — the runner's GPU process dies with an access violation and
+// takes the renderer with it — and that costs real coverage, so it must stay
+// where it was put: nowhere else.  A `--disable-gpu` that leaked onto macOS
+// or Linux would make those runs pass more easily and prove less, and nothing
+// in a green build would say so.
+{
+  const argsOf = (platform: string): string[] => {
+    const r = spawnSync('node',
+      [path.join(DESKTOP, 'scripts/app-smoke/boot-packaged.mjs'), '--print-args', platform],
+      { encoding: 'utf8' });
+    return JSON.parse(r.stdout) as string[];
+  };
+  const win = argsOf('win32');
+  const mac = argsOf('darwin');
+  const lin = argsOf('linux');
+  check(
+    'GPU acceleration is off on Windows, where the runner cannot keep it alive',
+    win.includes('--disable-gpu') && win.includes('--disable-gpu-sandbox')
+      && win.includes('--disable-software-rasterizer'),
+    win.join(' '),
+  );
+  check(
+    'and ONLY on Windows — the other two still prove the GPU path works',
+    !mac.some((a) => a.includes('gpu')) && !lin.some((a) => a.includes('gpu')),
+    `mac: ${mac.join(' ')} · linux: ${lin.join(' ')}`,
+  );
+  check(
+    'and the sandbox is dropped only where the container needs it dropped',
+    lin.includes('--no-sandbox') && !mac.includes('--no-sandbox') && !win.includes('--no-sandbox'),
+    `linux ${lin.includes('--no-sandbox') ? '✓' : '✗'}`
+      + ` · mac ${mac.includes('--no-sandbox') ? 'DROPPED' : '✓'}`
+      + ` · win ${win.includes('--no-sandbox') ? 'DROPPED' : '✓'}`,
+  );
+}
+
 check(
   'boot-packaged waits for a WINDOW, not only for the CDP endpoint',
   /json\/list/.test(bootPkg) && /t\?\.type === 'page'/.test(bootPkg)
