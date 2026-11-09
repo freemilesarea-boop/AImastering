@@ -262,6 +262,22 @@ check(
 }
 
 check(
+  'boot-packaged watches the window it found, and refuses one that dies right after',
+  /connectOverCDP/.test(bootPkg) && /await sleep\(SETTLE_MS\);/.test(bootPkg)
+    && /const still = await pageTargets\(\);/.test(bootPkg)
+    && /if \(still === 0\) \{/.test(bootPkg)
+    && /lost it within/.test(bootPkg) && /page\.on\('pageerror'/.test(bootPkg),
+  'on the Windows runner the page appeared at +1.0s and the renderer died at'
+    + ' +1.9s, in the gap between the two processes, with nobody listening',
+);
+check(
+  'and it does not close the app it is about to hand to the flow',
+  !/watched\.close\(\)/.test(bootPkg) && /process\.exit\(0\)/.test(bootPkg),
+  'browser.close() over CDP closes the APP — the flow would then be sent to'
+    + ' explain the very "no page" that closing it caused',
+);
+
+check(
   'and checks the copy finished, instead of trusting the copy tool',
   /the copy's app.asar is/.test(bootPkg) && /did not finish/.test(bootPkg),
   'robocopy reports success for "nothing was copied" as readily as for'

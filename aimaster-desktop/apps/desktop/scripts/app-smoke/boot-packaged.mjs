@@ -35,6 +35,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { chromium } from 'playwright-core';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DESKTOP = path.resolve(HERE, '..', '..');
@@ -466,6 +467,52 @@ if (pageAt === 0) {
 }
 console.log(`window   ${pageAt} page target(s)`);
 
+// ── And it is still there a moment later ────────────────────────────────────
+//
+// A window that appears and then dies is not a window, and until this existed
+// the harness could not tell the two apart: the boot saw one page target, the
+// flow connected a second later, found none, and said "main died before
+// createWindow" — which was wrong twice over.  On the Windows runner the page
+// appeared at +1.0s and the renderer died at +1.9s, in the gap between the
+// two processes, with nobody listening to what it said on the way out.
+//
+// So the renderer is watched here, from before it can die, and whatever it
+// says is printed.  An access violation says nothing — but a thrown error, a
+// failed import or a console error does, and those were being thrown away.
+const SETTLE_MS = 4000;
+{
+  const said = [];
+  let watched = null;
+  try {
+    watched = await chromium.connectOverCDP(`http://127.0.0.1:${PORT}`);
+    const pages = watched.contexts()[0]?.pages() ?? [];
+    const page = pages.find((p) => !p.url().startsWith('devtools://')) ?? pages[0];
+    if (page) {
+      page.on('pageerror', (e) => said.push(`pageerror: ${String(e?.message ?? e)}`));
+      page.on('console', (m) => { if (m.type() === 'error') said.push(`console: ${m.text()}`); });
+      page.on('crash', () => said.push('the page crashed'));
+    }
+  } catch (err) {
+    said.push(`could not watch the page: ${String(err?.message ?? err)}`);
+  }
+  await sleep(SETTLE_MS);
+  const still = await pageTargets();
+  if (still === 0) {
+    die(`the app opened a window and lost it within ${SETTLE_MS} ms — see ${logPath}`,
+      `${said.length > 0 ? `the renderer said:\n  ${said.join('\n  ')}\n\n` : 'the renderer said nothing\n\n'}`
+      + logTail());
+  }
+  if (said.length > 0) {
+    console.log(`window   the renderer logged ${said.length} error(s) while settling:`);
+    for (const line of said.slice(0, 10)) console.log(`         ${line}`);
+  }
+  // NOT closed.  `browser.close()` over a CDP connection closes the APP, and
+  // the flow is about to attach to it — closing here would leave the flow
+  // with the same "no page" it was sent to explain.  The socket is dropped by
+  // this process exiting instead, which Chromium survives.
+  void watched;
+}
+
 // What the flow needs to know, written down rather than recomputed from a
 // platform-shaped guess on the other side.
 fs.writeFileSync(path.join(WORK, 'packaged.json'), `${JSON.stringify({
@@ -476,3 +523,9 @@ fs.writeFileSync(path.join(WORK, 'packaged.json'), `${JSON.stringify({
   port: Number(PORT),
   pid: app.pid,
 }, null, 2)}\n`);
+
+// Written synchronously above, so there is nothing in flight.  The exit is
+// explicit because the CDP socket opened to watch the renderer would
+// otherwise keep this process alive, and closing it the polite way closes the
+// app with it.
+process.exit(0);
