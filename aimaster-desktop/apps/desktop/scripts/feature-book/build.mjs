@@ -107,24 +107,6 @@ push('instruments', `4부 · 악기 ${inv.instruments.length}개`, `
 ${inv.instruments.map((i) => `<tr><td>${esc(i.name)}</td><td><code>${esc(i.id)}</code></td><td class="n">${i.params}</td></tr>`).join('')}
 </tbody></table>`);
 
-// ── 5부 — 수업 자료 ──────────────────────────────────────────────────────────
-push('course', '5부 · 수업 자료', `
-<h3>수업용 기본 템플릿 ${inv.courseTemplates.length}개</h3>
-<table><thead><tr><th>템플릿</th><th class="n">트랙</th><th>버스</th><th class="n">그룹</th><th class="n">마커</th><th class="n">BPM</th><th>설명</th></tr></thead><tbody>
-${inv.courseTemplates.map((t) => `<tr><td>${esc(t.name)}</td><td class="n">${t.tracks}</td>
-  <td>${t.buses.map((b) => esc(b)).join(' · ') || '—'}</td><td class="n">${t.groups}</td>
-  <td class="n">${t.markers}</td><td class="n">${t.tempoBpm}</td><td class="d">${esc(t.note)}</td></tr>`).join('')}
-</tbody></table>
-
-<h3>레슨 단계</h3>
-${inv.lessons.map((l) => `<p><b>${l.stage}단계 · ${esc(l.title)}</b> — ${l.commands.length}개 명령<br>
-<span class="d">${l.commands.map((id) => esc(inv.commands.find((c) => c.id === id)?.label ?? id)).join(' · ')}</span></p>`).join('')}
-
-<h3>키맵 프리셋</h3>
-<table><thead><tr><th>프리셋</th><th class="n">바꾸는 키</th></tr></thead><tbody>
-${inv.presets.map((p) => `<tr><td>${esc(p.label)}</td><td class="n">${p.bindings}</td></tr>`).join('')}
-</tbody></table>`);
-
 // ── The book ─────────────────────────────────────────────────────────────────
 const totalControls = scenes.reduce((n, s) => n + s.controls.length, 0);
 const today = new Date().toISOString().slice(0, 10);
