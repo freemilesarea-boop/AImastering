@@ -109,8 +109,28 @@ export interface AudioFileInfo {
 export interface LoudnessStats {
   integratedLufs: number;
   truePeakDbtp: number;
-  lra: number;
-  shortTermMax: number;
+  /**
+   * Loudness range, or null when the path that produced this master did not
+   * measure one.
+   *
+   * The offline chain renderer (`audio:master-rust-experimental`, which the
+   * Studio path uses) measures integrated LUFS and true peak on its second
+   * pass and nothing else.  It used to hand its own metrics object straight
+   * across as a `LoudnessStats`, so `lra` was undefined while this type said
+   * it was a number, and `lra.toFixed(1)` in the queue row took the whole app
+   * to the error boundary.  Null says "not measured" — the one thing a UI can
+   * render honestly without inventing a 0 dB range.
+   */
+  lra: number | null;
+  /**
+   * Maximum short-term loudness, when the path measured one.
+   *
+   * Optional because no path ever has: the Python engine's `loudnessAfter`
+   * carries integratedLufs / truePeakDbtp / lra / durationSec, and the Rust
+   * renderer carries neither.  It was declared required and nothing read it,
+   * which is the same lie as `lra` with nobody to notice it.
+   */
+  shortTermMax?: number;
 }
 
 export interface AIDetectionResult {
@@ -124,6 +144,62 @@ export interface AIDetectionResult {
   upsampleSuspected: boolean;
 }
 
+/** One thing the engine noticed about a file, in words meant for the user. */
+/**
+ * What the engine says about itself — the slice the app reads.
+ *
+ * `waveform` is the one that matters and the one nothing could see: every
+ * number the app shows that is not a loudness figure (band levels, stereo
+ * width, crest factor, duration) comes from numpy + soundfile inside the
+ * engine, and when those cannot be imported `app/utils/audio_io.py` falls
+ * back and the engine KEEPS ANSWERING — `available: false`, every band at
+ * -120 dB, which the app reports as a damaged file.  Two PyInstaller specs
+ * shipped exactly that, both reached READY, and the only thing that noticed
+ * was a packaging smoke step added afterwards.  The app itself could not ask.
+ */
+export interface EngineEnvInfo {
+  environment?: {
+    waveform?: {
+      available: boolean;
+      numpy: string | null;
+      soundfile: string | null;
+      reason: string | null;
+    };
+    appVersion?: string;
+    ffmpeg?: string | null;
+  };
+}
+
+export interface EngineWarning {
+  /** Machine-readable: NON_STANDARD_SAMPLE_RATE, MONO_INPUT, CLIPPING_DETECTED… */
+  code: string;
+  level: 'info' | 'warning' | 'error' | string;
+  /** Korean, ready to show. */
+  userMessage: string;
+  /** English detail for the log — never shown to the user. */
+  devDetail?: string;
+}
+
+/** Measured state of one audio file, as the engine reports it. */
+export interface WaveformStats {
+  sampleRate: number;
+  channels: number;
+  durationSec: number;
+  rmsDb: { l: number; r: number; overall: number };
+  samplePeakDb: { l: number; r: number; overall: number };
+  dcOffset: { dbL: number; dbR: number; detected: boolean };
+  /** null when the file is mono, or the correlation is not a number. */
+  stereoCorrelation: number | null;
+  lrBalanceDb: number;
+  lrImbalanceDetected: boolean;
+  silenceStartMs: number;
+  silenceEndMs: number;
+  clippingDetected: boolean;
+  clippingSamples: number;
+  spectralBalance: { lowToMidDb: number; highToMidDb: number } | null;
+  warnings: EngineWarning[];
+}
+
 export interface AudioAnalysisResult {
   fileInfo: AudioFileInfo;
   loudness: LoudnessStats;
@@ -131,6 +207,23 @@ export interface AudioAnalysisResult {
   dcOffsetDb: number;
   silenceStartMs: number;
   silenceEndMs: number;
+  /**
+   * What the engine noticed about this file, in Korean, ready to show.
+   *
+   * The engine has always sent this — `analyzer.py` computes it next to the
+   * loudness measurement — and this type did not declare it, so no code could
+   * read it and nothing did.  Measured on a mono 22.05 kHz file: three
+   * warnings crossed the wire ("샘플레이트 22050 Hz는 비권장 값입니다…",
+   * "모노 파일이 입력되었습니다…", WAVEFORM_DETAIL) and the user was told
+   * none of them.  Empty array on a file with nothing worth saying.
+   */
+  warnings: EngineWarning[];
+  /**
+   * The full measured picture of the input, which `dcOffsetDb`,
+   * `silenceStartMs` and `silenceEndMs` above are three fields of.  Also
+   * always sent, also undeclared until now.
+   */
+  waveform?: WaveformStats;
 }
 
 export interface MasteringOptions {
@@ -291,8 +384,15 @@ export interface MasteringResult {
   /** Absolute path to the MP3 preview. Always populated on success. */
   previewPath: string;
   appliedCorrections: string[];
-  loudnessBefore: { integratedLufs: number; truePeakDbtp: number; lra: number };
-  loudnessAfter: LoudnessStats;
+  loudnessBefore: { integratedLufs: number; truePeakDbtp: number; lra: number | null };
+  /**
+   * What the OUTPUT measured, or null when the render path measured nothing.
+   *
+   * Null rather than zeros: a master whose loudness was not measured and a
+   * master measured at 0 LUFS are different facts, and only one of them is
+   * worth showing a user.
+   */
+  loudnessAfter: LoudnessStats | null;
   spectralBalance: { lowToMidDb: number; highToMidDb: number } | null;
   analysisReport: AnalysisReport | null;
   pipelineWarnings: Array<{ code: string; level: string; userMessage: string }>;
@@ -344,6 +444,22 @@ export interface MasteringResult {
    * 항상 활성이며, 모드 무관 보컬 명료도 우선.
    */
   vocalProtection?: VocalProtectionReport;
+
+  /**
+   * The style the engine actually applied, echoed back.
+   *
+   * The UI reads its own request (`options.style`) today, which is the same
+   * value whenever nothing overrode it — this is the authoritative answer,
+   * and it was being sent and dropped.
+   */
+  style?: MasteringStyle | string;
+  /**
+   * Measured state of the file that was written — the same shape `analyze`
+   * reports for the input, so before and after can be compared field by
+   * field.  `spectralBalance` above is derived from it.  Sent on every
+   * master, undeclared until now.
+   */
+  postWaveform?: WaveformStats | null;
 
   /** v3.4 — Ozone-style reference matching result */
   referenceMatch?:    ReferenceMatchReport;
@@ -690,6 +806,7 @@ export const IPC = {
   SETTINGS_OUTPUT_DIR: 'settings:choose-output-dir',
   // System
   FFMPEG_STATUS: 'system:ffmpeg-status',
+  ENGINE_STATUS: 'system:engine-status',
 } as const;
 
 export type IPCChannel = typeof IPC[keyof typeof IPC];
@@ -698,7 +815,32 @@ export type IPCChannel = typeof IPC[keyof typeof IPC];
 
 export interface RPCRequest {
   id: string;
-  method: 'analyze' | 'master' | 'qc_check';
+  /**
+   * The engine's dispatch table, all nine of it (app/main.py HANDLERS).
+   *
+   * This union named three for a long time, which is a stronger statement
+   * than it looks: `bridge.call()` takes `RPCRequest['method']`, so the other
+   * six were not merely uncalled — they were uncallable, and a compile error
+   * was the only thing anyone would have met trying.  Measured by driving all
+   * nine against the shipped binary: every one of them answers.
+   *
+   * `env_info` now has a caller (system:engine-status).  The reference
+   * pipeline — `master_with_reference`, `analyze_reference`,
+   * `list_reference_presets`, `recommend_reference_preset` — and
+   * `export_debug_bundle` still have none; they are listed because being
+   * reachable from the type system is the difference between "a feature that
+   * needs wiring" and "a feature nobody can wire without editing this line".
+   */
+  method:
+    | 'analyze'
+    | 'master'
+    | 'qc_check'
+    | 'env_info'
+    | 'master_with_reference'
+    | 'analyze_reference'
+    | 'list_reference_presets'
+    | 'recommend_reference_preset'
+    | 'export_debug_bundle';
   params: Record<string, unknown>;
 }
 
@@ -991,3 +1133,37 @@ export const LICENSE_ENFORCED = false;
  */
 export const APP_NAME = 'LV DAW';
 
+
+// ── UI 배율 ───────────────────────────────────────────────────────────────────
+//
+// The console is dense on purpose — a mixer strip that says less is a mixer
+// strip you have to open something to read — but density was bought in font
+// size, and the bill came to 521 pieces of text under 11 px, 64 of them at
+// 8 px.  At that size the strip is not dense, it is unreadable, and no amount
+// of layout work fixes a glyph that is too small for the eye looking at it.
+//
+// The fix is not 521 edits.  Electron scales the whole renderer with one call,
+// so the app gets what Cubase has and Logic inherits from the system: a
+// number the user picks once.
+//
+// The steps are listed rather than a range because both ends of this live in
+// different processes — the settings page offers them, the main process
+// validates and applies them — and a range would let the two disagree about
+// what 1.0001 means.  Listed, they cannot.
+export const UI_SCALES: readonly number[] = [0.9, 1, 1.1, 1.25, 1.4, 1.6];
+
+export const DEFAULT_UI_SCALE = 1;
+
+/** Readable name for each step, because "1.25" is not what the user wants to read. */
+export const UI_SCALE_LABELS: Readonly<Record<string, string>> = {
+  '0.9':  '90% — 더 많이',
+  '1':    '100% — 기본',
+  '1.1':  '110%',
+  '1.25': '125% — 권장',
+  '1.4':  '140%',
+  '1.6':  '160% — 가장 크게',
+};
+
+export function isUiScale(v: unknown): v is number {
+  return typeof v === 'number' && UI_SCALES.includes(v);
+}

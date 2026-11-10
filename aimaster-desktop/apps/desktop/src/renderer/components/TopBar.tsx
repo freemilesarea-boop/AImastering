@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import React from 'react';
 // License badge / store / modal removed for the internal RC test cycle.
 // See main/index.ts header for the rationale.  TopBar layout remains the
@@ -7,6 +8,8 @@ import { detectPlatform } from '../shortcuts/keys.js';
 import { useAppStore } from '../stores/appStore.js';
 import { useIsMobile } from '../hooks/useIsMobile.js';
 import { APP_NAME } from '@aimaster/shared-types';
+import { commandTitle } from '../shortcuts/command-title.js';
+import { useShortcutStore } from '../stores/shortcutStore.js';
 
 // ── TopBar ────────────────────────────────────────────────────────────────────
 
@@ -28,6 +31,10 @@ interface TopBarProps {
  * In the row it cannot overlap anything, at any width.
  */
 function DawLink() {
+  // A tooltip asks the keymap rather than spelling a chord out, so it
+  // follows a remap and shows the key this platform prints.
+  const chordOverrides = useShortcutStore((s) => s.overrides);
+  const chordPlatform = useMemo(() => detectPlatform(), []);
   const page = useAppStore((s) => s.currentPage);
   const setPage = useAppStore((s) => s.setPage);
   const isMobile = useIsMobile();
@@ -36,7 +43,7 @@ function DawLink() {
     <button
       type="button"
       onClick={() => setPage('daw')}
-      title="멀티트랙 Edit / Mix 워크스페이스 (Mod+Alt+D)"
+      title={commandTitle('daw.open', chordOverrides, chordPlatform, '멀티트랙 Edit / Mix 워크스페이스')}
       className="no-drag shrink-0 text-[11px] font-medium rounded-md px-2.5 py-1 transition-colors"
       style={{
         color: 'rgba(255,255,255,0.55)',

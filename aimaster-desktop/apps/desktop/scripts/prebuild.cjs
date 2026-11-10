@@ -57,6 +57,32 @@ try {
   process.exitCode = 1;
 }
 
+// ── The Python engine ─────────────────────────────────────────────────────────
+//
+// Not copied — checked.  Building it needs a Python venv and PyInstaller, and
+// CI does that before it gets here.  What this script can do is refuse to let
+// `pnpm dist` spend four minutes making an installer that cannot analyse a
+// file.  See scripts/lib/engine-binary.cjs for what was measured.
+// The status is taken ONCE and the two questions asked of it, because asking
+// the gate twice starts the engine twice — four seconds each, for an answer
+// it already had.
+const { engineStatus, engineMessage } = require('./lib/engine-binary.cjs');
+const engine = engineStatus(BIN_DIR);
+const blocker = engineMessage(engine);
+const waived = (engine.state === 'missing' || engine.state === 'broken')
+  && process.env['AIMASTER_ALLOW_NO_ENGINE'] === '1';
+if (blocker !== null) {
+  console.error(`\n${blocker}`);
+  process.exitCode = 1;
+} else if (waived) {
+  console.warn(`\n⚠ engine binary ${engine.state} and AIMASTER_ALLOW_NO_ENGINE=1 — `
+    + 'the package will not be able to analyse audio.');
+} else if (engine.state === 'unverifiable') {
+  console.warn(`\n⚠ engine  present but ${engine.detail} — only its presence was checked.`);
+} else {
+  console.log('✓ engine  (starts and reaches READY)');
+}
+
 if (!process.exitCode) {
   console.log('\nFFmpeg binaries ready in public/bin/');
 }

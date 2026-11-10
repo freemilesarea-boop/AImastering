@@ -9,7 +9,7 @@
 // they can be unit-tested to the sample without an audio device.
 
 import {
-  DAW_SESSION_VERSION, NO_FADE, INSERT_SLOTS, SEND_SLOTS,
+  DAW_SESSION_VERSION, NO_FADE, INSERT_SLOTS, SEND_SLOTS, SEND_LEVEL_MIN_DB,
   type AudioFileRef, type AutomationLane, type BusDef, type Clip, type DawSession,
   type FileId, type GroupDef, type Insert, type Playlist, type Send, type Track,
   type TrackId, type TrackKind, type ClipId, type BusId, type OutputTarget,
@@ -398,7 +398,7 @@ export function removeInsert(session: DawSession, trackId: TrackId, slot: number
 export function createSend(slot: number, target: BusId, over: Partial<Send> = {}): Send {
   return {
     id: nextId('snd'), slot, target,
-    levelDb: -Infinity, pan: 0, preFader: false, mute: false,
+    levelDb: SEND_LEVEL_MIN_DB, pan: 0, preFader: false, mute: false,
     ...over,
   };
 }

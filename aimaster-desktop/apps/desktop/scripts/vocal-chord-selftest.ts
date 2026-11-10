@@ -474,6 +474,22 @@ check('the chord lane header does not assume the width of the arrangement', () =
   assert(height !== null && Number(height[1]) >= 56,
     `CHORD_LANE_HEIGHT is ${height?.[1] ?? '?'}; the wrapped header measured 56 px `
     + 'and anything less clips the last row of controls');
+
+  // The collapsed row — the one an empty chord lane shows, holding the three
+  // ways to make a first chord — is subject to the same lesson, and broke it
+  // on the way in: its first version had the `flex-1` spacer, in the same
+  // 168 px column, for the same reason (pushing actions right).  One row of
+  // `h-5` controls needs 20 px plus its border.
+  const collapsed = /CHORD_LANE_COLLAPSED_HEIGHT = (\d+)/.exec(lane);
+  assert(collapsed !== null && Number(collapsed[1]) >= 24,
+    `CHORD_LANE_COLLAPSED_HEIGHT is ${collapsed?.[1] ?? '?'}; an h-5 control plus `
+    + 'its border does not fit under 24 px');
+  const collapsedRow = header.slice(header.indexOf('if (collapsed) {'),
+    header.indexOf('data-testid="chord-lane-header-collapsed"'));
+  assert(collapsedRow.length > 0 && !/flex-1/.test(collapsedRow)
+    && /overflow-hidden/.test(collapsedRow),
+    'the collapsed row must clip and must not push its buttons to an edge that '
+    + 'does not exist — it is in the same 168 px column as the full header');
 });
 
 const passed = results.filter((r) => r.pass).length;

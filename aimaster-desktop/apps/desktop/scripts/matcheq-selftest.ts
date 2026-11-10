@@ -18,7 +18,7 @@
  * Run: pnpm --filter @aimaster/desktop test:matcheq
  */
 
-import { OfflineAudioContext } from 'node-web-audio-api';
+import { OfflineAudioContext } from './lib/offline-audio-context.js';
 
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 
@@ -47,6 +47,37 @@ async function check(name: string, fn: () => Promise<void> | void): Promise<void
   }
 }
 function assert(cond: unknown, msg: string): void { if (!cond) throw new Error(msg); }
+
+function peak(a: Float32Array): number {
+  let p = 0;
+  for (const v of a) p = Math.max(p, Math.abs(v));
+  return p;
+}
+
+/**
+ * A render that came back empty is a failed render, not a measurement.
+ *
+ * A full-suite run reported this device as broken — "the gap went from 5.49 dB
+ * to 115.56 dB", and "Amount at zero changed the spectrum by -115.383 dB".
+ * Both numbers are the signature of silence: the match EQ's wet path is a
+ * ConvolverNode, and in that one run it produced nothing while the plain
+ * biquad renders in the same process were fine.  Standalone it does not
+ * reproduce — 10 full runs under six busy loops and 600 direct convolver
+ * renders all came back correct — so what this guard is for is the NEXT time:
+ * the failure should name itself instead of accusing the device of a bad
+ * match it never got the chance to make.
+ */
+function assertRendered(label: string, input: Float32Array, output: Float32Array): void {
+  const pin = peak(input);
+  const pout = peak(output);
+  if (pin > 1e-4 && pout < pin * 1e-3) {
+    throw new Error(
+      `${label}: the render came back silent — input peak ${pin.toFixed(4)}, output peak `
+      + `${pout.toExponential(2)}.  Nothing was measured, so nothing here is a verdict `
+      + 'on the device.',
+    );
+  }
+}
 
 /** Deterministic wideband noise — every band has something in it to compare. */
 function noise(n: number, seed = 12_345): Float32Array {
@@ -82,7 +113,11 @@ async function coloured(
   }
   cursor.connect(ctx.destination as unknown as AudioNode);
   src.start(0);
-  return (await ctx.startRendering()).getChannelData(0) as Float32Array;
+  const out = (await ctx.startRendering()).getChannelData(0) as Float32Array;
+  // A silent SOURCE is worse than a silent device render: `before > 3` would
+  // pass on a nonsense 115 dB and the whole check would run on nothing.
+  assertRendered('the coloured source', buffer.getChannelData(0) as Float32Array, out);
+  return out;
 }
 
 /** A signal through the match EQ, rendered. */
@@ -100,7 +135,9 @@ async function throughDevice(
   src.connect(device.input);
   device.output.connect(ctx.destination as unknown as AudioNode);
   src.start(0);
-  return (await ctx.startRendering()).getChannelData(0) as Float32Array;
+  const out = (await ctx.startRendering()).getChannelData(0) as Float32Array;
+  assertRendered('the device render', input, out);
+  return out;
 }
 
 /** RMS distance between two level-normalised spectra, in dB. */
@@ -119,9 +156,10 @@ function curveParams(curve: readonly number[]): Record<string, number> {
 }
 
 async function main(): Promise<void> {
-  // A reference that is bright and light, and a mix that is dark and heavy —
-  // about 9 dB apart across the spectrum, which is a gap nobody would argue
-  // about by ear.
+  // A reference that is bright and light, and a mix that is dark and heavy.
+  // The shelves differ by 9 dB each; measured as an RMS distance across the
+  // 32 bands that comes to 5.49 dB, which is the number the checks below are
+  // fractions of — not the 9.
   const reference = await coloured([
     { type: 'highshelf', hz: 4000, gain: 5, q: 0.707 },
     { type: 'lowshelf', hz: 150, gain: -4, q: 0.707 },
@@ -146,9 +184,14 @@ async function main(): Promise<void> {
       ...curveParams(measured), amount: 1, smoothOct: 0.2, limitDb: 18, length: 0,
     });
     const after = spectralDistance(matched, reference);
+    // Measured: 1.80 dB against a bar of 1.92 (5.49 × 0.35).  That is a 6%
+    // margin, said out loud because it is tight enough that a change to the
+    // match or to the spectrum estimator will move it, and the next person
+    // should know whether they broke the device or shaved the margin.  The bar
+    // stays where it is: it encodes "closes two thirds of the gap".
     assert(after < before * 0.35,
       `the gap went from ${before.toFixed(2)} dB to ${after.toFixed(2)} dB — a match that leaves `
-      + 'two thirds of the difference is not a match');
+      + `two thirds of the difference is not a match (bar ${(before * 0.35).toFixed(2)} dB)`);
   });
 
   await check('Amount is the fraction of the difference it takes', async () => {

@@ -177,6 +177,23 @@ export interface Playlist {
 export const INSERT_SLOTS = 10;   // A–J, as in Pro Tools
 export const SEND_SLOTS   = 10;
 
+/**
+ * The bottom of the send fader — a send that is shut.
+ *
+ * A NUMBER, and specifically a finite one.  `createSend` used to default to
+ * `-Infinity`, which is the mathematically right way to say "no signal" and
+ * the one value this app cannot save: `JSON.stringify(-Infinity)` is `null`,
+ * so the send came back from its own file with `levelDb: null` under a type
+ * that says `number`, and the mixer's `send.levelDb.toFixed(1)` threw the
+ * same message the toFixed hot-fix was about.
+ *
+ * −60 instead, because that is already what "shut" means everywhere else:
+ * the send slider's own minimum, and the level `region-live` opens from.
+ */
+export const SEND_LEVEL_MIN_DB = -60;
+/** The top of the send fader. */
+export const SEND_LEVEL_MAX_DB = 12;
+
 export interface Insert {
   id: InsertId;
   /** 0–9 → slot A–J. */

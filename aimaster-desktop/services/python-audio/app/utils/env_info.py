@@ -21,6 +21,41 @@ from app.utils.logger import log
 _CACHE: dict[str, Any] | None = None
 
 
+def _waveform_support() -> dict[str, Any]:
+    """Can this engine read a waveform, and if not, why not.
+
+    Every number the app shows that is not a loudness figure comes from
+    numpy + soundfile: the band levels, the stereo width, the crest factor,
+    the duration.  When they cannot be imported, `app/utils/audio_io.py`
+    falls back and the engine KEEPS ANSWERING — `analyze_reference` returns
+    `available: false` with every band at -120 dB and the app reports a
+    damaged file.  Measured: a PyInstaller spec that excluded `distutils`
+    dropped the cffi graph, and one that pruned setuptools took `secrets`
+    with it, which `numpy.random`'s compiled bit_generator imports from
+    inside the extension where no static analysis can see it.  Both built
+    cleanly, both started, both reached READY, both answered every request.
+    Nothing in the app could tell.
+
+    So the engine says it here, and a packaging run can refuse a build that
+    can only run ffmpeg (scripts/app-smoke/flow-packaged.mjs).
+    """
+    from app.utils.audio_io import HAS_SF, WAVEFORM_UNAVAILABLE_REASON
+
+    def _version(module_name: str) -> str | None:
+        try:
+            import importlib
+            return str(getattr(importlib.import_module(module_name), "__version__", "")) or None
+        except Exception:
+            return None
+
+    return {
+        "available":  bool(HAS_SF),
+        "numpy":      _version("numpy") if HAS_SF else None,
+        "soundfile":  _version("soundfile") if HAS_SF else None,
+        "reason":     WAVEFORM_UNAVAILABLE_REASON,
+    }
+
+
 def _safe_run(cmd: list[str], timeout: float = 5.0) -> str:
     try:
         proc = subprocess.run(
@@ -147,6 +182,7 @@ def collect_env_info(use_cache: bool = True) -> dict[str, Any]:
         "ffmpegBundled":   _is_bundled_ffmpeg(),
         "ffprobeBinary":   os.environ.get("AIMASTER_FFPROBE", "ffprobe"),
         "cpu":             _cpu_info(),
+        "waveform":        _waveform_support(),
         "dynamicEqEngine": _adynamic_eq_engine(),
         "env": {
             "AIMASTER_DEBUG":  os.environ.get("AIMASTER_DEBUG"),

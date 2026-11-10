@@ -12,6 +12,7 @@ import { useAuthStore } from './stores/authStore.js';
 import { useEntitlementStore } from './stores/entitlementStore.js';
 import { useDeviceStore } from './stores/deviceStore.js';
 import { isAccountAuthEnabled, isEntitlementGateEnabled } from './audio/account-auth-flag.js';
+import { entitlementGateDecision } from './audio/entitlement-gate.js';
 import MasteringPage from './pages/MasteringPage.js';
 import ResultPage   from './pages/ResultPage.js';
 import TweakPage    from './pages/TweakPage.js';
@@ -83,6 +84,71 @@ function Toast() {
                      sm:px-4 sm:py-2.5 sm:shadow-xl sm:text-sm sm:text-left sm:overflow-visible
                      ${colors[notif.type] ?? colors.info}`}>
       {notif.message}
+    </div>
+  );
+}
+
+// ── "그 버튼에는 키가 있습니다" ──────────────────────────────────────────────
+
+/**
+ * The key of the command that was just clicked.
+ *
+ * Above the message, not inside it.  The notifier has one slot and the command
+ * needs it to say what happened; a hint that took that slot would cut the
+ * message short, which is a defect this app already measured once at 0.2 s
+ * against 3.5 s.  So this is its own small surface, it never blocks a click,
+ * and it stops after three showings per command (chord-hints.ts).
+ */
+function ChordHint() {
+  const hint = useAppStoreNotification((s) => s.chordHint);
+  if (!hint) return null;
+
+  return (
+    <div key={hint.id} style={{ zIndex: LAYER.notification }}
+         className="fixed animate-in-fast pointer-events-none
+                    bottom-20 left-1/2 -translate-x-1/2
+                    flex items-center gap-2 px-3 py-1.5 rounded-lg
+                    border border-zinc-700 bg-zinc-900/95 shadow-lg">
+      <span className="text-[11px] text-zinc-500">{hint.label}</span>
+      <span className="font-mono text-[11px] px-1.5 py-0.5 rounded
+                       border border-emerald-700/60 bg-emerald-600/15 text-emerald-300">
+        {hint.chord}
+      </span>
+      <span className="text-[10px] text-zinc-600">다음엔 이 키로</span>
+    </div>
+  );
+}
+
+// ── 시연 모드: 방금 누른 것을 교실 뒤까지 ──────────────────────────────────
+
+/**
+ * The command the instructor just ran, large.
+ *
+ * Near the TOP, because the message slot is at the bottom and a demonstration
+ * needs both at once: the key that was pressed up here, what it did down
+ * there.  It never takes a click — a chip over the arrangement that swallowed
+ * a mouse press would be a defect in the middle of a lesson.
+ *
+ * Off unless the instructor turned it on; see demo-mode.ts.
+ */
+function DemoKeyCast() {
+  const cast = useAppStoreNotification((s) => s.demoCast);
+  if (!cast) return null;
+
+  return (
+    <div key={cast.id} style={{ zIndex: LAYER.notification }}
+         className="fixed animate-in-fast pointer-events-none select-none
+                    top-16 left-1/2 -translate-x-1/2
+                    flex items-center gap-3 px-4 py-2.5 rounded-xl
+                    border border-zinc-700 bg-zinc-900/95 shadow-2xl">
+      {cast.chord !== null ? (
+        <span className="font-mono text-[22px] leading-none tracking-wide text-emerald-300">
+          {cast.chord}
+        </span>
+      ) : (
+        <span className="text-[13px] leading-none text-zinc-500">클릭</span>
+      )}
+      <span className="text-[13px] text-zinc-300">{cast.label}</span>
     </div>
   );
 }
@@ -369,19 +435,23 @@ function AppInner() {
   const entStatus = useEntitlementStore((s) => s.status);
   const deviceAllowed = useDeviceStore((s) => s.deviceAllowed);   // Phase D2
   useEffect(() => {
-    if (!accountAuth) return;
-    const gateOn = isEntitlementGateEnabled();
-    let paid = false;
-    let plan = 'free';
-    let status = 'free';
-    if (gateOn && authStatus === 'signed-in' && entStatus === 'loaded' && entitlement) {
-      plan = entitlement.plan;
-      status = entitlement.status;
-      const notExpired = !entitlement.expiresAt || new Date(entitlement.expiresAt).getTime() > Date.now();
-      paid = status === 'active' && (plan === 'pro_monthly' || plan === 'pro_lifetime') && notExpired;
-    }
+    // The rule itself is `entitlement-gate.ts` — a function, so it can be
+    // tested without mounting React.  It used to be written out here, which
+    // is why nothing tested the one decision that says who may export.
+    const d = entitlementGateDecision({
+      accountAuth,
+      gateOn: isEntitlementGateEnabled(),
+      authStatus,
+      entStatus,
+      entitlement,
+      now: Date.now(),
+    });
+    // `push: false` means account auth is off: main keeps its default and the
+    // export gate stays exactly license-only.  Not the same as paid: false.
+    if (!d.push) return;
     // Gate value = paid (entitlementPaid) && deviceAllowed (folded in main).
-    void window.electronAPI?.invoke('entitlement:set', { paid, deviceAllowed, plan, status });
+    void window.electronAPI?.invoke('entitlement:set',
+      { paid: d.paid, deviceAllowed, plan: d.plan, status: d.status });
   }, [accountAuth, authStatus, entStatus, entitlement, deviceAllowed]);
 
   // Defensive redirects — bounce to home when a page is reached without
@@ -472,6 +542,8 @@ function AppInner() {
 
       {/* Toast notifications */}
       <Toast />
+      <ChordHint />
+      <DemoKeyCast />
       {/* Electron has no window.prompt — see ui/text-prompt.ts. */}
       <TextPromptDialog />
       <ConfirmDialog />

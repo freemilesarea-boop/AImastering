@@ -1,0 +1,346 @@
+// ci-env-parity-selftest — do the three platform builds get the same config?
+//
+// They did not.  Measured on build.yml: `LICENSE_API_URL`, `LICENSE_API_KEY`,
+// `LICENSE_HMAC_SECRET` and `PADDLE_CHECKOUT_URL` were injected in build-win
+// only, so one tagged release shipped Windows on `RemoteValidator` with a real
+// HMAC secret and Linux + macOS on `LocalValidator` with the DEV secret — with
+// the packaged-only `assertLicenseSecretReady()` gate off on those two.
+// Nothing user-visible while `LICENSE_ENFORCED` is off; three different
+// licence behaviours the moment it is turned on.
+//
+// And `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` were injected NOWHERE, so
+// `getSupabase()` returned null in every installer and the account /
+// entitlement / device surface was inert — while all five edge functions it
+// calls are deployed and ACTIVE.  A build-time variable the code reads and the
+// workflow never sets fails silently and only in a release, which is the one
+// place nobody runs a test.
+//
+// So this test reads both sides: the workflow, and the code that consumes
+// build-time configuration.
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+
+const req = createRequire(__filename);
+const yaml = req('js-yaml') as { load(src: string): unknown };
+
+let passed = 0;
+let failed = 0;
+function check(name: string, ok: boolean, detail = ''): void {
+  if (ok) { passed++; console.log(`  ok   ${name}`); }
+  else { failed++; console.log(`  FAIL ${name}${detail ? ` — ${detail}` : ''}`); }
+}
+
+const DESKTOP = path.resolve(__dirname, '..');
+const REPO = path.resolve(DESKTOP, '..', '..', '..');
+const WORKFLOW = path.join(REPO, '.github', 'workflows', 'build.yml');
+
+type Step = {
+  name?: string; env?: Record<string, string>; run?: string; 'working-directory'?: string;
+  /** A step's condition — `always()` is what makes a cleanup step a cleanup step. */
+  if?: string;
+};
+type Job = { steps?: Step[] };
+const wf = yaml.load(fs.readFileSync(WORKFLOW, 'utf8')) as { jobs?: Record<string, Job> };
+const jobs = wf.jobs ?? {};
+const PLATFORM_JOBS = ['build-linux', 'build-mac', 'build-win'];
+
+console.log('\n── the three platform builds ───────────────────────────────');
+
+check(
+  'build.yml parsed, with a job per platform',
+  PLATFORM_JOBS.every((j) => Array.isArray(jobs[j]?.steps)),
+  `jobs: ${Object.keys(jobs).join(', ')}`,
+);
+
+/** The env of the step that runs `pnpm build` in a job. */
+function buildEnv(job: string): Record<string, string> | null {
+  for (const step of jobs[job]?.steps ?? []) {
+    if (typeof step.run === 'string' && /\bpnpm (-s )?build\b/.test(step.run)) return step.env ?? {};
+  }
+  return null;
+}
+
+const envs = new Map<string, Record<string, string>>();
+for (const job of PLATFORM_JOBS) {
+  const env = buildEnv(job);
+  check(`${job} has a step that runs \`pnpm build\``, env !== null);
+  if (env) envs.set(job, env);
+}
+
+const keySets = [...envs.entries()].map(([job, env]) => [job, Object.keys(env).sort()] as const);
+const reference = keySets[0]?.[1] ?? [];
+for (const [job, keys] of keySets.slice(1)) {
+  const missing = reference.filter((k) => !keys.includes(k));
+  const extra = keys.filter((k) => !reference.includes(k));
+  check(
+    `${job} is given exactly what ${keySets[0]![0]} is given`,
+    missing.length === 0 && extra.length === 0,
+    [missing.length ? `missing ${missing.join(', ')}` : '', extra.length ? `extra ${extra.join(', ')}` : '']
+      .filter(Boolean).join('; '),
+  );
+}
+
+console.log('\n── against what the code reads at build time ───────────────');
+
+// esbuild bakes `process.env.X` through its `define`; vite bakes
+// `import.meta.env.VITE_X`.  Both are build-time only: an unset one becomes ''
+// in the bundle, with no error anywhere.
+const esbuildCfg = fs.readFileSync(path.join(DESKTOP, 'esbuild.main.cjs'), 'utf8');
+const defined = [...esbuildCfg.matchAll(/'process\.env\.([A-Z0-9_]+)'/g)].map((m) => m[1]!);
+
+const rendererFiles: string[] = [];
+(function walk(dir: string): void {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) walk(full);
+    else if (/\.(ts|tsx)$/.test(entry.name)) rendererFiles.push(full);
+  }
+})(path.join(DESKTOP, 'src'));
+/** Drop comments, so a name written ABOUT a variable is not read as a use of
+ *  it.  Measured the hard way: the comment that records why SettingsPage no
+ *  longer reads `import.meta.env.VITE_APP_VERSION` made this test go on
+ *  demanding that something supply it. */
+function withoutComments(text: string): string {
+  return text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+}
+
+const viteVars = new Set<string>();
+for (const file of rendererFiles) {
+  const text = withoutComments(fs.readFileSync(file, 'utf8'));
+  for (const m of text.matchAll(/import\.meta\.env\??\.(VITE_[A-Z0-9_]+)/g)) viteVars.add(m[1]!);
+}
+
+check(
+  'the build config and the renderer were both read',
+  defined.length > 0 && viteVars.size > 0,
+  `esbuild define: ${defined.join(', ')} | vite: ${[...viteVars].sort().join(', ')}`,
+);
+
+const linuxEnv = envs.get('build-linux') ?? {};
+for (const name of [...new Set(defined)].sort()) {
+  check(
+    `\`process.env.${name}\` is baked, so the workflow sets it`,
+    Object.prototype.hasOwnProperty.call(linuxEnv, name),
+    `esbuild.main.cjs defines it; build.yml does not pass it, so it bakes as ''`,
+  );
+}
+// A build-time variable may legitimately come from somewhere other than the
+// workflow — but then it has to come from somewhere, named here, with the
+// reason.  `VITE_APP_VERSION` is what this bucket is for: SettingsPage read it
+// with a `?? '1.0.0'` fallback and a comment saying vite injected it.  Vite
+// did not; it defines `__APP_VERSION__` from package.json, which the mastering
+// report and the render provenance already used.  So the version row showed
+// 1.0.0 in every build, releases included, while the same build's report said
+// 3.7.0.  The page now reads the constant and this list stays empty.
+const SUPPLIED_ELSEWHERE = new Map<string, string>();
+
+const viteConfig = fs.readFileSync(path.join(DESKTOP, 'vite.config.ts'), 'utf8');
+for (const name of [...viteVars].sort()) {
+  const fromWorkflow = Object.prototype.hasOwnProperty.call(linuxEnv, name);
+  const fromVite = new RegExp(`'import\\.meta\\.env\\.${name}'`).test(viteConfig);
+  const excused = SUPPLIED_ELSEWHERE.get(name);
+  check(
+    `\`import.meta.env.${name}\` is read, so something supplies it`,
+    fromWorkflow || fromVite || excused !== undefined,
+    'the renderer reads it; neither build.yml nor vite.config.ts supplies it, so it '
+    + "is '' in every installer — pass it in the workflow, define it in vite.config.ts, "
+    + 'or add it to SUPPLIED_ELSEWHERE with the reason',
+  );
+}
+
+console.log('\n── and the suites run ──────────────────────────────────────');
+
+// `typecheck` and `lint` ran here for a long time and the 226 selftests did
+// not run at all.  A test suite nobody runs has the standing of not existing,
+// so this asks the workflow whether it still runs.
+const linuxSteps = jobs['build-linux']?.steps ?? [];
+const runsSuite = linuxSteps.some((s) => typeof s.run === 'string' && /\bpnpm (-s )?test\b/.test(s.run));
+check(
+  'build-linux runs the suite, not only typecheck and lint',
+  runsSuite,
+  linuxSteps.filter((s) => s.run).map((s) => String(s.name ?? '?')).join(' · '),
+);
+
+// ── The three layers that drive the real app ─────────────────────────────
+//
+// The selftests were added to CI with the argument that a suite nobody runs
+// has the standing of not existing.  The same was then true of the app smoke,
+// the control hit-test and the packaged smoke for every release after them:
+// they ran when someone remembered.  They run here now, and this is what
+// stops them drifting back out — including the apt step, because without a
+// display the smoke step fails in a way that invites deleting the smoke step.
+{
+  const linux = jobs['build-linux']?.steps ?? [];
+  const runs = linux.map((st) => String(st.run ?? '')).join('\n');
+  const wanted: [string, RegExp][] = [
+    ['the app smoke', /pnpm -s smoke:flow/],
+    ['the control hit-test', /node scripts\/ui-hit-test\.mjs/],
+    ['the packaged smoke', /pnpm -s smoke:packaged/],
+    ['a display for them to run on', /apt-get install -y -qq xvfb x11-utils/],
+    // Load-bearing for the layout, not decoration: without it Korean labels
+    // render a quarter narrower on the runner and the sweep judges a window
+    // no Korean user sees.
+    ['a Korean font, so the layout is the one that ships', /fonts-wqy-zenhei/],
+  ];
+  const absent = wanted.filter(([, re]) => !re.test(runs)).map(([what]) => what);
+  check(
+    'build-linux runs the three layers that need a real app, not only the suite',
+    absent.length === 0,
+    absent.length === 0
+      ? `${linux.length} steps, all four present`
+      : `missing: ${absent.join(', ')}`,
+  );
+  // ── And the two platforms that were never launched at all ──────────────
+  //
+  // For every release before this, "the Windows build" and "the macOS build"
+  // meant a file that had been produced, never a program anyone had seen
+  // start.  The mac job ran `lipo` over the .app's binaries and the win job
+  // listed its outputs; both read the package as FILES.  The gap was invisible
+  // because each job was green.
+  //
+  // So the launch is asserted here, in the same place that stops the Linux
+  // layers drifting back out, and it is asserted as the two commands that do
+  // it — a step whose NAME says "smoke" proves nothing.
+  for (const job of ['build-mac', 'build-win'] as const) {
+    const steps = jobs[job]?.steps ?? [];
+    const runs = steps.map((st) => String(st.run ?? '')).join('\n');
+    const starts = /boot-packaged\.mjs/.test(runs);
+    const drives = /flow-packaged\.mjs/.test(runs);
+    check(
+      `${job} starts the app it built, instead of only inspecting the files`,
+      starts && drives,
+      `boots it ${starts ? '✓' : '✗'} · drives it ${drives ? '✓' : '✗'}`,
+    );
+    // A left-running app holds the runner's CDP port and, on a reused
+    // runner, the next job measures it.  The stop must survive a failure,
+    // which is exactly when there is something left to stop.
+    const stop = steps.find((st) => /remote-debugging-port=9444/.test(String(st.run ?? ''))
+      && !/boot-packaged/.test(String(st.run ?? '')));
+    check(
+      `and ${job} stops it afterwards even when the smoke failed`,
+      stop !== undefined && String(stop.if ?? '') === 'always()',
+      stop ? `if: ${String(stop.if ?? '(none)')}` : 'no stop step',
+    );
+  }
+
+  // Order is part of it: the packaged smoke reads `out/linux-unpacked`, which
+  // does not exist until the packaging step has run.
+  const at = (re: RegExp): number => linux.findIndex((st) => re.test(String(st.run ?? '')));
+  check(
+    'and the packaged smoke runs after the step that produces the package',
+    at(/pnpm -s smoke:packaged/) > at(/electron-builder --linux/),
+    `packaging at step ${at(/electron-builder --linux/)}, packaged smoke at ${at(/pnpm -s smoke:packaged/)}`,
+  );
+  // Measured on the first CI run of these steps: the hit-test brings up a
+  // SECOND dev server, and with the smoke's app and server still alive on a
+  // two-core runner it did not answer inside ninety seconds.  The kill step
+  // between them is why it does now.
+  const stop = at(/remote-debugging-port=/);
+  check(
+    'and the hit-test starts into a machine the smoke is no longer using',
+    stop > at(/pnpm -s smoke:flow/) && stop < at(/node scripts\/ui-hit-test\.mjs/),
+    `smoke at ${at(/pnpm -s smoke:flow/)}, stop at ${stop},`
+      + ` hit-test at ${at(/node scripts\/ui-hit-test\.mjs/)}`,
+  );
+}
+
+// ── Nothing in the install compiles itself ──────────────────────────────
+//
+// On 2026-11-09 every job — Linux, both macOS arches, Windows — died at
+// `pnpm install`, and none of them at anything this repository had changed:
+//
+//     sharp: Integrity check passed for linux-x64
+//     prebuild-install warn install No prebuilt binaries found
+//                      (target=7 runtime=napi arch=x64 libc= platform=linux)
+//     -> node-gyp rebuild -> fatal error: vips/vips8: No such file or directory
+//
+// `sharp@0.32.6` fetches its native binary from a GitHub release at install
+// time, and when that lookup comes back empty it falls back to COMPILING
+// itself against libvips headers no runner has.  One failed download and
+// every platform's build stops.  It is reached from `@capacitor/assets`, so
+// the desktop jobs were taken down by a dependency of the mobile app's icon
+// generator — which is also why skipping sharp's build was the wrong fix:
+// `capacitor-assets generate --android` needs that binary to work.
+//
+// 0.33 ships its binaries as ordinary npm packages (`@img/sharp-linux-x64`
+// and friends), so there is no download and nothing to compile.  The override
+// is what keeps it there — `@capacitor/assets` still asks for 0.32.6.
+{
+  const MONO = path.resolve(DESKTOP, '..', '..');
+  const newEnough = (v: string): boolean => {
+    const [major, minor] = v.split('.').map(Number);
+    return (major ?? 0) > 0 || (minor ?? 0) >= 33;
+  };
+  const root = JSON.parse(fs.readFileSync(path.join(MONO, 'package.json'), 'utf8')) as {
+    pnpm?: { overrides?: Record<string, string> };
+  };
+  const pinned = root.pnpm?.overrides?.sharp ?? '';
+  check(
+    'sharp is pinned past the version that compiles itself when a download fails',
+    pinned !== '' && newEnough(pinned),
+    pinned === '' ? 'no override — 0.32.6 comes back with it' : `sharp ${pinned}`,
+  );
+  const lock = fs.readFileSync(path.join(MONO, 'pnpm-lock.yaml'), 'utf8');
+  const resolved = [...new Set([...lock.matchAll(/^ {2}sharp@(\S+):/gm)].map((m) => m[1] ?? ''))];
+  check(
+    'and the lockfile agrees, so the pin is not just a wish in package.json',
+    resolved.length > 0 && resolved.every(newEnough),
+    resolved.length === 0 ? 'sharp is not in the lockfile at all' : `resolved: ${resolved.join(', ')}`,
+  );
+}
+
+// ── And the DSP suite has a job that runs it ─────────────────────────────
+//
+// `test:python-suite` asks pytest to PLAN the suite and runs the 30
+// commercial-reference tests.  Planning is not running, and the 551 tests ran
+// nowhere until `python-dsp-nightly.yml`.  Held here so they do not go back to
+// running nowhere — including the ffmpeg pair, because without it the 30 tests
+// the planning check exists for skip themselves.
+{
+  const nightlyPath = path.join(REPO, '.github', 'workflows', 'python-dsp-nightly.yml');
+  const exists = fs.existsSync(nightlyPath);
+  const nightly = exists ? fs.readFileSync(nightlyPath, 'utf8') : '';
+  const wants: [string, RegExp][] = [
+    ['a schedule', /^\s*- cron: '/m],
+    ['pytest over the whole suite', /python -m pytest -q/],
+    ['the shipped ffmpeg pair', /AIMASTER_FFMPEG="\$FF" AIMASTER_FFPROBE="\$FP"/],
+    ['a timeout, so a hang is not a day', /timeout-minutes:/],
+  ];
+  const missing = exists ? wants.filter(([, re]) => !re.test(nightly)).map(([w]) => w) : ['the file'];
+  check(
+    'the DSP suite is run by a nightly job, with the ffmpeg pair it needs',
+    missing.length === 0,
+    missing.length === 0
+      ? 'python-dsp-nightly.yml: schedule, pytest, ffmpeg pair, timeout'
+      : `missing: ${missing.join(', ')}`,
+  );
+}
+
+// And does the step still say how many it runs?
+//
+// The name read "Test (226 selftests…)" while the suite had grown past 230.
+// A label with a number in it is a claim, and this one was wrong for every
+// release since the count last changed — so the count now has to come from
+// the list that decides it.
+{
+  const order = JSON.parse(
+    fs.readFileSync(path.join(DESKTOP, 'scripts', 'suite-order.json'), 'utf8'),
+  ) as string[];
+  const named = linuxSteps
+    .map((s) => String(s.name ?? ''))
+    .filter((n) => /selftests/.test(n));
+  const claimed = named
+    .flatMap((n) => [...n.matchAll(/(\d[\d,]*)\s*selftests/g)].map((m) => Number(m[1]?.replace(/,/g, ''))));
+  check(
+    'the suite step says how many selftests it runs, and the number is the list\'s own',
+    claimed.length > 0 && claimed.every((n) => n === order.length),
+    claimed.length === 0
+      ? `no step name mentions a selftest count: ${named.join(' · ') || '(none)'}`
+      : `step claims ${claimed.join('/')} · suite-order.json lists ${order.length}`,
+  );
+}
+
+console.log(`\n=== ${passed} passed, ${failed} failed ===\n`);
+process.exit(failed === 0 ? 0 : 1);

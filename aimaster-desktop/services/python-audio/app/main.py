@@ -77,7 +77,20 @@ def _send_progress(job_id: str, percent: int, stage: str) -> None:
     _send({"type": "progress", "jobId": job_id, "percent": percent, "stage": stage})
 
 
-def _send_error(req_id: str, code: int, message: str) -> None:
+def _short(req_id: object) -> str:
+    """The first 8 characters of an id, whatever shape the id arrived in.
+
+    The log lines used to slice `req_id` directly.  The app always sends a
+    uuid4 string, so that worked — but a request with a NUMERIC id (which
+    JSON-RPC allows) made `req_id[:8]` raise TypeError inside the try, and the
+    `except Exception` handler's own log line raised it again, this time with
+    nothing to catch it: the engine process died and took every queued job
+    with it.  Measured by sending `{"id": 1, ...}` to the shipped binary.
+    """
+    return str(req_id)[:8]
+
+
+def _send_error(req_id: object, code: int, message: str) -> None:
     _send({"id": req_id, "error": {"code": code, "message": message}})
 
 
@@ -278,7 +291,7 @@ def main() -> None:
         if not raw:
             continue
 
-        req_id = "unknown"
+        req_id: object = "unknown"
         try:
             req = json.loads(raw)
             req_id = req.get("id", "unknown")
@@ -289,10 +302,10 @@ def main() -> None:
                 _send_error(req_id, -32601, f"Unknown method: {method}")
                 continue
 
-            log("DEBUG", f"→ {method} [{req_id[:8]}]")
+            log("DEBUG", f"→ {method} [{_short(req_id)}]")
             result = HANDLERS[method](params, req_id)
             _send({"id": req_id, "result": result})
-            log("DEBUG", f"← {method} [{req_id[:8]}] OK")
+            log("DEBUG", f"← {method} [{_short(req_id)}] OK")
 
         except json.JSONDecodeError as exc:
             log("ERROR", f"JSON parse error: {exc}")
@@ -305,13 +318,13 @@ def main() -> None:
 
         except RuntimeError as exc:
             # User-facing errors raised by handlers (already Korean)
-            log("ERROR", f"RuntimeError [{req_id[:8]}]: {exc}\n{traceback.format_exc()}")
+            log("ERROR", f"RuntimeError [{_short(req_id)}]: {exc}\n{traceback.format_exc()}")
             _send_error(req_id, -32000, str(exc))
 
         except Exception as exc:
             # Unexpected errors — log full trace, send detailed message
             tb = traceback.format_exc()
-            log("ERROR", f"Unexpected error [{req_id[:8]}]: {exc}\n{tb}")
+            log("ERROR", f"Unexpected error [{_short(req_id)}]: {exc}\n{tb}")
             _send_error(
                 req_id, -32000,
                 f"{type(exc).__name__}: {exc}",

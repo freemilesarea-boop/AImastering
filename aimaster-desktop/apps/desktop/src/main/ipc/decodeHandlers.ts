@@ -39,8 +39,9 @@ import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { resolveFFmpegPath, resolveFFprobePath } from '@aimaster/audio-engine';
+import { resolveFFmpegPath, resolveFFprobePath, classifyFFmpegError } from '@aimaster/audio-engine';
 import { log } from '../utils/logger.js';
+import { storeKey, sweepStore } from '../utils/pcm-store.js';
 
 export interface PcmSourceRequest {
   /** Absolute path of the source file. */
@@ -74,51 +75,9 @@ const MAX_CHANNELS = 2;
 const MAX_SECONDS = 3 * 60 * 60;
 /** Peak envelope resolution - matches the renderer's waveform buckets. */
 const PEAK_BUCKETS = 4096;
-/** How much decoded audio to keep on disk before dropping the oldest. */
-const STORE_CAP_BYTES = 12 * 1024 * 1024 * 1024;
 
 function storeDir(): string {
   return path.join(app.getPath('userData'), 'pcm-store');
-}
-
-/**
- * Identify a decode by what would change its samples: which file, which
- * version of it, and the rate it was resampled to.
- */
-function storeKey(filePath: string, mtimeMs: number, size: number, sampleRate: number): string {
-  return crypto.createHash('sha1')
-    .update(`${filePath} ${Math.round(mtimeMs)} ${size} ${sampleRate}`)
-    .digest('hex');
-}
-
-/** Drop the least recently used stores until the directory is inside its cap. */
-function sweepStore(): void {
-  const dir = storeDir();
-  let names: string[];
-  try { names = fs.readdirSync(dir); } catch { return; }
-
-  const entries: Array<{ file: string; bytes: number; atime: number }> = [];
-  let total = 0;
-  for (const name of names) {
-    if (!name.endsWith('.f32')) continue;
-    const file = path.join(dir, name);
-    try {
-      const stat = fs.statSync(file);
-      entries.push({ file, bytes: stat.size, atime: stat.atimeMs });
-      total += stat.size;
-    } catch { /* vanished */ }
-  }
-  if (total <= STORE_CAP_BYTES) return;
-
-  entries.sort((a, b) => a.atime - b.atime);
-  for (const entry of entries) {
-    if (total <= STORE_CAP_BYTES) break;
-    try {
-      fs.unlinkSync(entry.file);
-      fs.rmSync(entry.file.slice(0, -4) + '.json', { force: true });
-      total -= entry.bytes;
-    } catch { /* another run got there first */ }
-  }
 }
 
 function collectText(bin: string, args: string[]): Promise<string> {
@@ -215,6 +174,28 @@ async function computePeaks(
 export function registerDecodeHandlers(ipc: IpcMain, packaged: boolean, resourcesPath: string): void {
   const binOpts = { packaged, resourcesPath };
 
+/**
+ * An ffmpeg failure, in a sentence the DAW can put in front of someone.
+ *
+ * Both spawners here reject with `` `${bin} exited ${code}: ${stderr}` `` — a
+ * plain Error carrying ffmpeg's English stderr — and that string used to be
+ * what crossed the IPC boundary.  The renderer then threw even that away and
+ * recorded "소스를 준비하지 못했습니다" instead, so a file that was simply not
+ * audio, a file that had moved, and a disk with no room left all arrived at
+ * the user as the same sentence, which named none of them.
+ *
+ * `classifyFFmpegError` already knew how to tell them apart in Korean.  It was
+ * one import away and nothing called it.
+ */
+function decodeFailure(err: unknown, filePath: string, isProbe: boolean): Error {
+  const app = classifyFFmpegError(err, isProbe, filePath);
+  // The English half stays here, where support can find it; the Korean half
+  // is what travels.
+  log.warn(`[pcm] ${isProbe ? 'ffprobe' : 'ffmpeg'} failed on ${path.basename(filePath)}`
+    + ` — ${app.code}: ${app.devDetail}`);
+  return new Error(app.userMessage);
+}
+
   ipc.handle('daw:pcm-source', async (_e, req: unknown): Promise<PcmSourceResult> => {
     const request = req as Partial<PcmSourceRequest> | undefined;
     // Through the shared validator rather than its own copy of the string /
@@ -229,7 +210,20 @@ export function registerDecodeHandlers(ipc: IpcMain, packaged: boolean, resource
     }
 
     const resolved = filePath;
-    const stat = await fs.promises.stat(resolved);
+    // Before ffmpeg is involved at all.  This used to reach the renderer as
+    // `ENOENT: no such file or directory, stat '/Users/…/믹스.wav'` — Node's
+    // own English, which then became the reason the DAW remembered for the
+    // track.  A moved file is the most ordinary failure there is here.
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.stat(resolved);
+    } catch (err) {
+      const code = (err as { code?: string }).code ?? '';
+      log.warn(`[pcm] cannot stat ${path.basename(resolved)} — ${code || String(err)}`);
+      throw new Error(code === 'ENOENT'
+        ? `파일을 찾을 수 없습니다 — ${path.basename(resolved)}`
+        : `파일을 열 수 없습니다 — ${path.basename(resolved)} (${code || String(err)})`);
+    }
     if (!stat.isFile()) throw new Error('daw:pcm-source: not a regular file');
 
     const key = storeKey(resolved, stat.mtimeMs, stat.size, sampleRate);
@@ -250,12 +244,23 @@ export function registerDecodeHandlers(ipc: IpcMain, packaged: boolean, resource
       }
     } catch { /* miss - decode below */ }
 
-    const info = await probe(resolveFFprobePath(binOpts), resolved);
+    let info: ProbeResult;
+    try {
+      info = await probe(resolveFFprobePath(binOpts), resolved);
+    } catch (err) {
+      throw decodeFailure(err, resolved, true);
+    }
     if (info.durationSec > MAX_SECONDS) {
       throw new Error(`daw:pcm-source: ${Math.round(info.durationSec / 60)}분짜리 파일은 너무 깁니다`);
     }
 
-    sweepStore();
+    // Counts every byte the store owns, leftovers included, and clears what
+    // no request can turn into a hit — see `utils/pcm-store.ts`.
+    const swept = sweepStore(dir);
+    if (swept.removedOrphans.length > 0 || swept.evicted.length > 0) {
+      log.info(`[pcm] swept ${swept.removedOrphans.length} leftover(s), evicted `
+        + `${swept.evicted.length} store(s), ${(swept.keptBytes / 1e9).toFixed(2)} GB kept`);
+    }
     // Decode to a temporary name so a crash mid-write cannot leave a
     // half-written store that the key says is complete.
     const partial = path.join(dir, `${key}.${crypto.randomUUID()}.part`);
@@ -276,15 +281,28 @@ export function registerDecodeHandlers(ipc: IpcMain, packaged: boolean, resource
       if (frames <= 0) throw new Error('디코딩 결과가 비어 있습니다');
 
       const peaks = await computePeaks(partial, frames, info.channels);
-      await fs.promises.rename(partial, pcmPath);
       const side: Sidecar = { sampleRate, channels: info.channels, frames, peaks };
+      // Sidecar FIRST, then the rename.  A death between the two used to leave
+      // the whole decode — up to ~4 GB for a three-hour file — as a `.f32`
+      // that no request can read, because the hit path needs the sidecar's
+      // frame count.  This way the leftover is a 32 KB `.json` instead, and
+      // the rename stays the single atomic step that publishes the store.
       await fs.promises.writeFile(sidePath, JSON.stringify(side));
+      await fs.promises.rename(partial, pcmPath);
 
       log.info(`[pcm] ${path.basename(resolved)} -> ${frames} frames x ${info.channels}ch @ ${sampleRate}`);
       return { key, pcmPath, ...side };
     } catch (err) {
       await fs.promises.rm(partial, { force: true }).catch(() => { /* never written */ });
-      throw err;
+      // The sidecar now lands before the rename, so a failure between them
+      // would leave one pointing at samples that never arrived.  The sweep
+      // would clear it in an hour; clearing it here means it is never seen.
+      await fs.promises.rm(sidePath, { force: true }).catch(() => { /* never written */ });
+      // Only ffmpeg's own failures are translated; the Korean messages this
+      // block throws itself ("디코딩 결과가 비어 있습니다") are already the
+      // sentence to show, and classifying them would turn them into UNKNOWN.
+      const msg = err instanceof Error ? err.message : String(err);
+      throw /^ffmpeg exited /.test(msg) ? decodeFailure(err, resolved, false) : err;
     }
   });
 }

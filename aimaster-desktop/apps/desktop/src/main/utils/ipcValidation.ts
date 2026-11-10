@@ -64,3 +64,49 @@ export function validateAbsoluteFilePath(input: unknown, channel: string): strin
   }
   return path.resolve(input);
 }
+
+/**
+ * Reject the input unless it is a plausible audio sample rate.
+ *
+ * `daw:host-apply` took the renderer's number and passed it through to
+ * `host.open(uid, sampleRate, channels)` — a call into a native AudioUnit
+ * host.  `Number(undefined)` is NaN, and NaN was not refused anywhere on the
+ * way: the handler checked `frames` and `channels` and skipped this one, so
+ * the only unbounded value in the request was the one that reached C.
+ *
+ * The range is the same one `daw:pcm-source` has always enforced, because
+ * there is no reason for two handlers to disagree about what a sample rate is.
+ */
+export const MIN_SAMPLE_RATE = 8000;
+export const MAX_SAMPLE_RATE = 384_000;
+
+export function validateSampleRate(input: unknown, channel: string): number {
+  const rate = Number(input);
+  if (!Number.isFinite(rate) || rate < MIN_SAMPLE_RATE || rate > MAX_SAMPLE_RATE) {
+    throw new Error(`${channel}: sampleRate out of range`);
+  }
+  return rate;
+}
+
+/**
+ * Reject the input unless it is a non-empty single-line string, trimmed.
+ *
+ * For the values that are text rather than paths — a licence key, a name.
+ * `license:activate` handed the renderer's value straight to
+ * `activateLicense`, whose first act is `key.toUpperCase()`: anything that is
+ * not a string came back as `key.toUpperCase is not a function` instead of
+ * the domain error the renderer knows how to show.
+ */
+export function validateText(
+  input: unknown, channel: string, maxLength = 200,
+): string {
+  if (typeof input !== 'string') throw new Error(`${channel}: 문자열이 필요합니다`);
+  const text = input.trim();
+  if (text.length === 0) throw new Error(`${channel}: 값이 비어 있습니다`);
+  if (text.length > maxLength) throw new Error(`${channel}: 값이 너무 깁니다`);
+  // A control character in a licence key or a name is never intentional, and
+  // it is how a newline ends up inside an HTTP header further down.
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(text)) throw new Error(`${channel}: 제어 문자가 있습니다`);
+  return text;
+}

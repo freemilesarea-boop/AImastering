@@ -71,13 +71,41 @@ export type OfflineChainConfig = OfflineFlatChainConfig | OfflineSuiteChainConfi
  * for — which was reported, correctly, as "설정 저장을 눌렀는데 원본으로
  * 돌아간다".
  *
+ * IT ASKS WHETHER THE CONFIG IS EMPTY, NOT WHETHER IT HAS A `suiteConfig`.
+ * The first version checked only that one key, and so answered "yes, stand
+ * in" for the other half of its own union.  Measured:
+ *
+ *   pythonFallbackMayStandIn(flat config with eqLowShelfDb: 6, eqAirDb: 6)
+ *     → true
+ *   pythonFallbackMayStandIn({ eq: { lowShelfDb: 6 } })   // wrong shape
+ *     → true
+ *
+ * Both carry settings the Python path cannot apply, and both would have come
+ * back as a finished master with none of them.  `masterFile` can apply
+ * NOTHING from a chain config — not one field of either shape — so the
+ * honest rule is that any non-empty config is something to drop.
+ *
+ * Deliberately not "any config that is not at its neutral values": that
+ * needs a table of what neutral means for 22 fields plus every module of
+ * the suite, kept in step with both.  Refusing an all-bypassed config costs
+ * its sender a clear error; getting that table wrong costs a user their
+ * master.
+ *
  * A pure predicate rather than a condition inlined in the IPC handler, so
  * the rule can be tested without an Electron main process.
  */
-export function pythonFallbackMayStandIn(
-  chainConfig: { suiteConfig?: unknown } | null | undefined,
-): boolean {
-  return !chainConfig?.suiteConfig;
+export function pythonFallbackMayStandIn(chainConfig: unknown): boolean {
+  // `unknown`, not the union: this is the predicate that exists BECAUSE the
+  // IPC boundary is a cast.  Declaring the shape it is supposed to receive
+  // would be trusting the thing it is here to distrust — and `tsc -p
+  // tsconfig.main.json` refused `OfflineChainConfig` for a
+  // `Record<string, unknown>` parameter anyway, an interface having no index
+  // signature.
+  if (chainConfig === null || chainConfig === undefined) return true;
+  // Not an object at all is not a config — refuse rather than guess what the
+  // caller meant.  Being wrong towards refusing costs them an error message.
+  if (typeof chainConfig !== 'object') return false;
+  return Object.keys(chainConfig).length === 0;
 }
 
 /** Structural type of the WASM chain (avoids a hard dep on the typings). */
@@ -239,6 +267,27 @@ export function createOfflineAnalyzer(sampleRate: number, channels = 2): WasmAna
  * into all 22 arguments of `setConfig`.  Refusing is the only honest
  * answer — a master that silently is not what the user set is the bug this
  * whole change is about.
+ *
+ * WHAT THE SUITE BRANCH IS AND IS NOT PROTECTED BY.  `setConfigJson` hands
+ * the string to serde, so the Rust side does the checking.  Measured, one
+ * malformed config at a time:
+ *
+ *   { limiter: { ceilingDbtp: 'loud' } }  → throws, "invalid type: string
+ *                                           "loud", expected f64"
+ *   { limiter: { ceilingDbtp: null } }    → throws, same shape
+ *   NaN  (JSON.stringify makes it null)   → throws, same shape
+ *   { limiter: { character: 'louder' } }  → throws, "unknown variant", and
+ *                                           names all five it accepts
+ *   { nosuchmodule: { … } }               → ACCEPTED and ignored
+ *   { limiter: { nosuchfield: 1 } }       → ACCEPTED and ignored
+ *
+ * So a wrong VALUE cannot get through, which is why this branch never had
+ * the flat branch's NaN problem.  A wrong NAME can, silently — and the
+ * handler would report `chainConfigHonored: true` for a config with a whole
+ * module dropped.  That is not left to serde: `preview-worklet-selftest`
+ * builds its configs with the app's own `buildChainConfig` and asserts, in
+ * audio, that every module in `MODULE_IDS` moves the output.  A key the Rust
+ * side does not recognise makes that module silent and fails there.
  */
 export function applyChainConfigForRender(
   chain: WasmMasteringChain,
@@ -257,9 +306,75 @@ export function applyChainConfigForRender(
   applyOfflineConfig(chain, c);
 }
 
-/** Apply a flat config to a chain (spreads the 22 args in setConfig order).
- *  Also applies the optional free parametric EQ band list. */
+/**
+ * The 22 fields `setConfig` takes, in its argument order, with the type each
+ * one must be.  Named here so the validator below and the call itself cannot
+ * drift apart.
+ */
+const FLAT_FIELDS = [
+  ['inputGainDb', 'number'],
+  ['eqLowCutHz', 'number'], ['eqLowShelfDb', 'number'], ['eqPresenceDb', 'number'],
+  ['eqAirDb', 'number'], ['eqAdaptive', 'boolean'], ['eqBypass', 'boolean'],
+  ['dynThresholdDb', 'number'], ['dynRatio', 'number'], ['dynAttackMs', 'number'],
+  ['dynReleaseMs', 'number'], ['dynMixPct', 'number'], ['dynBypass', 'boolean'],
+  ['imgWidthPct', 'number'], ['imgLowMonoHz', 'number'], ['imgBypass', 'boolean'],
+  ['limCeilingDbtp', 'number'], ['limLookaheadMs', 'number'], ['limIsp', 'boolean'],
+  ['limBypass', 'boolean'],
+  ['outputGainDb', 'number'], ['masterBypass', 'boolean'],
+] as const satisfies ReadonlyArray<readonly [keyof OfflineFlatChainConfig, 'number' | 'boolean']>;
+
+/**
+ * The fields a flat config is missing, or holds something unusable in.
+ *
+ * Exported so the rule can be checked without a WASM chain.
+ */
+export function flatConfigProblems(c: Partial<OfflineFlatChainConfig>): string[] {
+  const bad: string[] = [];
+  for (const [name, kind] of FLAT_FIELDS) {
+    const v = (c as Record<string, unknown>)[name];
+    if (kind === 'boolean') {
+      if (typeof v !== 'boolean') bad.push(`${name}: ${v === undefined ? 'missing' : `not a boolean (${String(v)})`}`);
+    } else if (typeof v !== 'number' || !Number.isFinite(v)) {
+      bad.push(`${name}: ${v === undefined ? 'missing' : `not a finite number (${String(v)})`}`);
+    }
+  }
+  return bad;
+}
+
+/**
+ * Apply a flat config to a chain (spreads the 22 args in setConfig order).
+ * Also applies the optional free parametric EQ band list.
+ *
+ * IT CHECKS THE 22 FIELDS FIRST, because the IPC boundary that produces them
+ * is a cast rather than a check — `audio:master-rust-experimental` declares
+ * `chainConfig: OfflineChainConfig` and takes whatever arrives.  Handed a
+ * config in the wrong shape it used to pass 22 `undefined`s straight into
+ * wasm-bindgen, which turns each into NaN, and the Rust limiter panicked on
+ * its own output clamp:
+ *
+ *   panicked at core/src/num/f32.rs:1434
+ *   min > max, or either was NaN. min = NaN, max = NaN
+ *   … <loui_dsp::mastering::limiter::Limiter as StereoModule>::process_stereo
+ *
+ * The handler then logged "rust render failed, falling back to Python" and —
+ * because the guard above said a config it could not read was nothing to
+ * drop — rendered a master with none of the user's settings and called it
+ * done.  So the panic was never the worst part.
+ *
+ * The chain survives it: a fresh chain after the panic renders bit-identical
+ * to one before it (peak 0.3874 either way), so there is no poisoned module
+ * to recover from.  What there is, is a request that deserves an answer
+ * saying which fields were wrong.  The `suiteConfig` branch above already
+ * refuses out loud; this one now does too.
+ */
 export function applyOfflineConfig(chain: WasmMasteringChain, c: OfflineFlatChainConfig): void {
+  const problems = flatConfigProblems(c);
+  if (problems.length > 0) {
+    throw new Error(
+      `flat chain config cannot be applied — ${problems.length} of ${FLAT_FIELDS.length} `
+      + `field(s) unusable: ${problems.join('; ')}`,
+    );
+  }
   chain.setConfig(
     c.inputGainDb,
     c.eqLowCutHz, c.eqLowShelfDb, c.eqPresenceDb, c.eqAirDb, c.eqAdaptive, c.eqBypass,

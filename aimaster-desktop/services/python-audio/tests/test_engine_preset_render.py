@@ -14,6 +14,7 @@ Failure conditions (M1 baseline — intentionally loose):
   - LUFS-I more than 3 LU off target (sanity, not strict equivalence)
 """
 from __future__ import annotations
+from tests.conftest import ffmpeg_bin
 
 import json
 import math
@@ -61,7 +62,7 @@ def complex_tone_wav(tmp_path_factory) -> str:
         pytest.skip("ffmpeg not available")
     subprocess.run(
         [
-            "ffmpeg", "-y", "-loglevel", "error",
+            ffmpeg_bin(), "-y", "-loglevel", "error",
             "-f", "lavfi",
             "-i", "sine=frequency=220:duration=20",
             "-f", "lavfi",

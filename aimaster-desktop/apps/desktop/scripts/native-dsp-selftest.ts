@@ -8,7 +8,7 @@
 
 import path from 'node:path';
 
-import { OfflineAudioContext, AudioBuffer } from 'node-web-audio-api';
+import { OfflineAudioContext, AudioBuffer } from './lib/offline-audio-context.js';
 import { createNativeDspChain, spreadImpulseResponse } from '../src/renderer/audio/native-dsp-chain.js';
 import type { RealtimeChainConfig } from '../src/renderer/audio/realtime-mastering-chain.js';
 

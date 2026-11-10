@@ -41,10 +41,14 @@ import {
 import { ensureLane, setLanePoints } from './automation-lanes.js';
 import { findPlugin } from '../engine/plugins.js';
 import { canApplyRegionFx, bodyDurationSec } from './region-fx.js';
+import { SEND_LEVEL_MIN_DB } from '../model/types.js';
 import type { ClipId, DawSession, Insert, TrackId } from '../model/types.js';
 
 /** Send level when the throw is shut.  `laneRange` floors decibels at −60. */
-export const SEND_CLOSED_DB = -60;
+// The same number as the send fader's floor, taken from it rather than
+// re-typed: "shut" has to mean one thing, or an automated throw closes to a
+// level the fader cannot show.
+export const SEND_CLOSED_DB = SEND_LEVEL_MIN_DB;
 /** Send level when it is open. */
 export const SEND_OPEN_DB = 0;
 /** Ramp at each edge, in seconds. */

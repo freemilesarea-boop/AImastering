@@ -16,6 +16,7 @@ import { auLoadReport, hasAuHost } from '../plugins/au-native.js';
 import { newScratchFile, runHostJob, sweepHostScratch } from '../plugins/host.js';
 import type { HostStage } from '../plugins/host-protocol.js';
 import { log } from '../utils/logger.js';
+import { validateSampleRate } from '../utils/ipcValidation.js';
 
 let cached: ScanResult | null = null;
 
@@ -55,13 +56,17 @@ export function registerPluginHandlers(ipc: IpcMain): void {
     const pcm = request?.pcm;
     const frames = Number(request?.frames);
     const channels = Number(request?.channels);
-    const sampleRate = Number(request?.sampleRate);
     const chain = Array.isArray(request?.chain) ? request.chain : [];
 
     if (!(pcm instanceof Uint8Array) || !Number.isFinite(frames) || frames <= 0
       || !Number.isFinite(channels) || channels <= 0) {
       throw new Error('daw:host-apply: 오디오가 없습니다');
     }
+    // Through the shared validator, like every other number that crosses.
+    // `frames` and `channels` are bounded by the buffer — the worker refuses a
+    // file shorter than `frames * channels * 4` — but the rate is bounded by
+    // nothing and it is the one that reaches `host.open()` in native code.
+    const sampleRate = validateSampleRate(request?.sampleRate, 'daw:host-apply');
     if (chain.length === 0) throw new Error('daw:host-apply: 적용할 장치가 없습니다');
 
     sweepHostScratch();
