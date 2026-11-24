@@ -25,6 +25,7 @@ import { partitionVoice } from '../../../daw/engine/plugin-presets-voice.js';
 import {
   allPresetGroups, canSaveUserPreset, deleteUserPreset, exportUserPresets,
   importUserPresets, isUserPresetId, overwriteUserPreset, saveUserPreset, describeImport,
+  userPresetLoss,
 } from '../../../daw/engine/user-presets.js';
 import { useAppStore } from '../../../stores/appStore.js';
 import { useAutomationStore } from '../../../stores/automationStore.js';
@@ -370,6 +371,11 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
   const loadPreset = (presetId: string): void => {
     const preset = groups.flatMap((g) => g.presets).find((entry) => entry.id === presetId);
     if (!preset) return;
+    // Asked BEFORE the merge, because the merge is what hides it: a setting
+    // this build no longer has is not left blank by `resolvePreset`, it is
+    // filled in with the factory default.  The preset then loads, sounds
+    // like the factory in that one place, and says nothing.
+    const lost = userPresetLoss(preset.id);
     const next = resolvePreset(preset, defaultParams(insert.pluginId));
     setLoadedPreset(preset.id);
     apply((s) => setInsert(s, win.trackId, {
@@ -377,6 +383,7 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
       params: next,
       latencySamples: descriptor.latencyFor(next, session.sampleRate),
     }));
+    if (lost) notify(`"${preset.name}" — ${lost}`, 'warning');
   };
   const activePreset = groups.flatMap((g) => g.presets).find((entry) => entry.id === loadedPreset);
   const userPresetActive = activePreset !== undefined && isUserPresetId(activePreset.id);
@@ -439,6 +446,16 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
       setPresetTick((n) => n + 1);
       notify(describeImport(report), report.added === 0 ? 'warning' : 'info');
       for (const reason of report.reasons.slice(0, 3)) notify(reason, 'warning');
+      // One call, not a loop: `notify` holds a single message and the next
+      // one replaces it, so three in a row show the third and nothing else.
+      // (The `reasons` loop above has had that bug since before this; it is
+      // left alone here rather than changed without a measurement of its own.)
+      if (report.adjusted.length > 0) {
+        notify(report.adjusted.length === 1
+          ? report.adjusted[0]!
+          : `${report.adjusted[0]!} · 외 ${report.adjusted.length - 1}개도 설정 일부가 빠졌습니다`,
+        'warning');
+      }
     } catch (err) {
       notify(err instanceof Error ? err.message : String(err), 'error');
     }

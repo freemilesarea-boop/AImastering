@@ -120,6 +120,63 @@ check('an empty chain captures as nothing rather than throwing', () => {
 
 // ── 2. Load ───────────────────────────────────────────────────────────────────
 
+// ── A rack that loads with settings missing says so ──────────────────────────
+//
+// `problems` used to mean only "this device did not land".  A device CAN
+// land with its settings thinned out — an id this build no longer has, a
+// value pulled back into range — and that half was silent: `loadRack` took
+// `.params` off `sanitiseParams` and dropped the report its own comment
+// promised a caller would pass on.
+//
+// It is the quieter half and the worse one.  A missing device is visible in
+// the rack; a missing setting is not, because the slot fills with the
+// factory default and the toast says the rack loaded.
+
+check('a device that lands with settings missing is reported, not just the ones that do not', () => {
+  const target = emptyChannel();
+  const preset = createRackPreset('r', '옛날 랙', [
+    { slot: 0, pluginId: 'comp', label: 'Comp', bypass: false,
+      params: { ratio: 4, warmth: 0.5, vibe: 1 } } as RackDevice,
+  ]);
+  const result = loadRack(target.session, target.track.id, preset);
+
+  eq(result.loaded.length, 1, 'the device itself should still land');
+  eq(result.problems.length, 1, `expected one line, got ${result.problems.join(' | ')}`);
+  const line = result.problems[0]!;
+  assert(line.startsWith('Compressor'), `did not name the device: ${line}`);
+  assert(line.includes('warmth') && line.includes('vibe'), `did not name the losses: ${line}`);
+
+  // And the device really is missing them, which is what the line is about.
+  const inserts = findTrack(result.session, target.track.id)?.inserts ?? [];
+  assert(!('warmth' in (inserts[0]?.params ?? {})), 'the unknown id was carried through');
+  eq(inserts[0]?.params['ratio'], 4, 'the surviving setting did not survive');
+});
+
+check('and a value out of range is reported by its label, not its id', () => {
+  const target = emptyChannel();
+  const preset = createRackPreset('r', '과한 랙', [
+    { slot: 0, pluginId: 'comp', label: 'Comp', bypass: false,
+      params: { ratio: 999 } } as RackDevice,
+  ]);
+  const result = loadRack(target.session, target.track.id, preset);
+  const line = result.problems[0] ?? '';
+  assert(line.includes('Ratio'), `used the id instead of the label the user set it by: ${line}`);
+  const inserts = findTrack(result.session, target.track.id)?.inserts ?? [];
+  eq(inserts[0]?.params['ratio'], 20, 'the value was not actually pulled into range');
+});
+
+check('a rack that loses nothing reports nothing', () => {
+  const source = channel();
+  const preset = createRackPreset('r', '멀쩡', captureRack(source.track).devices);
+  const result = loadRack(emptyChannel().session, emptyChannel().track.id, preset);
+  // The session is rebuilt per call above, so this asks the only question
+  // that matters here: a clean rack must not produce a line.
+  eq(result.problems.filter((x) => x.includes('생략') || x.includes('조정')).length, 0,
+    `warned about a clean rack: ${result.problems.join(' | ')}`);
+});
+
+
+
 check('a rack loads back into the slots it was saved from', () => {
   const source = channel();
   const preset = createRackPreset('r1', '보컬 체인', captureRack(source.track).devices);
