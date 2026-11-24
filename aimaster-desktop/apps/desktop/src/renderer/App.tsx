@@ -73,17 +73,28 @@ function Toast() {
     error:   'bg-zinc-800  border-red-700/50     text-red-300',
   };
 
+  // One line reads as one line; several read as a list, and a list that is
+  // centred is harder to scan than one that is not.  The truncation moves
+  // onto each line, because it is each line that can be too long — it was on
+  // the box, which with several lines inside would have cut the box instead.
+  const many = notif.lines.length > 1 || notif.hidden > 0;
+
   return (
     // Keyed by the message's own id so a replacement re-plays the entrance
     // rather than silently swapping the text under the reader.
     <div key={notif.id} style={{ zIndex: LAYER.notification }}
          className={`fixed animate-in-fast border
                      bottom-4 left-4 right-4 px-4 py-3 rounded-xl shadow-lg
-                     text-[15px] text-center whitespace-nowrap overflow-hidden text-ellipsis
+                     text-[15px] overflow-hidden ${many ? 'text-left space-y-0.5' : 'text-center'}
                      sm:bottom-5 sm:left-1/2 sm:right-auto sm:-translate-x-1/2
-                     sm:px-4 sm:py-2.5 sm:shadow-xl sm:text-sm sm:text-left sm:overflow-visible
+                     sm:px-4 sm:py-2.5 sm:shadow-xl sm:text-sm sm:text-left
                      ${colors[notif.type] ?? colors.info}`}>
-      {notif.message}
+      {notif.lines.map((line) => (
+        <div key={line} className="whitespace-nowrap overflow-hidden text-ellipsis">{line}</div>
+      ))}
+      {notif.hidden > 0 && (
+        <div className="whitespace-nowrap opacity-70">… 그리고 {notif.hidden}가지 더</div>
+      )}
     </div>
   );
 }

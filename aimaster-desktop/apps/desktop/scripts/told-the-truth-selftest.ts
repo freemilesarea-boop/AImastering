@@ -48,7 +48,7 @@ async function main(): Promise<void> {
     length: 0,
   };
 
-  const { useAppStore, NOTIFY_MS } = await import('../src/renderer/stores/appStore.js');
+  const { useAppStore, NOTIFY_MS, NOTIFY_MAX_LINES } = await import('../src/renderer/stores/appStore.js');
   const { useDawStore } = await import('../src/renderer/stores/dawStore.js');
   const { useRecordingStore } = await import('../src/renderer/stores/recordingStore.js');
   const { buildDawCommands, buildDawOverrides } = await import('../src/renderer/shortcuts/daw-commands.js');
@@ -80,6 +80,67 @@ async function main(): Promise<void> {
     useAppStore.getState().notify('lonely');
     await wait(NOTIFY_MS + 300);
     check('a message left alone still expires', shown() === null, `${shown() ?? '(none)'}`);
+  }
+
+  {
+    // A LOOP OF WARNINGS IS NOT ONE WARNING.
+    //
+    // Fourteen places report trouble by calling `notify` once per problem.
+    // With one slot and nothing else, the screen showed the last call and
+    // the rest were gone before a frame was drawn — and in `daw-commands`
+    // the last call is a SUCCESS line, so a run with warnings said "saved".
+    const lines = (): string[] => useAppStore.getState().notification?.lines ?? [];
+    const kind = (): string | null => useAppStore.getState().notification?.type ?? null;
+
+    useAppStore.getState().notify('문제 하나', 'warning');
+    useAppStore.getState().notify('문제 둘', 'warning');
+    useAppStore.getState().notify('문제 셋', 'warning');
+    check(
+      'three warnings raised in one turn are all still there',
+      lines().join(' | ') === '문제 하나 | 문제 둘 | 문제 셋',
+      lines().join(' | ') || '(none)',
+    );
+    check('and the first line is still the message a one-line reader sees',
+      shown() === '문제 하나', `${shown()}`);
+
+    // The real shape in `daw-commands`: warnings, then the success line.
+    useAppStore.getState().notify('스템 3개 저장', 'success');
+    check(
+      'a success line raised beside them does not erase them',
+      lines().length === 4 && lines()[3] === '스템 3개 저장',
+      lines().join(' | '),
+    );
+    check(
+      'and the toast takes the worst of the turn, not the last of it',
+      kind() === 'warning',
+      `${kind()}`,
+    );
+
+    // Several of these loops run over lists that repeat.
+    useAppStore.getState().notify('문제 하나', 'warning');
+    check('a line raised twice is one line', lines().length === 4, lines().join(' | '));
+
+    // And a turn that will not stop talking is counted, not printed.
+    for (let i = 0; i < 10; i++) useAppStore.getState().notify(`넘침 ${i}`, 'info');
+    check(
+      'a turn past the cap counts the rest instead of growing without end',
+      lines().length === NOTIFY_MAX_LINES
+        && (useAppStore.getState().notification?.hidden ?? 0) === 8,
+      `${lines().length} line(s), ${useAppStore.getState().notification?.hidden ?? 0} hidden`,
+    );
+  }
+
+  {
+    // The NEXT turn still replaces — a confirmation wants the slot to itself.
+    useAppStore.getState().notify('이전 턴', 'info');
+    await wait(0);                      // the group closes on the microtask
+    useAppStore.getState().notify('다음 턴', 'info');
+    const lines = useAppStore.getState().notification?.lines ?? [];
+    check(
+      'a message from the next turn replaces rather than joins',
+      lines.join(' | ') === '다음 턴',
+      lines.join(' | '),
+    );
   }
 
   console.log('\n=== ARMING SAYS WHAT ARMING DID ===\n');
