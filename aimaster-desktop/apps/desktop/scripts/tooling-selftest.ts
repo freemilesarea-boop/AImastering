@@ -28,6 +28,7 @@ export {};
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 let passed = 0;
@@ -425,6 +426,107 @@ check(
     unbounded.length === 0
       ? `${hits.length} bounded disable/enable pair(s)`
       : `unbounded in: ${unbounded.join(', ')}`,
+  );
+}
+
+// ── An asar read uses THIS platform's separator, or it reads nothing ──────
+//
+// `@electron/asar` resolves the path it is handed with `p.split(path.sep)`
+// (filesystem.js), so 'dist/renderer/model.worker.js' resolves on Linux and
+// macOS and is never found on Windows.  Both steps of the packaged smoke
+// that read the asar were written that way, and the Windows runner reported
+// "could not read dist/renderer/model.worker.js out of the asar" about an
+// archive that contains the file — 20/22 on Windows against 22/22 elsewhere,
+// from the separator alone.  Those two steps are the ones that would catch a
+// dev bundle with the TypeScript sources shipping to users, so on Windows
+// that check has never actually run.
+//
+// The premise is not asserted, it is demonstrated: build an archive here and
+// read it both ways.  A check that only greps for `path.join` would keep
+// passing if the library ever stopped caring, and would then be guarding
+// nothing while saying it guards something.
+{
+  const probe = `
+    const os = require('node:os'), fs = require('node:fs'), path = require('node:path');
+    const asar = require('@electron/asar');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'asar-sep-'));
+    fs.mkdirSync(path.join(dir, 'src', 'a', 'b'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'a', 'b', 'f.txt'), 'x'.repeat(64));
+    const out = path.join(dir, 'p.asar');
+    const foreign = path.sep === '/' ? '\\\\' : '/';
+    const size = (p) => { try { return asar.extractFile(out, p).length; } catch { return -1; } };
+    asar.createPackage(path.join(dir, 'src'), out).then(() => {
+      console.log(JSON.stringify({
+        joined: size(path.join('a', 'b', 'f.txt')),
+        foreign: size(['a', 'b', 'f.txt'].join(foreign)),
+      }));
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+  `;
+  const got = JSON.parse(
+    execFileSync(process.execPath, ['-e', probe], { encoding: 'utf8', cwd: DESKTOP }).trim(),
+  ) as { joined: number; foreign: number };
+  const otherSep = path.sep === '/' ? '\\' : '/';
+  check(
+    'an asar resolves a path only when it carries this platform’s separator',
+    got.joined === 64 && got.foreign === -1,
+    `path.join → ${got.joined === -1 ? 'not found' : `${got.joined} bytes`}, `
+    + `"${otherSep}"-separated → ${got.foreign === -1 ? 'not found' : `${got.foreign} bytes`}`,
+  );
+
+  const reads = [...read('scripts/app-smoke/flow-packaged.mjs')
+    .matchAll(/extractFile\(\s*asar\s*,\s*([^)]*\))/g)]
+    .map((m) => (m[1] ?? '').trim());
+  const built = reads.filter((a) => a.startsWith('path.join(') && !/['"][^'"]*\//.test(a));
+  check(
+    'and the packaged flow builds every asar path it reads with path.join',
+    reads.length >= 2 && built.length === reads.length,
+    reads.length === 0
+      ? 'no extractFile(asar, …) call found — the steps that read the asar are gone'
+      : `${built.length}/${reads.length}: ${reads.map((a) => a.replace(/\s+/g, ' ')).join(' · ')}`,
+  );
+}
+
+// ── The harness says which machine it measured ───────────────────────────
+//
+// Four Windows runs in a row died with 0xC0000005 in the renderer; the fifth
+// did not, with nothing in the app changed that could plausibly touch
+// rasterisation.  The runner image had moved in the fifteen days between, and
+// the only reason that is known is that the image ships a different `git`
+// and the job log happened to print its version during cleanup.  Attribution
+// should not depend on that kind of luck, so the boot states its host.
+//
+// Run it, both ways, rather than grep for the line: `ImageVersion` is set on
+// GitHub's runners and nowhere else, so the branch that CI takes is the one a
+// developer's machine never exercises.
+{
+  const printHost = (env: NodeJS.ProcessEnv): string => execFileSync(
+    process.execPath,
+    [path.join(DESKTOP, 'scripts/app-smoke/boot-packaged.mjs'), '--print-host'],
+    { encoding: 'utf8', env },
+  ).trim();
+  const bare = { ...process.env };
+  delete bare.ImageVersion;
+  const plain = printHost(bare);
+  const onRunner = printHost({ ...bare, ImageVersion: '20260101.9' });
+  check(
+    'the boot states the platform and kernel it measured',
+    plain === `${process.platform} ${os.release()}`,
+    plain,
+  );
+  check(
+    'and names the runner image when it is on one',
+    onRunner === `${plain} · runner image 20260101.9`,
+    onRunner,
+  );
+
+  // One copy of it, or the banner and `--print-host` can disagree and the
+  // ratchet would be checking the one nobody reads.
+  const releases = (bootPkg.match(/os\.release\(\)/g) ?? []).length;
+  check(
+    'and the banner prints that same function, not its own copy',
+    releases === 1 && /console\.log\(`host\s+\$\{hostLine\(\)\}`\)/.test(bootPkg),
+    `${releases} os.release() call site(s)`,
   );
 }
 

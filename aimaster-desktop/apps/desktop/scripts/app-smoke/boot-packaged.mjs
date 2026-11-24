@@ -101,6 +101,31 @@ function launchArgs(platform, port) {
   return args;
 }
 
+/**
+ * Which machine this was measured on.
+ *
+ * The Windows renderer died with 0xC0000005 on four consecutive runs and then
+ * stopped dying, with nothing in the app changed that could plausibly touch
+ * rasterisation.  The runner image had moved under us in the fifteen days
+ * between — visible only because the image happens to ship a different git
+ * with it.  A harness that records its host cannot be asked that question
+ * twice: a platform-specific crash that comes back is either on the same
+ * image as last time or it is not, and that is the first thing worth knowing.
+ *
+ * `ImageVersion` is set by GitHub's runners and by nothing else, so the
+ * second half of the line is absent on a developer's machine and that is
+ * correct — there is no image there to name.
+ */
+function hostLine() {
+  const image = process.env.ImageVersion;
+  return `${process.platform} ${os.release()}${image ? ` \u00b7 runner image ${image}` : ''}`;
+}
+
+if (process.argv[2] === '--print-host') {
+  console.log(hostLine());
+  process.exit(0);
+}
+
 if (process.argv[2] === '--print-layout') {
   console.log(JSON.stringify(layoutFor(process.argv[3] ?? process.platform)));
   process.exit(0);
@@ -508,6 +533,7 @@ const args = launchArgs(process.platform, PORT);
 if (args.includes('--disable-gpu')) {
   console.log('gpu      OFF — this runner\u2019s GPU process crashes; GPU rendering is not covered here');
 }
+console.log(`host     ${hostLine()}`);
 const app = spawn(APP, args, { env, stdio: ['ignore', log, log], detached: true });
 app.unref();
 console.log(`pid      ${app.pid}`);

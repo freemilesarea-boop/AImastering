@@ -398,8 +398,15 @@ try {
     // every `openModel` call injects the runtime (the worker its bundled one,
     // the selftests a fake).
     const asar = path.join(RESOURCES, 'app.asar');
+    //
+    // `path.join`, not 'dist/renderer/...':  @electron/asar resolves the
+    // path it is handed by `p.split(path.sep)` (filesystem.js), so a
+    // forward-slash literal reads fine here and on a Mac and is NEVER found
+    // on Windows.  That is what the Windows runner reported — "could not
+    // read dist/renderer/model.worker.js out of the asar", about an archive
+    // that has the file, for both of the two steps that read one.
     let worker = '';
-    try { worker = asarApi.extractFile(asar, 'dist/renderer/model.worker.js').toString('utf8'); }
+    try { worker = asarApi.extractFile(asar, path.join('dist', 'renderer', 'model.worker.js')).toString('utf8'); }
     catch { worker = ''; }
     expect(
       worker.length > 50_000 && /wasmBinary|_OrtCreateSession/.test(worker)
@@ -432,7 +439,7 @@ try {
     // dist-electron/main here, against 0.90 MB from a production build — so
     // the number this smoke has been reporting carried 7.3 MB of source.
     let mainBundle = '';
-    try { mainBundle = asarApi.extractFile(asar, 'dist-electron/main/index.js').toString('utf8'); }
+    try { mainBundle = asarApi.extractFile(asar, path.join('dist-electron', 'main', 'index.js')).toString('utf8'); }
     catch { mainBundle = ''; }
     //
     // `sourcesContent` is not searched for directly: esbuild writes the map as
