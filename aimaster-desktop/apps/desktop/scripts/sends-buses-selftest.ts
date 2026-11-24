@@ -26,7 +26,7 @@
  * Run: pnpm --filter @aimaster/desktop test:sends-buses
  */
 
-import { OfflineAudioContext } from 'node-web-audio-api';
+import { OfflineAudioContext } from './lib/offline-audio-context.js';
 
 import {
   busUsage, busUsageCount, nextBusName, removeBus, renameBus, setBusChannels,
@@ -38,6 +38,13 @@ import {
 import { availableTargets, isPlayable } from '../src/renderer/daw/edit/automation-lanes.js';
 import { defaultParams } from '../src/renderer/daw/engine/plugins.js';
 import { MixerEngine } from '../src/renderer/daw/engine/mixer-engine.js';
+import {
+  PATH_DEAD_END, addReturnChannel, deadEndBuses, describePath,
+} from '../src/renderer/daw/model/routing.js';
+
+/** Audible, asked the way the mix window asks it: through the readout. */
+const heard = (s: DawSession, id: string): boolean =>
+  !describePath(s, id).endsWith(PATH_DEAD_END);
 import { resetIds } from '../src/renderer/daw/model/ids.js';
 import type { DawSession, Send, Track } from '../src/renderer/daw/model/types.js';
 
@@ -182,17 +189,201 @@ check('a send pan lane is offered and is playable', () => {
   assert(isPlayable(pan!, track), 'offered but not playable, which is the worst of both');
 });
 
+// ── Dead ends: the warning this file's own opening asked for ───────────────
+//
+// "a track whose audio goes nowhere — silently, because there is nothing to
+// warn about at the moment the sound should have been there."  That sentence
+// is at the top of this file and it was a description of the app, not a
+// complaint about one bug.  `deadEndBuses` is the warning.
+//
+// Each check below exists for one way the warning could be wrong, and a wrong
+// warning is worse than none: the first one a user dismisses is the last one
+// they read.
+
+/** The fixture with the aux's input cleared — the return channel is gone. */
+function noReturn(): Fixture {
+  const f = fixture();
+  return { ...f, session: updateTrack(f.session, f.aux.id, (t) => ({ ...t, input: null })) };
+}
+
+check('a send that works is not reported', () => {
+  const dead = deadEndBuses(fixture().session);
+  assert(dead.length === 0, `warned about a send that works: ${JSON.stringify(dead)}`);
+});
+
+check('a send into a bus no aux reads is reported, by track and by send', () => {
+  const f = noReturn();
+  const dead = deadEndBuses(f.session);
+  assert(dead.length === 1, `expected one dead end, got ${dead.length}`);
+  const d = dead[0]!;
+  assert(d.busId === f.busId, 'named the wrong bus');
+  assert(d.deadSends.length === 1, `expected the one send, got ${d.deadSends.length}`);
+  assert(d.deadSends[0]![0] === f.src.id, 'named the wrong track');
+  // The source itself is still heard — its own output goes to the master, and
+  // only the send is lost.  Saying the track is silenced would be a lie.
+  assert(d.silenced.length === 0, `claimed ${d.silenced.length} track(s) silenced`);
+  assert(heard(f.session, f.src.id), 'called the source inaudible');
+});
+
+check('a chain of returns that ends nowhere is as silent as no return at all', () => {
+  // One hop is not enough.  The aux DOES read the FX bus — and returns it
+  // into a second bus that nothing reads.  A check asking only "does some
+  // aux read this bus" passes here, and the reverb is still inaudible.
+  const f = fixture();
+  const dangling = createBus('Dangling');
+  let s: DawSession = { ...f.session, buses: [...f.session.buses, dangling] };
+  s = setOutput(s, f.aux.id, { kind: 'bus', busId: dangling.id });
+
+  const dead = deadEndBuses(s);
+  const named = dead.map((d) => s.buses.find((b) => b.id === d.busId)?.name).sort();
+  assert(dead.length === 2, `expected both buses, got [${named.join(', ')}]`);
+  const far = dead.find((d) => d.busId === dangling.id);
+  assert(far?.silenced[0] === f.aux.id, 'did not name the aux as the silenced track');
+  assert(!heard(s, f.aux.id), 'called the aux audible');
+  assert(heard(s, f.src.id), 'the source still reaches the master by its own output');
+});
+
+check('a bus read only as a sidechain key is not a dead end', () => {
+  // Feeding a compressor's key input is the normal use for a send whose
+  // audio is never meant to be heard.
+  const f = noReturn();
+  const s = setInsert(f.session, f.aux.id, createInsert(0, 'comp', 'Comp', {
+    params: defaultParams('comp'), sidechainSource: f.busId,
+  }));
+  const dead = deadEndBuses(s);
+  assert(dead.length === 0, `warned about a key bus: ${JSON.stringify(dead)}`);
+});
+
+check('but a track whose main output lands in a key bus is still silenced', () => {
+  // Nobody routes a channel's only output into a key bus on purpose, so the
+  // key does not excuse this one — and the send into the same bus still is
+  // not dead, which is the pair of answers a single flag could not give.
+  const f = noReturn();
+  let s = setInsert(f.session, f.aux.id, createInsert(0, 'comp', 'Comp', {
+    params: defaultParams('comp'), sidechainSource: f.busId,
+  }));
+  s = setOutput(s, f.src.id, { kind: 'bus', busId: f.busId });
+  const dead = deadEndBuses(s);
+  assert(dead.length === 1, `expected the bus to be reported, got ${dead.length}`);
+  const d = dead[0]!;
+  assert(d.silenced[0] === f.src.id, 'did not name the silenced track');
+  assert(d.deadSends.length === 0, 'called the send into a key bus dead');
+  assert(d.keys.length === 1, 'did not record why the dead end can be right');
+});
+
+check('a bus the master itself reads is audible — the master is a sink too', () => {
+  // Two sinks, not one.  A track routed to the master lands on the master
+  // NODE; the master TRACK is wired straight to the destination and may read
+  // a bus through `input` like any aux.  A walk that knows only the node
+  // calls this silent, and it is the loudest thing in the session.
+  const f = noReturn();
+  const master = f.session.tracks.find((t) => t.kind === 'master');
+  assert(master !== undefined, 'the fixture has no master track');
+  const s = updateTrack(f.session, master!.id, (t) => ({ ...t, input: f.busId }));
+  const dead = deadEndBuses(s);
+  assert(dead.length === 0, `called a bus the master reads silent: ${JSON.stringify(dead)}`);
+});
+
+check('an empty bus is one waiting to be used, not a warning', () => {
+  const f = fixture();
+  const spare = createBus('Spare');
+  const s: DawSession = { ...f.session, buses: [...f.session.buses, spare] };
+  assert(deadEndBuses(s).every((d) => d.busId !== spare.id),
+    'warned about the bus the user just created');
+});
+
+check('a send the user muted is not a send that is broken', () => {
+  const f = noReturn();
+  const s = updateTrack(f.session, f.src.id, (t) => ({
+    ...t, sends: t.sends.map((x) => ({ ...x, mute: true })),
+  }));
+  const dead = deadEndBuses(s);
+  assert(dead.length === 0, `warned about a muted send: ${JSON.stringify(dead)}`);
+});
+
+check('a dead end can be fixed in one step, and then it is not one', () => {
+  const f = noReturn();
+  assert(deadEndBuses(f.session).length === 1, 'the fixture was not broken to begin with');
+  const fixed = addReturnChannel(f.session, f.busId);
+  assert(fixed !== null, 'refused a bus that exists');
+  assert(deadEndBuses(fixed!.session).length === 0, 'still a dead end after the fix');
+  const aux = fixed!.session.tracks.find((t) => t.id === fixed!.trackId);
+  assert(aux?.input === f.busId, 'the return does not read the bus');
+  assert(aux?.kind === 'aux', `the return is a ${aux?.kind} track`);
+  assert(aux?.output.kind === 'master', `the return goes to ${aux?.output.kind}`);
+  assert(aux?.name.includes('FX'), `the return is called ${aux?.name}, not after its bus`);
+  assert(addReturnChannel(f.session, 'bus-nope') === null, 'invented a bus');
+});
+
+check('and the return lands under the track that feeds the bus', () => {
+  // Not at the bottom of the session: a return that appears off-screen is a
+  // second thing to go looking for.  `track-placement` has a sweep that
+  // fails any add-track call with no row, and this is the behaviour behind
+  // that rule.
+  const f = noReturn();
+  const rows = addReturnChannel(f.session, f.busId)!.session.tracks.map((t) => t.name);
+  assert(rows.join(',') === 'Src,FX 리턴,Verb,Master', `got ${rows.join(',')}`);
+
+  // Nothing feeds it: there is no row to be under, so the default stands —
+  // above the master, which `addTrack` keeps last on its own.
+  const bare = { ...f.session, buses: [...f.session.buses, createBus('Spare')] };
+  const spare = bare.buses[bare.buses.length - 1]!;
+  const bareRows = addReturnChannel(bare, spare.id)!.session.tracks.map((t) => t.name);
+  assert(bareRows[bareRows.length - 1] === 'Master', `master moved: ${bareRows.join(',')}`);
+  assert(bareRows.includes('Spare 리턴'), `got ${bareRows.join(',')}`);
+});
+
+check('the signal-path readout says where the signal stops', () => {
+  // The readout is the one place the user was already looking.  Ending it on
+  // the bus's name let them read "Verb → Plate" as a route to the master.
+  const f = noReturn();
+  const s = setOutput(f.session, f.src.id, { kind: 'bus', busId: f.busId });
+  const path = describePath(s, f.src.id);
+  assert(path.endsWith(PATH_DEAD_END), `the readout still reads as a route: ${path}`);
+  assert(path.startsWith('Src → FX'), `lost the route itself: ${path}`);
+});
+
+check('and it does not say so when another return carries the bus', () => {
+  // This walk follows the FIRST aux reading the bus.  With two returns, one
+  // dangling and one reaching the master, the bus IS audible — and marking it
+  // broken because of the order they happen to sit in would be a lie that
+  // teaches the user to ignore the mark.
+  const f = fixture();
+  const dangling = createBus('Dangling');
+  let s: DawSession = { ...f.session, buses: [...f.session.buses, dangling] };
+  const extra = createTrack('Second return', 'aux', { input: f.busId });
+  s = addTrack(s, extra);
+  s = setOutput(s, extra.id, { kind: 'bus', busId: dangling.id });
+  s = setOutput(s, f.src.id, { kind: 'bus', busId: f.busId });
+
+  // `extra` is the dangling one and may be the one the walk follows.
+  const path = describePath(s, f.src.id);
+  assert(!path.includes(PATH_DEAD_END), `cried wolf on an audible bus: ${path}`);
+  assert(heard(s, f.src.id), 'called an audible track inaudible');
+});
+
 // ── Rendered: what the audio actually does ──────────────────────────────────
 
 interface Rendered { l: number; r: number }
 
 async function render(f: Fixture): Promise<Rendered> {
+  return renderSession(f.session, f.src.id);
+}
+
+/**
+ * The same render, for a session the fixture helpers have taken apart.
+ *
+ * Split out for the dead-end checks: those need a session whose return
+ * channel is gone, which is no longer a `Fixture` — and a silence that is
+ * argued from the model instead of rendered is not evidence of anything.
+ */
+async function renderSession(session: DawSession, srcId: string): Promise<Rendered> {
   const ctx = new OfflineAudioContext(2, SR, SR);
   const engine = new MixerEngine(
     ctx as unknown as BaseAudioContext, ctx.destination as unknown as AudioNode,
   );
-  engine.sync(f.session);
-  const channel = engine.channel(f.src.id);
+  engine.sync(session);
+  const channel = engine.channel(srcId);
   assert(channel !== undefined, 'the source channel was not built');
 
   const buffer = ctx.createBuffer(1, SR, SR);
@@ -213,6 +404,30 @@ async function render(f: Fixture): Promise<Rendered> {
 }
 
 async function main(): Promise<void> {
+  await checkAsync('and the one-step fix renders the send it was losing', async () => {
+    // The fix is the claim, so the fix is what gets rendered.  A repair that
+    // satisfies `deadEndBuses` and makes no sound would pass every check
+    // above this one.
+    const f = noReturn();
+    const fixed = addReturnChannel(f.session, f.busId);
+    assert(fixed !== null, 'the fix refused the fixture');
+    const out = await renderSession(fixed!.session, f.src.id);
+    assert(db(out.l) > -40, `still silent at ${db(out.l).toFixed(1)} dB after the fix`);
+  });
+
+  await checkAsync('the send it reports really does render silence', async () => {
+    // Measured, not argued: the same fixture and the same send level, with
+    // the return channel and without it.
+    const heard = await render(fixture());
+    const f = noReturn();
+    const lost = await renderSession(f.session, f.src.id);
+    assert(db(heard.l) > -40,
+      `the control render was already silent at ${db(heard.l).toFixed(1)} dB`);
+    assert(db(lost.l) < -100 && db(lost.r) < -100,
+      `expected silence, got ${db(lost.l).toFixed(1)} / ${db(lost.r).toFixed(1)} dB`);
+    assert(deadEndBuses(f.session).length === 1, 'rendered silent and reported nothing');
+  });
+
   await checkAsync('a send pan moves the send, and the two sides disagree', async () => {
     // The measurement that found the bug: before the send had a panner these
     // three renders came out identical, to the sample.

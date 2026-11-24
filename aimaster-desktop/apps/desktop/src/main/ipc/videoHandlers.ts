@@ -9,6 +9,24 @@
 // seconds over a ninety-minute reel, and a hit point placed on the wrong
 // frame rate is wrong by a growing amount the further into the film you get.
 // ffprobe is already bundled for the decode path, so it answers here too.
+//
+// ── The start timecode is converted by the app's own SMPTE code ─────────────
+//
+// This file used to carry its own `timecodeToSeconds`, and it accepted `;`
+// before the frames — which is precisely how ffprobe marks DROP-FRAME
+// timecode — and then counted the frames as if they were non-drop:
+//
+//     frames = ((hh * 60 + mm) * 60 + ss) * round(fps) + ff
+//
+// Drop-frame skips frame NUMBERS (00 and 01 at the top of every minute but
+// every tenth), so over an hour that formula is 108 frames long: a reel
+// starting at `01:00:00;00` was read as 3603.6 s instead of 3600.0, and every
+// hit point in the session sat 3.6 seconds off it.  `daw/model/video.ts` had
+// the SMPTE rule right the whole time, and `video-selftest` had been checking
+// it — against the renderer's copy, which is not the one this handler called.
+//
+// So the conversion is imported rather than written again.  There is only one
+// of it now, and it is the one with the tests.
 
 import type { IpcMain } from 'electron';
 import { validateAbsoluteFilePath } from '../utils/ipcValidation.js';
@@ -17,6 +35,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { resolveFFprobePath } from '@aimaster/audio-engine';
 import { recordFailure } from '../utils/failureLog.js';
+// From `model/timecode.ts`, which imports nothing — see its header.  Not
+// from `model/video.ts`: that one carries `DawSession`, and through it the
+// plugin types, which speak `AudioNode` a main-process tsconfig has no lib for.
+import { parseTimecode } from '../../renderer/daw/model/timecode.js';
 
 export interface VideoProbeResult {
   path: string;
@@ -69,17 +91,6 @@ function parseRational(text: string | undefined): number {
   return n / d;
 }
 
-/** `01:00:00:00` or `01:00:00;00` → seconds, at the file's own rate. */
-function timecodeToSeconds(text: string | undefined, fps: number): number {
-  if (!text || !(fps > 0)) return 0;
-  const match = /^(\d{1,2})[:;](\d{1,2})[:;](\d{1,2})[:;](\d{1,2})$/.exec(text.trim());
-  if (!match) return 0;
-  const nominal = Math.round(fps);
-  const frames = ((Number(match[1]) * 60 + Number(match[2])) * 60 + Number(match[3])) * nominal
-    + Number(match[4]);
-  return frames / fps;
-}
-
 export function registerVideoHandlers(ipc: IpcMain, packaged: boolean, resourcesPath: string): void {
   ipc.handle('video:probe', async (_e, raw: unknown): Promise<VideoProbeResult> => {
     // Shared validator, not a third copy of the same three checks.
@@ -122,13 +133,18 @@ export function registerVideoHandlers(ipc: IpcMain, packaged: boolean, resources
         path: resolved,
         name: path.basename(resolved),
         durationSec: Number.isFinite(durationSec) && durationSec > 0 ? durationSec : 0,
-        // A file that reports no rate is not rejected — it plays fine, and
-        // 25 is the least wrong default.  The UI lets the user set it, and
-        // says that it had to guess.
+        // A file that reports no rate is reported as 0 rather than rejected:
+        // it plays fine, and the VIEWER is where the fallback belongs, because
+        // it is the thing that can tell the user it had to guess (it fills in
+        // 25 and says so).  A default invented here would arrive looking like
+        // something ffprobe said.
         fps: fps > 0 ? fps : 0,
         width: video.width ?? 0,
         height: video.height ?? 0,
-        startTimecodeSec: timecodeToSeconds(timecode, fps > 0 ? fps : 25),
+        // `parseTimecode` reads the drop-frame marker and applies the SMPTE
+        // rule; it returns null for anything that is not timecode, which is
+        // the same "no start timecode" as a file that carries none.
+        startTimecodeSec: timecode ? parseTimecode(timecode, fps > 0 ? fps : 25) ?? 0 : 0,
         hasAudio: streams.some((s) => s.codec_type === 'audio'),
       };
     } catch (err) {

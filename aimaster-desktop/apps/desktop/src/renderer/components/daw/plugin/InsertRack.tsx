@@ -27,7 +27,12 @@ import {
   saveRack,
 } from '../../../daw/engine/rack-store.js';
 import { useAppStore } from '../../../stores/appStore.js';
+import { useWorkspaceStore } from '../../../stores/workspaceStore.js';
 import { premium } from '../../../theme/premium.js';
+import {
+  INSTRUMENT_CHAINS, chainSource, rackFromChain, type InstrumentChain,
+} from '../../../daw/model/instrument-chains.js';
+import { chainSendPlan, loadChainWithSends } from '../../../daw/model/chain-sends.js';
 import type { TrackId } from '../../../daw/model/types.js';
 
 const SLOT_COUNT = 10;
@@ -68,6 +73,8 @@ export default function InsertRack({ trackId, anchorY }: { trackId: TrackId; anc
   const openWindow = usePluginWindowStore((s) => s.open);
   const toggleRack = usePluginWindowStore((s) => s.toggleRack);
   const notify = useAppStore((s) => s.notify);
+  const sendRouted = useWorkspaceStore((s) => s.chainSendRouting);
+  const toggleSendRouted = useWorkspaceStore((s) => s.toggleChainSendRouting);
   const [picking, setPicking] = useState<number | null>(null);
   const [filter, setFilter] = useState('');
   // The rack store lives outside React, so saving or deleting has to say so.
@@ -160,6 +167,51 @@ export default function InsertRack({ trackId, anchorY }: { trackId: TrackId; anc
       : `"${rack.name}" 로드 — ${describeRack(rack)}`);
   };
 
+  /**
+   * Put the whole starter chain for an instrument on this track.
+   *
+   * Through `loadRack`, which is the path a saved rack takes: the same
+   * sanitising, the same slot rules, and the same report of anything this
+   * build cannot provide.  Replace rather than merge — "give me the vocal
+   * chain" means the chain, not the chain on top of whatever was there.
+   */
+  const loadInstrumentChain = (chain: InstrumentChain): void => {
+    setActiveRack(null);
+    if (sendRouted) { loadInstrumentChainToSends(chain); return; }
+    const preset = rackFromChain(chain);
+    apply((s) => {
+      const result = loadRack(s, trackId, preset, 'replace');
+      for (const problem of result.problems.slice(0, 3)) notify(problem, 'warning');
+      return result.session;
+    });
+    // Names the devices it just put there, in order: the chain is the lesson,
+    // and a toast that says only "loaded" teaches nothing.
+    notify(`${chain.label} 기본 체인 — ${chain.devices
+      .map((d) => findPlugin(d.pluginId)?.name ?? d.pluginId).join(' → ')}`
+      + ` · 설정은 ${chainSource(chain)}`);
+    setPicking(null);
+  };
+
+  /**
+   * The same chain with its tail on auxes.
+   *
+   * The message is the lesson again, and here it has more to teach than the
+   * insert version: it says which aux was BUILT and which was SHARED, because
+   * the second vocal to be routed sharing the first one's plate is the whole
+   * reason to use this door.
+   */
+  const loadInstrumentChainToSends = (chain: InstrumentChain): void => {
+    let message = '';
+    apply((s) => {
+      const result = loadChainWithSends(s, trackId, chain);
+      for (const problem of result.problems.slice(0, 3)) notify(problem, 'warning');
+      message = result.message;
+      return result.session;
+    });
+    if (message) notify(`${message} · 설정은 ${chainSource(chain)}`);
+    setPicking(null);
+  };
+
   /** Update the loaded rack to whatever the chain is now. */
   const overwriteActiveRack = (): void => {
     const rack = racks.find((r) => r.id === activeRack);
@@ -235,6 +287,62 @@ export default function InsertRack({ trackId, anchorY }: { trackId: TrackId; anc
           className="h-5 w-5 text-[12px] leading-none"
           style={{ color: premium.text.muted }}
         >×</button>
+      </div>
+
+      {/* ── 악기별 기본 체인 ───────────────────────────────────────────
+          The categories below this are the plugin folder: EQ, Dynamics,
+          Reverb.  That is the right shelf for somebody who knows what they
+          are reaching for.  This is the other door — pick what the track IS
+          and the devices that track always wants arrive in order, set to
+          values that do something.  See `instrument-chains.ts` for where the
+          order comes from. */}
+      <div className="px-3 py-1.5 shrink-0"
+           style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+        <div className="flex items-baseline gap-1.5 mb-1">
+          <span className="text-[9px] tracking-wide" style={{ color: premium.text.faint }}>악기별 기본 체인</span>
+          <span className="text-[8.5px]" style={{ color: premium.text.muted }}>
+            {sendRouted ? '공간계는 Aux 로, 나머지는 인서트로' : '누르면 인서트가 교체됩니다'}
+          </span>
+          {/* The other way round, for the person who has six backing takes and
+              does not want six plates.  Off by default — see
+              `instrument-chains.ts` on why the channel version is what a
+              beginner is handed. */}
+          <button
+            onClick={toggleSendRouted}
+            title={'공간계(리버브 · 딜레이)를 채널에서 빼내 공용 Aux 로 보냅니다.\n'
+              + '같은 기기의 Aux 가 이미 있으면 새로 만들지 않고 그 Aux 를 함께 씁니다.\n'
+              + '센드 레벨은 프리셋의 mix 비율에서 계산하므로 인서트 때와 같은 양으로 울립니다.'}
+            className="ml-auto h-4 px-1 rounded text-[8px] shrink-0"
+            style={{
+              border: `1px solid ${sendRouted ? 'rgba(52,211,153,0.5)' : 'rgba(255,255,255,0.12)'}`,
+              background: sendRouted ? 'rgba(52,211,153,0.18)' : 'transparent',
+              color: sendRouted ? '#6ee7b7' : premium.text.muted,
+            }}
+          >SEND</button>
+        </div>
+        <div className="grid grid-cols-2 gap-1">
+          {INSTRUMENT_CHAINS.map((chain) => (
+            <button
+              key={chain.id}
+              onClick={() => loadInstrumentChain(chain)}
+              title={`${chain.english} — ${chain.hint}`
+                + `\n설정 출처: ${chainSource(chain)}\n`
+                + `${chain.devices
+                .map((d, i) => `${i + 1}. ${findPlugin(d.pluginId)?.name ?? d.pluginId} — ${d.why}`)
+                .join('\n')}`
+                // With SEND on, the tooltip has to say which of those lines is
+                // about to leave the channel, and at what level.
+                + (sendRouted ? `\n\nAux 로: ${chainSendPlan(chain).sends
+                  .map((x) => `${x.name} ${x.levelDb.toFixed(1)} dB`).join(' · ') || '없음'}` : '')}
+              className="h-5 rounded text-[9.5px] truncate px-1"
+              style={{
+                border: '1px solid rgba(255,255,255,0.12)',
+                color: premium.text.primary,
+                fontFamily: premium.type.sans,
+              }}
+            >{chain.label}</button>
+          ))}
+        </div>
       </div>
 
       {/* The whole chain, under one name.  A device preset is one box; this is

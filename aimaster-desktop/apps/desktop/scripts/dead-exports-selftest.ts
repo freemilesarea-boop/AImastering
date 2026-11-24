@@ -36,7 +36,8 @@
  *   · some file imports that NAME from a specifier that resolves to F; or
  *   · some file pulls F in wholesale — `import * as ns`, `export * from`, or a
  *     dynamic `import()`, any of which could reach anything F exports; or
- *   · a `.mjs`/`.cjs` build script mentions the name.
+ *   · a `.mjs`/`.cjs` build script mentions the name — `scripts/app-smoke/`
+ *     excepted, because that is the suite, not the build (see `scriptFiles`).
  *
  * The last two are deliberately generous.  Being wrong towards "alive" leaves
  * dead code in the tree; being wrong towards "dead" tells somebody to delete
@@ -107,7 +108,25 @@ function find(exts: string[]): string[] {
 function sourceFiles(): string[] { return find(['ts', 'tsx']); }
 
 /** …plus the build scripts, which are not TypeScript and are not parsed. */
-function scriptFiles(): string[] { return find(['mjs', 'cjs']); }
+/**
+ * The `.mjs`/`.cjs` scripts, MINUS the on-device smoke harness.
+ *
+ * `prebuild.cjs` and `esbuild.main.cjs` mentioning a name is the app's own
+ * build reaching for it.  `scripts/app-smoke/` is not that — it is the suite,
+ * driven through a running app instead of imported, and counting it as a
+ * caller is the same "a test vouching for its own subject" the check below
+ * exists to rule out.
+ *
+ * It was not a theoretical difference.  `flow-packaged.mjs` posts the Studio's
+ * suite config, which has a `declick:` key — and that lone object key made
+ * `declick.ts::declick` read as live, although the app imports only the
+ * `ClickEvent` type from that file and every other `'declick'` in `src/` is a
+ * module id string.  The name match is all this search has, so the fix is to
+ * ask the right set of files, not to make the match cleverer.
+ */
+function scriptFiles(): string[] {
+  return find(['mjs', 'cjs']).filter((f) => !f.startsWith('scripts/app-smoke/'));
+}
 
 /**
  * …minus the files whose exports are a framework's contract, not a caller's.
@@ -123,12 +142,18 @@ function scriptFiles(): string[] { return find(['mjs', 'cjs']); }
  * was the importer that had been vouching for them.  Candidate and reference
  * are two different sets, and conflating them breaks it in both directions.
  *
- * Two of the eleven this note used to name — `LouiTopBar` and `LouiABCompare`
- * — have since been deleted, and that is not the naive search turning out to
- * be right.  They were ProductPage's chrome; ProductPage was retired, the page
- * that replaced it has its own, and nothing was ever going to adopt them.  A
- * deliberate removal and "the graph cannot see the caller" are different
- * findings, and only the second one is this file's business.
+ * Four of the eleven this note used to name — `LouiTopBar`,
+ * `LouiABCompare`, `DraggableEQCurveEditor` and `EQCurveOverlay` — have since
+ * been deleted, and that is not the naive search turning out to be right.
+ * The first two were ProductPage's chrome; ProductPage was retired and the
+ * page that replaced it has its own.  The second two were its EQ editor, and
+ * `LouiEqGraph` — which the Studio does render — drags frequency, gain AND Q,
+ * adds and removes free bands, and is checked against the real WASM chain by
+ * `eq-graph-selftest`, where the one it replaced was checked against a
+ * formula.  Each went because nothing was going to adopt it, not because
+ * nothing imported it.  A deliberate removal and "the graph cannot see the
+ * caller" are different findings, and only the second one is this file's
+ * business.
  */
 function declaringFiles(): string[] {
   return sourceFiles().filter((f) => !/\.stories\.tsx?$/.test(f));
@@ -392,8 +417,18 @@ check('and every selftest on disk is reachable from `pnpm test`', () => {
   const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as {
     scripts: Record<string, string>;
   };
-  const chain = pkg.scripts['test'] ?? '';
-  const inChain = new Set([...chain.matchAll(/pnpm (test:[a-z0-9-]+)/g)].map((m) => m[1]!));
+  // The chain used to be 221 `pnpm test:x &&` links and this read the names
+  // straight out of it.  It is now one call to a runner that takes its order
+  // from scripts/suite-order.json — a step costs ~370 ms instead of ~1100 —
+  // so the list lives there.  The assert below is what keeps this check from
+  // silently measuring the wrong thing again: change how the suite is driven
+  // and this fails until it is pointed at the new source.
+  const driver = pkg.scripts['test'] ?? '';
+  assert(/node scripts\/run-selftests\.mjs/.test(driver),
+    '`pnpm test` no longer ends in run-selftests.mjs — point this check at '
+    + `whatever drives the suite now (it says: ${driver.slice(-70)})`);
+  const order = JSON.parse(readFileSync('scripts/suite-order.json', 'utf8')) as string[];
+  const inChain = new Set(order.map((n) => `test:${n}`));
 
   // file → the package scripts that run it
   const runs = new Map<string, string[]>();
@@ -412,7 +447,7 @@ check('and every selftest on disk is reachable from `pnpm test`', () => {
 
   assert(stranded.length === 0,
     `${stranded.length} selftest(s) never run in \`pnpm test\`:\n    ${stranded.join('\n    ')}`
-    + '\n  Register each one and add it to the `test` chain.');
+    + '\n  Register each one as a `test:` script and add it to scripts/suite-order.json.');
 });
 
 check('and no two scripts share a name', () => {

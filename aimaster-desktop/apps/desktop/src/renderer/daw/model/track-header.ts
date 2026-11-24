@@ -154,6 +154,40 @@ export function setHeights(
 }
 
 /**
+ * How many lanes FIT aims to put on screen at once.
+ *
+ * Twenty, because below about 28 px a lane stops being a waveform and
+ * becomes a stripe — `MIN_TRACK_HEIGHT` is where that line was drawn — and
+ * twenty of those need 560 px of scroller, which is what a window 820 px
+ * tall has after the Edit window's chrome.  A session with more than twenty
+ * tracks does not shrink past it: the first twenty fill the window at a
+ * height you can still read, and the rest are a scroll away.
+ */
+export const FIT_VISIBLE_ROWS = 20;
+
+/**
+ * The height that makes `rows` track lanes fit in `availablePx`.
+ *
+ * The other half of the seven-track report.  Giving the global lanes' 190 px
+ * back to the tracks buys two lanes at 96 px; it does not make a 900 px
+ * window hold twelve of them, and "I want to see my whole session" is a
+ * gesture every DAW has — Cubase calls it Zoom Tracks Full.
+ *
+ * `reservedPx` is what the scroller is already spending on rows that are not
+ * track lanes: the global lanes at the top and any open automation lane.
+ * Clamped like every other height, so asking thirty tracks to fit a short
+ * window gives the smallest legible lane rather than a one-pixel one — and
+ * then not all of them fit, which is the honest outcome and not a silent
+ * rounding.
+ */
+export function heightToFit(rows: number, availablePx: number, reservedPx = 0): number {
+  if (!Number.isFinite(rows) || rows <= 0) return DEFAULT_TRACK_HEIGHT;
+  if (!Number.isFinite(availablePx)) return DEFAULT_TRACK_HEIGHT;
+  const room = availablePx - (Number.isFinite(reservedPx) ? Math.max(0, reservedPx) : 0);
+  return clampTrackHeight(Math.floor(room / rows));
+}
+
+/**
  * Step to the next or previous preset from wherever a track is now.
  *
  * "Next size up" is the gesture; the current height may be a dragged number

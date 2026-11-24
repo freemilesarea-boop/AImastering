@@ -81,12 +81,17 @@ export function LouiModuleSlideOver(props: LouiModuleSlideOverProps) {
   }, [props.open]);
 
   // ESC key + focus trap (Tab / Shift+Tab cycling inside the panel).
+  //
+  // Destructured rather than read through `props` inside the handler: the
+  // effect would otherwise depend on the whole props object and re-attach the
+  // document listener whenever any unrelated prop changed.
+  const { open: slideOpen, onClose } = props;
   useEffect(() => {
-    if (!props.open) return undefined;
+    if (!slideOpen) return undefined;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation();
-        props.onClose();
+        onClose();
         return;
       }
       if (e.key !== 'Tab' || !panelRef.current) return;
@@ -105,7 +110,7 @@ export function LouiModuleSlideOver(props: LouiModuleSlideOverProps) {
     };
     document.addEventListener('keydown', onKey, true);
     return () => document.removeEventListener('keydown', onKey, true);
-  }, [props.open, props.onClose]);
+  }, [slideOpen, onClose]);
 
   const width = props.width ?? 480;
 

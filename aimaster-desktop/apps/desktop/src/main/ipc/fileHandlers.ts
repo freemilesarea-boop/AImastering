@@ -120,6 +120,11 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
 
   // ── Save WAV or MP3 — shows dialog, then copies from src ─────────────
   // Used by ResultPage for both WAV and MP3 export.
+  // Named for its first caller, not for what it does: this saves a COPY of
+  // whatever file it is handed, with the dialog filter chosen from that file's
+  // own extension (wav → WAV, anything else → MP3).  The result screen uses it
+  // for the mp3 preview for exactly that reason.  Bit depth and dither belong
+  // to `file:save-audio` below, which is what both WAV export doorways use.
   ipc.handle('file:save-wav', async (_e, srcPath: unknown) => {
     if (!win) return null;
     const safeSrc = validateAbsoluteFilePath(srcPath, 'file:save-wav');
@@ -825,6 +830,29 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
   // Control surface mappings — the same shape as the preset file, and for the
   // same reason: a desk that took an afternoon to map should not die with a
   // reinstall, and a studio with two machines wants the same mapping on both.
+  // The keyboard as one printable page.  Same shape as the exports below it:
+  // a string, a cap, a dated default name, and a failure that is recorded
+  // rather than swallowed.
+  ipc.handle('daw:cheatsheet-export', async (_e, payload: unknown) => {
+    if (!win) return null;
+    if (typeof payload !== 'string' || payload.length > 4 * 1024 * 1024) {
+      throw new Error('daw:cheatsheet-export: payload rejected');
+    }
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const result = await dialog.showSaveDialog(win, {
+      defaultPath: `loui-shortcuts-${stamp}.html`,
+      filters: [{ name: 'HTML', extensions: ['html'] }],
+    });
+    if (result.canceled || !result.filePath) return null;
+    try {
+      fs.writeFileSync(result.filePath, payload, 'utf8');
+      return result.filePath;
+    } catch (err) {
+      recordFailure('session', `daw:cheatsheet-export failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
   ipc.handle('daw:surface-export', async (_e, payload: unknown) => {
     if (!win) return null;
     if (typeof payload !== 'string' || payload.length > 4 * 1024 * 1024) {

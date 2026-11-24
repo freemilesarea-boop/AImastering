@@ -14,11 +14,14 @@ import {
   useWorkspaceStore, getTransportElement, snapTime,
 } from '../stores/workspaceStore.js';
 import { resumeSharedContext } from '../audio/shared-audio-graph.js';
-import { BINDINGS } from './definitions.js';
+import { resolveBindings } from './key-overrides.js';
+import { setCommandMap } from './command-runner.js';
+import { useShortcutStore } from '../stores/shortcutStore.js';
 import { buildCommands, type CommandDeps, type DawBridge, type TransportApi } from './commands.js';
 import { buildDawCommands, buildDawOverrides } from './daw-commands.js';
+import { demoModeOn } from './demo-mode.js';
 import { useDawStore } from '../stores/dawStore.js';
-import { matchesChord, detectPlatform, type Platform } from './keys.js';
+import { matchesChord, detectPlatform, formatChord, type Platform } from './keys.js';
 
 /** Typing surfaces where the DAW layer must stay out of the way. */
 function isTypingTarget(target: EventTarget | null): boolean {
@@ -107,6 +110,10 @@ export function useDawShortcuts(): void {
       },
       workspace: () => useWorkspaceStore.getState(),
       transport,
+      saveFormat: () => {
+        const s = useAudioStore.getState();
+        return { depth: s.saveDepth, dither: s.saveDither };
+      },
       invoke: (channel, ...args) => {
         const api = window.electronAPI;
         if (!api) return Promise.reject(new Error('electronAPI unavailable'));
@@ -133,6 +140,24 @@ export function useDawShortcuts(): void {
 
   const commands = useMemo(() => buildCommands(deps, dawBridge), [deps, dawBridge]);
 
+  // The dispatch list, with the user's remaps applied.  Subscribed rather
+  // than read once, so changing a binding in the `?` overlay takes effect on
+  // the next keystroke instead of the next launch.
+  const overrides = useShortcutStore((s) => s.overrides);
+  const bindings = useMemo(() => resolveBindings(overrides), [overrides]);
+
+  // Publish the map so the context menu can run the SAME function a key runs.
+  // Cleared on unmount so a menu left open over a torn-down workspace reports
+  // "nothing to run" rather than calling into stale closures.
+  useEffect(() => {
+    setCommandMap(commands, (id, err) => {
+      // eslint-disable-next-line no-console
+      console.error(`[context-menu] ${id} failed:`, err);
+      useAppStore.getState().notify('명령 실행 중 오류가 발생했습니다', 'error');
+    });
+    return () => setCommandMap(null);
+  }, [commands]);
+
   // ── Keydown dispatch ────────────────────────────────────────────────────
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -152,7 +177,7 @@ export function useDawShortcuts(): void {
       if (typing) return;
 
       const platform = platformRef.current;
-      for (const { def, chord } of BINDINGS) {
+      for (const { def, chord } of bindings) {
         if (!matchesChord(e, chord, platform)) continue;
         // Let a focused button keep Space/Enter for activation.
         if ((chord.code === 'Space' || chord.code === 'Enter') && isButtonTarget(e.target)) return;
@@ -161,6 +186,12 @@ export function useDawShortcuts(): void {
         if (def.id === 'edit.copy' && hasTextSelection()) return;
         e.preventDefault();
         e.stopPropagation();
+        // The projector, when the instructor asked for it.  Before the command
+        // runs, not after: a render takes seconds and the key has to appear
+        // when it was pressed, which is what the class is copying down.
+        if (demoModeOn()) {
+          useAppStore.getState().castCommand(def.label, formatChord(chord, platform));
+        }
         const run = commands[def.id];
         try {
           const result = run();
@@ -181,7 +212,7 @@ export function useDawShortcuts(): void {
 
     window.addEventListener('keydown', onKeyDown, { capture: true });
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true });
-  }, [commands]);
+  }, [commands, bindings]);
 
   // ── Undo history recorder ───────────────────────────────────────────────
   useEffect(() => {

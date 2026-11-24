@@ -20,12 +20,19 @@ import {
 import { nextId } from '../../../daw/model/ids.js';
 import { useDawStore } from '../../../stores/dawStore.js';
 import { askText } from '../../../ui/text-prompt.js';
+import { chordOf, commandTitle } from '../../../shortcuts/command-title.js';
+import { detectPlatform } from '../../../shortcuts/keys.js';
+import { useShortcutStore } from '../../../stores/shortcutStore.js';
 
 export default function SnapshotPanel({ session, onApply, onNotify }: {
   session: DawSession;
   onApply: (fn: (s: DawSession) => DawSession) => void;
   onNotify: (m: string, t?: 'info' | 'success' | 'warning' | 'error') => void;
 }) {
+  // A tooltip asks the keymap rather than spelling a chord out, so it
+  // follows a remap and shows the key this platform prints.
+  const chordOverrides = useShortcutStore((s) => s.overrides);
+  const chordPlatform = useMemo(() => detectPlatform(), []);
   const snapshots = useDawStore((s) => s.snapshots);
   const addSnapshot = useDawStore((s) => s.addSnapshot);
   const dropSnapshot = useDawStore((s) => s.dropSnapshot);
@@ -73,7 +80,7 @@ export default function SnapshotPanel({ session, onApply, onNotify }: {
         <div className="flex-1" />
         <button
           onClick={capture}
-          title="지금 믹스를 저장합니다 (Mod+Alt+Shift+M)"
+          title={commandTitle('daw.mixSnapshot', chordOverrides, chordPlatform, '지금 믹스를 저장합니다')}
           className="px-2 h-5 rounded text-[10px] border border-zinc-700 bg-zinc-900 text-zinc-300"
         >+ 지금 믹스</button>
       </div>
@@ -114,7 +121,7 @@ export default function SnapshotPanel({ session, onApply, onNotify }: {
                   disabled={diff.same}
                   title={diff.same
                     ? '지금 믹스와 같아서 복구할 것이 없습니다'
-                    : '이 믹스로 되돌립니다 — Mod+Z 로 취소할 수 있습니다'}
+                    : `이 믹스로 되돌립니다 — ${chordOf('edit.undo', chordOverrides, chordPlatform) ?? '되돌리기'} 로 취소할 수 있습니다`}
                   className={`px-1.5 h-5 rounded text-[9px] border shrink-0 ${diff.same
                     ? 'bg-zinc-900 border-zinc-800 text-zinc-700'
                     : 'bg-zinc-800 border-zinc-600 text-zinc-200'}`}

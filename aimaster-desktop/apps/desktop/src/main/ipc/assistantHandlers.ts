@@ -14,12 +14,18 @@
 // session only and the user is told, because a mixing app quietly leaving a
 // billable credential in a JSON file under ~/.config is not a tradeoff anyone
 // asked for.
+//
+// Two decisions live in their own modules because nothing here can be tested:
+// which key wins (`utils/assistant-key.ts`) and what the model's answer means
+// (`assistant-reply.ts`).  Both were wrong in a way a test would have caught.
 
 import type { IpcMain } from 'electron';
 import { safeStorage } from 'electron';
 import Store from 'electron-store';
 import Anthropic from '@anthropic-ai/sdk';
 import { PLAN_SCHEMA, PLAN_TOOL_NAME, systemPrompt } from '../../renderer/daw/ai/nl-schema.js';
+import { KEY_PATTERN, resolveAssistantKey } from '../utils/assistant-key.js';
+import { planFromResponse } from './assistant-reply.js';
 
 const store = new Store({ name: 'assistant' });
 const KEY_FIELD = 'anthropicKeyEncrypted';
@@ -35,21 +41,26 @@ const MAX_TEXT = 2000;
 /** Held in memory when the OS cannot encrypt, so the session still works. */
 let sessionKey: string | null = null;
 
+function resolve(): ReturnType<typeof resolveAssistantKey> {
+  return resolveAssistantKey({
+    sessionKey,
+    stored: store.get(KEY_FIELD),
+    canEncrypt: safeStorage.isEncryptionAvailable(),
+    decrypt: (stored) => safeStorage.decryptString(Buffer.from(stored, 'base64')),
+    env: process.env['ANTHROPIC_API_KEY'],
+  });
+}
+
 function readKey(): string | null {
-  if (sessionKey) return sessionKey;
-  const stored = store.get(KEY_FIELD);
-  if (typeof stored !== 'string' || stored.length === 0) {
-    return process.env['ANTHROPIC_API_KEY'] ?? null;
-  }
-  if (!safeStorage.isEncryptionAvailable()) return null;
-  try {
-    return safeStorage.decryptString(Buffer.from(stored, 'base64'));
-  } catch {
-    // A key encrypted on a different machine or under a different OS user.
-    // Dropping it is right: it can never be decrypted here again.
+  const resolved = resolve();
+  // A stored entry this machine can never decrypt is dropped rather than
+  // tried again on every request — but only after the resolution above has
+  // had its chance to fall through to the environment.
+  if (resolved.storedUnusable && resolved.source !== 'keychain'
+      && safeStorage.isEncryptionAvailable()) {
     store.delete(KEY_FIELD);
-    return null;
   }
+  return resolved.key;
 }
 
 interface AskRequest {
@@ -99,19 +110,21 @@ function clientFor(key: string): Anthropic {
 
 export function registerAssistantHandlers(ipc: IpcMain): void {
   ipc.handle('assistant:status', () => {
-    if (!readKey()) return { ok: false, reason: 'API 키가 설정되지 않았습니다' };
+    const resolved = resolve();
+    if (!resolved.key) return { ok: false, reason: 'API 키가 설정되지 않았습니다' };
     return {
       ok: true,
       model: MODEL,
       // The UI says where the key lives, because "왜 다시 물어보지" has a
       // real answer on a machine with no keyring and the user deserves it.
-      persisted: sessionKey === null && typeof store.get(KEY_FIELD) === 'string',
+      persisted: resolved.source === 'keychain',
+      source: resolved.source,
       encryptionAvailable: safeStorage.isEncryptionAvailable(),
     };
   });
 
   ipc.handle('assistant:set-key', (_e, raw: unknown) => {
-    if (typeof raw !== 'string' || !/^sk-ant-[A-Za-z0-9_-]{20,}$/.test(raw.trim())) {
+    if (typeof raw !== 'string' || !KEY_PATTERN.test(raw.trim())) {
       throw new Error('assistant:set-key: 키 형식이 아닙니다');
     }
     const key = raw.trim();
@@ -176,26 +189,10 @@ export function registerAssistantHandlers(ipc: IpcMain): void {
       ],
     });
 
-    // A refusal is an HTTP 200 with no tool call.  Returning it as a plan the
-    // renderer can draw beats throwing, which would look like a network fault.
-    if (response.stop_reason === 'refusal') {
-      return {
-        understood: '', actions: [],
-        refusal: response.stop_details?.explanation ?? '모델이 이 요청을 거절했습니다',
-      };
-    }
-
-    const call = response.content.find((block) => block.type === 'tool_use');
-    if (!call || call.type !== 'tool_use') {
-      const text = response.content.find((b) => b.type === 'text');
-      return {
-        understood: '', actions: [],
-        refusal: (text && text.type === 'text' ? text.text : '') || '모델이 동작을 제안하지 않았습니다',
-      };
-    }
-    // Handed back unvalidated on purpose: the renderer's `parsePlan` is the
-    // wall, and having one wall rather than two halves is what makes it
-    // testable without a key.
-    return call.input;
+    // Every branch — refusal, a plan, an answer cut off at the token ceiling,
+    // no plan at all — is decided in `assistant-reply.ts`, where a test can
+    // reach it without a key.
+    const decision = planFromResponse(response);
+    return decision.kind === 'plan' ? decision.input : decision.plan;
   });
 }

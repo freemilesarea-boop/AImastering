@@ -37,6 +37,14 @@ import type { DawSession, TempoEvent } from '../../../daw/model/types.js';
 
 /** Curve row plus the signature strip under it. */
 export const TEMPO_TRACK_HEIGHT = 62;
+
+/**
+ * The constant-tempo lane: the reading, and the two buttons that add the
+ * first tempo and meter change.  The bar|beat readout is dropped — the
+ * transport shows it — and the curve is not drawn, because a flat line in
+ * 26 px says nothing a number does not.
+ */
+export const TEMPO_TRACK_COLLAPSED_HEIGHT = 26;
 const METER_ROW = 16;
 const CURVE_ROW = TEMPO_TRACK_HEIGHT - METER_ROW;
 const PAD = 6;
@@ -59,7 +67,9 @@ const fmtBpm = (v: number): string => (Math.abs(v - Math.round(v)) < 0.05
 
 // ── Header cell ─────────────────────────────────────────────────────────────
 
-export function TempoTrackHeader({ session }: { session: DawSession }) {
+export function TempoTrackHeader(
+  { session, collapsed = false }: { session: DawSession; collapsed?: boolean },
+) {
   const apply = useDawStore((s) => s.apply);
   const playheadSec = useDawStore((s) => s.playheadSec);
   const map = tempoMapOf(session);
@@ -67,6 +77,53 @@ export function TempoTrackHeader({ session }: { session: DawSession }) {
   const here = barBeatAt(map, beat);
   const meter = meterAtBar(map, here.bar);
   const bpm = tempoAtBeat(map, beat);
+
+  // The two entry points, written once: the collapsed row exists precisely so
+  // that they survive a session with no tempo map, so it must be the same two
+  // buttons and not a second pair that can drift from these.
+  const addTempoHere = (
+    <button
+      onClick={() => apply((s) => withTempoMap(s,
+        addTempoEvent(tempoMapOf(s), secToBeat(tempoMapOf(s), useDawStore.getState().playheadSec),
+          tempoAtBeat(tempoMapOf(s), secToBeat(tempoMapOf(s), useDawStore.getState().playheadSec)))))}
+      title="재생 위치에 템포 변화 추가"
+      className="hit-target w-4 h-4 rounded text-[10px] leading-none border"
+      style={{ borderColor: 'rgba(255,255,255,0.14)', color: premium.text.muted }}
+    >+</button>
+  );
+  const addMeterHere = (
+    <button
+      onClick={() => {
+        const current = tempoMapOf(session);
+        const bar = barBeatAt(current, secToBeat(current, useDawStore.getState().playheadSec)).bar;
+        const at = meterAtBar(current, bar);
+        apply((s) => withTempoMap(s,
+          addMeterEvent(tempoMapOf(s), bar, at.numerator, at.denominator)));
+      }}
+      title="재생 위치의 마디에 박자 변화 추가"
+      className="hit-target w-6 h-4 rounded text-[8px] leading-none border"
+      style={{ borderColor: 'rgba(255,255,255,0.14)', color: premium.text.muted }}
+    >박자</button>
+  );
+
+  if (collapsed) {
+    return (
+      <div
+        className="flex items-center gap-1.5 px-2 border-b border-zinc-900"
+        style={{ height: TEMPO_TRACK_COLLAPSED_HEIGHT, background: premium.surface.frame }}
+        data-testid="tempo-track-header-collapsed"
+      >
+        <span
+          className="text-[10px] tracking-wide"
+          style={{ fontFamily: premium.type.display, color: premium.accent.light }}
+        >TEMPO</span>
+        <span className="text-[11px] font-mono tabular-nums flex-1 text-right"
+              style={{ color: premium.accent.base }}>{fmtBpm(bpm)}</span>
+        {addTempoHere}
+        {addMeterHere}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -86,26 +143,8 @@ export function TempoTrackHeader({ session }: { session: DawSession }) {
               style={{ color: premium.text.muted }}>
           {here.bar}|{here.beat} · {meter.numerator}/{meter.denominator}
         </span>
-        <button
-          onClick={() => apply((s) => withTempoMap(s,
-            addTempoEvent(tempoMapOf(s), secToBeat(tempoMapOf(s), useDawStore.getState().playheadSec),
-              tempoAtBeat(tempoMapOf(s), secToBeat(tempoMapOf(s), useDawStore.getState().playheadSec)))))}
-          title="재생 위치에 템포 변화 추가"
-          className="hit-target w-4 h-4 rounded text-[10px] leading-none border"
-          style={{ borderColor: 'rgba(255,255,255,0.14)', color: premium.text.muted }}
-        >+</button>
-        <button
-          onClick={() => {
-            const current = tempoMapOf(session);
-            const bar = barBeatAt(current, secToBeat(current, useDawStore.getState().playheadSec)).bar;
-            const at = meterAtBar(current, bar);
-            apply((s) => withTempoMap(s,
-              addMeterEvent(tempoMapOf(s), bar, at.numerator, at.denominator)));
-          }}
-          title="재생 위치의 마디에 박자 변화 추가"
-          className="hit-target w-6 h-4 rounded text-[8px] leading-none border"
-          style={{ borderColor: 'rgba(255,255,255,0.14)', color: premium.text.muted }}
-        >박자</button>
+        {addTempoHere}
+        {addMeterHere}
       </div>
     </div>
   );
@@ -116,8 +155,8 @@ export function TempoTrackHeader({ session }: { session: DawSession }) {
 interface Viewport { scrollSec: number; pxPerSec: number; width: number }
 
 export default function TempoTrack({
-  session, viewport,
-}: { session: DawSession; viewport: Viewport }) {
+  session, viewport, collapsed = false,
+}: { session: DawSession; viewport: Viewport; collapsed?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const apply = useDawStore((s) => s.apply);
@@ -346,6 +385,27 @@ export default function TempoTrack({
 
   const dragged = dragId
     ? compiled.map.tempos.find((t) => t.id === dragId) : undefined;
+
+  // Collapsed means the map is flat, so there is no curve to draw and no
+  // event to drag — the row is a label saying where the first one would go.
+  if (collapsed) {
+    return (
+      <div
+        className="relative border-b select-none"
+        style={{
+          height: TEMPO_TRACK_COLLAPSED_HEIGHT,
+          width,
+          borderBottomColor: premium.surface.engrave,
+          background: premium.surface.frame,
+        }}
+        data-testid="tempo-track-collapsed"
+      >
+        <span className="absolute left-2 top-0.5 text-[9.5px]" style={{ color: premium.text.muted }}>
+          템포 변화 없음 — + 로 재생 위치에 하나 넣으세요
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div

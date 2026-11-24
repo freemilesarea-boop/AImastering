@@ -5,6 +5,7 @@ Tests for v3.4 Ozone-style reference matching:
   · iterative.py          — orchestrator (smoke tested)
 """
 from __future__ import annotations
+from tests.conftest import ffmpeg_bin
 
 import os
 import subprocess
@@ -16,7 +17,7 @@ import pytest
 
 def _ffmpeg_available() -> bool:
     try:
-        subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5)
+        subprocess.run([ffmpeg_bin(), "-version"], capture_output=True, timeout=5)
         return True
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
@@ -30,7 +31,7 @@ def reference_wav(tmp_path_factory):
     p = tmp_path_factory.mktemp("ref") / "reference.wav"
     # Pink noise normalised to -14 LUFS using loudnorm
     subprocess.run([
-        "ffmpeg", "-y", "-f", "lavfi",
+        ffmpeg_bin(), "-y", "-f", "lavfi",
         "-i", "anoisesrc=color=pink:duration=10",
         "-ar", "44100", "-acodec", "pcm_s24le", "-ac", "2",
         "-af", "loudnorm=I=-14:TP=-1.5:LRA=8:linear=false",
@@ -46,7 +47,7 @@ def quiet_input_wav(tmp_path_factory):
         pytest.skip("ffmpeg not available")
     p = tmp_path_factory.mktemp("inp") / "input.wav"
     subprocess.run([
-        "ffmpeg", "-y", "-f", "lavfi",
+        ffmpeg_bin(), "-y", "-f", "lavfi",
         "-i", "anoisesrc=color=pink:duration=10",
         "-ar", "44100", "-acodec", "pcm_s24le", "-ac", "2",
         "-af", "volume=-10dB",

@@ -14,6 +14,9 @@ import React, { useState, useEffect, useCallback } from 'react';
 import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
+import {
+  DEFAULT_UI_SCALE, UI_SCALES, UI_SCALE_LABELS, isUiScale,
+} from '@aimaster/shared-types';
 import { SAMPLE_RATES, BIT_DEPTHS } from '../lib/audio-defaults.js';
 
 // ── Section wrapper ────────────────────────────────────────────────────────────
@@ -200,6 +203,71 @@ function AudioDefaultsSection() {
 
 // ── Info section ───────────────────────────────────────────────────────────────
 
+// ── 외형 ──────────────────────────────────────────────────────────────────────
+
+/**
+ * UI 배율.
+ *
+ * The one setting that is not about audio, and the reason it exists is a
+ * measurement rather than a preference: the console holds 521 pieces of text
+ * under 11 px and 64 of them are 8 px.  Density is deliberate; illegibility is
+ * not, and it cannot be fixed by editing 521 places.
+ *
+ * Applied by the main process in the same IPC call that stores it, so there is
+ * no "saved but not applied" state to be in — see `applyUiScale`.  Read back
+ * from the store on mount rather than held in a renderer default, because the
+ * main process already scaled this window from that same value before it was
+ * shown and a local default would disagree with what the user is looking at.
+ */
+function AppearanceSection() {
+  const notify = useAppStore((s) => s.notify);
+  const [scale, setScale] = useState<number>(DEFAULT_UI_SCALE);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const saved = await window.electronAPI.invoke('settings:get', 'uiScale');
+        if (isUiScale(saved)) setScale(saved);
+      } catch { /* no stored value yet — the default is already showing */ }
+    })();
+  }, []);
+
+  const choose = useCallback(async (next: number) => {
+    // Optimistic, because the window resizes the moment main applies it: a
+    // select that waited for the round trip would lag the thing it caused.
+    const previous = scale;
+    setScale(next);
+    try {
+      await window.electronAPI.invoke('settings:set', 'uiScale', next);
+    } catch (err) {
+      setScale(previous);
+      notify(`배율을 저장하지 못했습니다 — ${(err as Error).message}`, 'error');
+    }
+  }, [notify, scale]);
+
+  return (
+    <Section title="외형">
+      <p className="text-[11px] text-zinc-600 leading-snug">
+        창 전체의 글자와 컨트롤 크기가 함께 바뀝니다. 바로 적용되고 다음 실행에도 유지됩니다.
+      </p>
+      <Row label="UI 배율">
+        <select
+          value={String(scale)}
+          onChange={(e) => void choose(Number(e.target.value))}
+          className="no-drag bg-zinc-800 border border-zinc-700 rounded-lg px-2 py-1
+                     text-xs text-zinc-300 focus:outline-none focus:border-zinc-500"
+        >
+          {UI_SCALES.map((v) => (
+            <option key={v} value={String(v)}>
+              {UI_SCALE_LABELS[String(v)] ?? `${Math.round(v * 100)}%`}
+            </option>
+          ))}
+        </select>
+      </Row>
+    </Section>
+  );
+}
+
 function InfoSection() {
   const handleOpenLogs = useCallback(async () => {
     await window.electronAPI.invoke('file:open-in-finder', 'logs');
@@ -209,8 +277,12 @@ function InfoSection() {
     <Section title="정보">
       <Row label="버전">
         <span className="font-mono text-xs text-zinc-500">
-          {/* Vite injects VITE_APP_VERSION from package.json at build time */}
-          {import.meta.env.VITE_APP_VERSION ?? '1.0.0'}
+          {/* `__APP_VERSION__`, which vite.config.ts defines from
+              package.json. The comment here used to name an env variable that
+              nothing sets, so this row read "1.0.0" in every build, releases
+              included, while the same build's mastering report and render
+              provenance carried the real version from this constant. */}
+          {__APP_VERSION__}
         </span>
       </Row>
       <Row label="로그">
@@ -249,6 +321,7 @@ export default function SettingsPage() {
         <div className="max-w-lg mx-auto px-6 py-5 space-y-4 animate-in">
           <OutputDirSection />
           <AudioDefaultsSection />
+          <AppearanceSection />
           <InfoSection />
           <div className="h-4" />
         </div>

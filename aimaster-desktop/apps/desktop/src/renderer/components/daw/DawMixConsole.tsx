@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 // DawMixConsole — the bottom "mixer" strip (F3).
 //
 // A mastering session has one stereo bus, so the channels here are the four
@@ -10,6 +11,9 @@ import { useAudioStore } from '../../stores/audioStore.js';
 import { useWorkspaceStore } from '../../stores/workspaceStore.js';
 import { useAppStore } from '../../stores/appStore.js';
 import type { RealtimeDspOverrides } from '../../stores/audioStore.js';
+import { commandTitle } from '../../shortcuts/command-title.js';
+import { detectPlatform } from '../../shortcuts/keys.js';
+import { useShortcutStore } from '../../stores/shortcutStore.js';
 
 type BypassKey = 'eqBypass' | 'dynBypass' | 'imgBypass' | 'limBypass';
 
@@ -21,6 +25,10 @@ const STRIPS: Array<{ key: BypassKey; label: string; hint: string }> = [
 ];
 
 export default function DawMixConsole() {
+  // A tooltip asks the keymap rather than spelling a chord out, so it
+  // follows a remap and shows the key this platform prints.
+  const chordOverrides = useShortcutStore((s) => s.overrides);
+  const chordPlatform = useMemo(() => detectPlatform(), []);
   const options       = useAudioStore((s) => s.options);
   const updateOptions = useAudioStore((s) => s.updateOptions);
   const muted         = useWorkspaceStore((s) => s.muted);
@@ -63,7 +71,7 @@ export default function DawMixConsole() {
           <div className="mt-1.5 flex gap-1">
             <button
               type="button"
-              title="원본 솔로 — 마스터 체인 바이패스 (S)"
+              title={commandTitle('track.solo', chordOverrides, chordPlatform, '원본 솔로 — 마스터 체인 바이패스')}
               onClick={() => patch({ masterBypass: !(rt.masterBypass ?? false) })}
               className={`no-drag flex-1 h-6 rounded text-[10px] border transition-colors
                           ${rt.masterBypass
@@ -72,7 +80,7 @@ export default function DawMixConsole() {
             >S</button>
             <button
               type="button"
-              title="뮤트 (M)"
+              title={commandTitle('track.mute', chordOverrides, chordPlatform, '뮤트')}
               onClick={() => setMuted(!muted)}
               className={`no-drag flex-1 h-6 rounded text-[10px] border transition-colors
                           ${muted
@@ -81,7 +89,7 @@ export default function DawMixConsole() {
             >M</button>
             <button
               type="button"
-              title="모든 Solo / Mute 해제 (Alt+S)"
+              title={commandTitle('track.clearSoloMute', chordOverrides, chordPlatform, '모든 Solo / Mute 해제')}
               onClick={() => {
                 setMuted(false);
                 patch({ masterBypass: false, eqBypass: false, dynBypass: false, imgBypass: false, limBypass: false });

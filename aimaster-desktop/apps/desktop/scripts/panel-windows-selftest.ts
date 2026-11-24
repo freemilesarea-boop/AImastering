@@ -153,9 +153,21 @@ check('resize cannot make a panel smaller than its minimum',
 
 // ── 6. The sweep is looking at the real thing ──────────────────────────────
 
+// This asks whether `read()` got the real files, because every check above is
+// a regex over them and a regex over an empty string passes a NEGATIVE check
+// for free.
+//
+// It used to ask by SIZE — page > 20,000 characters — and that broke the day
+// DawPage got smaller: nine duplicated command bodies moved out of it into the
+// command layer, the file went from 27k to 19.7k, and this check called it
+// "the sources were not read".  Shrinking a file is the thing a refactor is
+// FOR, so size was never the question.  Identity is: each file has to contain
+// the thing the checks above look for.
 check('the sources were actually read',
-  page.length > 20_000 && layer.length > 3_000 && store.length > 2_000,
-  `${page.length}/${layer.length}/${store.length}`);
+  page.includes('DAW_PANELS') && page.includes('renderPanel')
+  && layer.includes('PanelWindowLayer')
+  && store.includes('PANEL_MIN_WIDTH') && store.includes('resize:'),
+  `page ${page.length} · layer ${layer.length} · store ${store.length}`);
 
 check('stripComments removes comments but keeps code',
   !stripComments('// DAW_PANELS.map(x)\nconst y = 1;').includes('DAW_PANELS')

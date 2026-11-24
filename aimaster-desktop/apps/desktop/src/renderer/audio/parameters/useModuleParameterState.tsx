@@ -330,6 +330,9 @@ export function ModuleParameterStateProvider(props: ModuleParameterStateProvider
     state, defs, log, dispatchLog, dispatcherName,
     setParam, setBypass, resetModule, applyPreset, clearLog,
     replaceState, undo, redo, canUndo, canRedo,
+    // `historyTick` is bumped by undo/redo, whose own state lives in refs:
+    // it is the only thing that tells this context the history moved.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [state, defs, log, dispatchLog, dispatcherName, setParam, setBypass, resetModule, applyPreset, clearLog, replaceState, undo, redo, canUndo, canRedo, historyTick]);
 
   return (

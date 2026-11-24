@@ -54,9 +54,17 @@ import { premium } from '../../../theme/premium.js';
  */
 export const CHORD_LANE_HEIGHT = 76;
 
+/**
+ * The lane with no chords in it yet, holding only the three controls that can
+ * put the first one there: `분석`, `뼈대`, `+`.  `global-lanes.ts` explains
+ * why this row exists — the full lane used to be removed when empty, which
+ * removed the only way to fill it.
+ */
+export const CHORD_LANE_COLLAPSED_HEIGHT = 26;
+
 interface Viewport { scrollSec: number; pxPerSec: number; width: number }
 
-export function ChordLaneHeader() {
+export function ChordLaneHeader({ collapsed = false }: { collapsed?: boolean }) {
   const session = useDawStore((s) => s.session);
   const apply = useDawStore((s) => s.apply);
   const playheadSec = useDawStore((s) => s.playheadSec);
@@ -138,6 +146,44 @@ export function ChordLaneHeader() {
       setBusy(null);
     }
   }, [target, busy, session, apply, notify]);
+
+  if (collapsed) {
+    return (
+      <div
+        className="flex items-center gap-1 px-2 border-b border-zinc-800 overflow-hidden"
+        style={{ height: CHORD_LANE_COLLAPSED_HEIGHT, background: '#14141c' }}
+        data-testid="chord-lane-header-collapsed"
+      >
+        <span className="text-[9px] tracking-wide" style={{ color: premium.text.faint }}>
+          코드
+        </span>
+        {/* No `flex-1` spacer.  There is no right edge in a 168 px track-header
+            column: the spacer collapses and the buttons after it get painted
+            over the lane's chip strip, which is the measured defect
+            `vocal-chord-selftest` guards — four of seven actions unclickable.
+            Left-aligned and narrow instead: 코드 + 분석 + 뼈대 + ＋ ≈ 130 px. */}
+        <button
+          onClick={() => { void readChords(); }}
+          disabled={!target || busy !== null}
+          title={target
+            ? `"${target.clip.name}" 의 코드를 읽어서 코드 트랙에 씁니다 (드럼 분리 후 분석 — 느립니다)`
+            : '재생헤드 아래에 오디오 클립이 없습니다'}
+          className="hit-target h-5 px-1.5 rounded text-[9px] leading-none border"
+          style={{
+            borderColor: 'rgba(255,255,255,0.14)',
+            color: target && !busy ? premium.text.muted : premium.text.faint,
+            opacity: target ? 1 : 0.45,
+          }}
+        >{busy ?? '분석'}</button>
+        <button onClick={seed} title="8마디 코드 뼈대를 만듭니다 — 블록을 더블클릭해서 코드를 씁니다"
+                className="hit-target h-5 px-1.5 rounded text-[9px] leading-none border"
+                style={{ borderColor: 'rgba(255,255,255,0.14)', color: premium.text.muted }}>뼈대</button>
+        <button onClick={addHere} title="재생헤드에 코드를 추가합니다"
+                className="hit-target w-5 h-5 shrink-0 rounded text-[10px] leading-none border"
+                style={{ borderColor: 'rgba(255,255,255,0.14)', color: premium.text.muted }}>+</button>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -248,7 +294,9 @@ export function ChordLaneHeader() {
   );
 }
 
-export default function ChordLane({ viewport }: { viewport: Viewport }) {
+export default function ChordLane(
+  { viewport, collapsed = false }: { viewport: Viewport; collapsed?: boolean },
+) {
   const session = useDawStore((s) => s.session);
   const apply = useDawStore((s) => s.apply);
   const applyTransient = useDawStore((s) => s.applyTransient);
@@ -316,7 +364,11 @@ export default function ChordLane({ viewport }: { viewport: Viewport }) {
     <div
       ref={boxRef}
       className="relative border-b border-zinc-800 select-none"
-      style={{ height: CHORD_LANE_HEIGHT, width, background: '#0C0C12' }}
+      style={{
+        height: collapsed ? CHORD_LANE_COLLAPSED_HEIGHT : CHORD_LANE_HEIGHT,
+        width,
+        background: '#0C0C12',
+      }}
     >
       {ranges.map((range) => {
         const left = (range.startSec - scrollSec) * pxPerSec;

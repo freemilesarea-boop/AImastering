@@ -31,7 +31,7 @@ module.exports = {
     // ── Rules referenced by existing eslint-disable directives ────────────
     'no-console':       'warn',
     'no-control-regex': 'error',
-    'react-hooks/exhaustive-deps': 'off', // referenced via disable, plugin not installed
+    'react-hooks/exhaustive-deps': 'warn',
 
     // ── Correctness only — no style ───────────────────────────────────────
     'no-unused-vars':                          'off',          // delegated to @typescript-eslint

@@ -1,6 +1,14 @@
 // Runtime validator for EnginePreset.  Hand-rolled (no zod dep) to keep the
 // shared-types package zero-dependency.  Returns either a validated preset
 // (narrowed by type assertion) or a list of errors with JSON pointer paths.
+//
+// THERE ARE TWO OF THESE.  `services/python-audio/app/engine/validate.py`
+// decides the same question about the same files for the Python engine, and
+// its docstring said it mirrored this one.  It did not: eleven mutations of
+// the shipped presets were accepted by one side and refused by the other.
+// `apps/desktop/scripts/engine-preset-selftest.ts` now runs both over the
+// shipped presets and a mutation matrix and fails on any disagreement, so the
+// two can be kept in step deliberately instead of by assertion.
 
 import {
   ENGINE_PRESET_SCHEMA_ID,
@@ -269,6 +277,15 @@ export function validateEnginePreset(input: unknown): ValidationResult {
     }
     if (policies['aiCorrections'] !== undefined && !isBoolean(policies['aiCorrections'])) {
       errs.push({ path: '/policies/aiCorrections', message: 'must be boolean' });
+    }
+    // Every shipped preset sets this, the Python adapter translates it into
+    // per-limiter overrides, and it had no rule here: `limiterStrength:
+    // 'ludicrous'` passed this validator and was refused by the Python one,
+    // so the same file was loadable by one half of the engine and not the
+    // other.  Measured against it — see engine-preset-selftest.
+    const ls = policies['limiterStrength'];
+    if (ls !== undefined && !['low', 'medium', 'high'].includes(ls as string)) {
+      errs.push({ path: '/policies/limiterStrength', message: 'must be low|medium|high' });
     }
   }
 

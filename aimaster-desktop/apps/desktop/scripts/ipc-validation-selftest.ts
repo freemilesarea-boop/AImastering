@@ -26,7 +26,9 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { validateAbsoluteFilePath } from '../src/main/utils/ipcValidation.js';
+import {
+  MAX_SAMPLE_RATE, MIN_SAMPLE_RATE, validateAbsoluteFilePath, validateSampleRate, validateText,
+} from '../src/main/utils/ipcValidation.js';
 import { samplePathIn, SamplePathError } from '../src/main/utils/samplePath.js';
 
 let passed = 0;
@@ -203,6 +205,120 @@ check(
   fs.existsSync(path.join(DESKTOP, OWNERS[0]!)),
   OWNERS[0]!,
 );
+
+// ── The two values that are not paths ────────────────────────────────────────
+
+{
+  // `daw:host-apply` took the renderer's sample rate and handed it to
+  // `host.open(uid, sampleRate, channels)` — a call into a native AudioUnit
+  // host — without checking it.  `frames` and `channels` were checked, and
+  // they are the two the worker already bounds by the buffer's own length; the
+  // rate was the one nothing bounded and the one that reached C.
+  const refused: string[] = [];
+  const accepted: string[] = [];
+  for (const [label, value] of [
+    ['undefined', undefined], ['null', null], ['NaN', Number.NaN],
+    ['a string', '48000abc'], ['zero', 0], ['negative', -48000],
+    ['Infinity', Number.POSITIVE_INFINITY], ['1 Hz', 1],
+    ['1 GHz', 1_000_000_000], ['an object', {}],
+  ] as ReadonlyArray<readonly [string, unknown]>) {
+    try { validateSampleRate(value, CH); accepted.push(label); }
+    catch { refused.push(label); }
+  }
+  check(
+    'a sample rate that is not one is refused before it reaches native code',
+    accepted.length === 0,
+    accepted.length === 0 ? `${refused.length} refused: ${refused.join(', ')}`
+      : `ACCEPTED: ${accepted.join(', ')}`,
+  );
+
+  const ok = [8000, 44_100, 48_000, 96_000, 192_000, 384_000];
+  const rejected = ok.filter((rate) => {
+    try { validateSampleRate(rate, CH); return false; } catch { return true; }
+  });
+  check(
+    'and every rate a session can really run is accepted',
+    rejected.length === 0,
+    rejected.length === 0 ? `${ok[0]}–${ok[ok.length - 1]} Hz` : `REJECTED: ${rejected.join(', ')}`,
+  );
+  check(
+    'the range is the one the decode handler has always enforced',
+    MIN_SAMPLE_RATE === 8000 && MAX_SAMPLE_RATE === 384_000
+      && /sampleRate < 8000 \|\| sampleRate > 384_000/.test(
+        fs.readFileSync(path.join(DESKTOP, 'src/main/ipc/decodeHandlers.ts'), 'utf8'),
+      ),
+    `${MIN_SAMPLE_RATE}–${MAX_SAMPLE_RATE} Hz, same as daw:pcm-source`,
+  );
+  const hostApply = fs.readFileSync(path.join(DESKTOP, 'src/main/ipc/pluginHandlers.ts'), 'utf8');
+  const routed = /validateSampleRate\(request\?\.sampleRate/.test(hostApply);
+  check(
+    'and daw:host-apply routes its rate through it',
+    routed,
+    routed
+      ? 'the only unbounded number in the request is bounded now'
+      : `it reads the rate itself: ${(/const sampleRate = [^;]+;/.exec(hostApply) ?? ['(gone)'])[0]}`,
+  );
+}
+
+{
+  // `license:activate` handed the renderer's value straight to
+  // `activateLicense`, whose first act is `key.toUpperCase()`.
+  const refused: string[] = [];
+  const accepted: string[] = [];
+  for (const [label, value] of [
+    ['a number', 42], ['null', null], ['undefined', undefined], ['an object', {}],
+    ['an array', ['KEY']], ['empty', ''], ['spaces only', '   '],
+    ['a newline inside', 'AAAA-BBBB\nX-Men'], ['a null byte', 'AAAA\u0000BBBB'],
+    ['300 characters', 'A'.repeat(300)],
+  ] as ReadonlyArray<readonly [string, unknown]>) {
+    try { validateText(value, CH); accepted.push(label); }
+    catch { refused.push(label); }
+  }
+  check(
+    'a licence key that is not text is refused with the channel named',
+    accepted.length === 0,
+    accepted.length === 0 ? `${refused.length} refused: ${refused.join(', ')}`
+      : `ACCEPTED: ${accepted.join(', ')}`,
+  );
+  check(
+    'and a real key passes, trimmed',
+    validateText('  loui-pro-ABCD-1234  ', CH) === 'loui-pro-ABCD-1234',
+    'trimmed, not rewritten — the service upper-cases it itself',
+  );
+  const licenseSrc = fs.readFileSync(path.join(DESKTOP, 'src/main/ipc/licenseHandlers.ts'), 'utf8');
+  const guarded = /validateText\(key, 'license:activate'\)/.test(licenseSrc);
+  check(
+    'and license:activate routes through it',
+    guarded,
+    guarded
+      ? 'no longer `(_e, key: string) => activateLicense(key)`'
+      : `unguarded: ${(/ipc\.handle\('license:activate'[^\n]*/.exec(licenseSrc) ?? ['(gone)'])[0].trim()}`,
+  );
+}
+
+{
+  // A security claim is a claim like any other.  The line on the licence
+  // store said "AES-256-CBC via safeStorage"; `conf` uses pbkdf2 + aes-256-cbc
+  // with the key that is written on that same line, and its own readme says
+  // the mechanism "is not intended for security purposes".
+  const src = fs.readFileSync(path.join(DESKTOP, 'src/main/ipc/licenseHandlers.ts'), 'utf8');
+  // Two attempts at this check failed before this one, and both failures are
+  // the reason it is shaped the way it is.  Forbidding the WORD safeStorage
+  // failed on the corrected comment, which names it to say it is not
+  // involved.  Forbidding the CLAIM by regex failed on the same comment,
+  // which quotes the retired claim verbatim to say what it used to say.
+  // Prose is not something a test can judge; these two things are.
+  const callsSafeStorage = /from 'electron'[\s\S]{0,120}safeStorage|safeStorage\s*\./.test(src);
+  const corrected = /TAMPER OBFUSCATION/.test(src)
+    && /not intended for security purposes/.test(src);
+  check(
+    'the licence store neither calls safeStorage nor leaves the claim uncorrected',
+    !callsSafeStorage && corrected,
+    callsSafeStorage ? 'something in here reaches for safeStorage after all'
+      : corrected ? 'no safeStorage call, and the correction names what the library says about itself'
+        : 'the correction is gone from the comment — what does that line claim now?',
+  );
+}
 
 console.log(`\n=== ${passed} passed, ${failed} failed ===\n`);
 process.exit(failed === 0 ? 0 : 1);

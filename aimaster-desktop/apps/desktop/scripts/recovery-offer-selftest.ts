@@ -42,11 +42,12 @@ async function main(): Promise<void> {
   const { findRecoveries } = await import('../src/renderer/daw/engine/autosave-driver.js');
   const { noteManualSave, lastManualSaveMs } =
     await import('../src/renderer/daw/model/manual-save.js');
-  const { isRecoverable } = await import('../src/renderer/daw/model/autosave.js');
+  const { isRecoverable, pairGenerations } = await import('../src/renderer/daw/model/autosave.js');
 
   const T = 1_700_000_000_000;
   const record = (over: Partial<{
     path: string; savedAtMs: number; sessionName: string; bytes: number; sessionId: string;
+    generation: 'latest' | 'previous';
   }> = {}) => ({
     path: '/autosave/ses-1.louisession',
     savedAtMs: T,
@@ -236,6 +237,109 @@ async function main(): Promise<void> {
       isRecoverable(record(), T + 1).offer === false
         && (isRecoverable(record(), T + 1).reason ?? '').includes('수동 저장'),
       isRecoverable(record(), T + 1).reason ?? '(no reason)',
+    );
+  }
+
+  console.log('\n=== THE COPY BEFORE THE NEWEST ONE ===\n');
+
+  // The main process keeps the autosave before last as a `.bak` for the case
+  // its own header describes: the newest copy faithfully preserves a session
+  // that was already broken.  For a long time `autosave:list` filtered
+  // `*.louisession`, which excludes `*.louisession.bak`, so that copy was
+  // written, swept and deleted without anything ever being able to offer it.
+  const prev = (over: Parameters<typeof record>[0] = {}) =>
+    record({ path: '/autosave/ses-1.louisession.bak', generation: 'previous', ...over });
+
+  {
+    store.clear();
+    const offers = await findRecoveries(
+      listing([record({ generation: 'latest' }), prev({ savedAtMs: T - 300_000 })]),
+      T + 60_000,
+    );
+    check(
+      'the previous generation rides along with its own project, not as a row',
+      offers.length === 1 && offers[0]!.previous !== undefined,
+      `${offers.length} offer(s), previous ${offers[0]?.previous ? 'present' : 'absent'}`,
+    );
+    check(
+      'and it is labelled without repeating the project name',
+      (offers[0]?.previous?.label ?? '').startsWith('그 전 ·')
+        && !(offers[0]?.previous?.label ?? '').includes('내 곡'),
+      offers[0]?.previous?.label ?? '(no label)',
+    );
+  }
+
+  {
+    // The banner shows offers[0].  A `.bak` is sorted by time with everything
+    // else, so one project's older copy can land ahead of another project's
+    // newest — and must still never be what the banner offers.
+    store.clear();
+    const offers = await findRecoveries(
+      listing([
+        prev({ sessionId: 'ses-1', savedAtMs: T + 50_000 }),
+        record({ path: '/autosave/ses-1.louisession', generation: 'latest', savedAtMs: T }),
+        record({ path: '/autosave/ses-2.louisession', sessionId: 'ses-2',
+                 sessionName: '다른 곡', generation: 'latest', savedAtMs: T + 10_000 }),
+      ]),
+      T + 60_000,
+    );
+    check(
+      'a previous copy never becomes the offer the banner shows',
+      offers.length === 2 && offers.every((o) => !o.info.path.endsWith('.bak')),
+      offers.map((o) => o.info.path.split('/').pop()).join(' · '),
+    );
+  }
+
+  {
+    // Orphans: a `.bak` whose own newest copy is not in the listing is not a
+    // project the user was asked about, so it is dropped rather than promoted.
+    store.clear();
+    const offers = await findRecoveries(listing([prev()]), T + 60_000);
+    check(
+      'a previous copy with no newest copy is dropped, not promoted',
+      offers.length === 0,
+      offers.length ? `offered anyway: ${offers[0]!.info.path}` : 'nothing offered',
+    );
+  }
+
+  {
+    // The two rules that refuse the newest refuse the older copy as well: an
+    // interrupted write is no more useful for being older, and a manual save
+    // newer than the newest autosave is newer than this one too.
+    store.clear();
+    const offers = await findRecoveries(
+      listing([record({ generation: 'latest' }), prev({ savedAtMs: T - 300_000, bytes: 12 })]),
+      T + 60_000,
+    );
+    check(
+      'an empty previous copy is not offered as a way out',
+      offers.length === 1 && offers[0]!.previous === undefined,
+      `previous ${offers[0]?.previous ? 'offered' : 'withheld'} at 12 bytes`,
+    );
+  }
+
+  {
+    // Pairing is by path, because the listing is sorted by time across every
+    // project and one session's copies need not be adjacent.
+    const pairs = pairGenerations([
+      { path: '/a/x.louisession', savedAtMs: 3, sessionName: 'x', bytes: 1000, generation: 'latest' },
+      { path: '/a/y.louisession', savedAtMs: 2, sessionName: 'y', bytes: 1000, generation: 'latest' },
+      { path: '/a/x.louisession.bak', savedAtMs: 1, sessionName: 'x', bytes: 1000, generation: 'previous' },
+    ]);
+    check(
+      'pairing follows the path, not the position in the listing',
+      pairs.length === 2
+        && pairs[0]!.previous?.path === '/a/x.louisession.bak'
+        && pairs[1]!.previous === undefined,
+      `${pairs.length} pair(s): `
+      + pairs.map((p) => `${p.latest.path.split('/').pop()}${p.previous ? ' +prev' : ''}`).join(', '),
+    );
+    check(
+      'a listing from a build that reported no generation is all latest',
+      pairGenerations([
+        { path: '/a/x.louisession', savedAtMs: 3, sessionName: 'x', bytes: 1000 },
+      ]).length === 1,
+      'one offer, no previous',
     );
   }
 

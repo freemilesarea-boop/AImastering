@@ -16,7 +16,7 @@
 // render exactly the graph you were listening to.
 
 import {
-  computeDelayCompensation, detectFeedback, insertLatency,
+  carriesAudio, computeDelayCompensation, detectFeedback, insertLatency,
 } from '../model/routing.js';
 import { signalDelaySec } from '../model/track-delay.js';
 
@@ -192,16 +192,6 @@ export interface Channel {
    * So: one node each, at the window each of them needs.
    */
   insertSpectra: Map<string, AnalyserNode>;
-}
-
-/**
- * Tracks that actually pass audio.  VCAs are control-only, and a folder stack
- * that does not sum its children has no signal path of its own.
- */
-export function carriesAudio(track: Track): boolean {
-  if (track.kind === 'vca') return false;
-  if (track.kind === 'folder' && track.input === null) return false;
-  return true;
 }
 
 /**

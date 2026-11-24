@@ -2,7 +2,13 @@
 Canonical Feature Extractor for Audio Profile Engine.
 
 Extracts all features required by the Audio Profile Engine from audio files.
-This is a test-only module that does NOT connect to the production mastering pipeline.
+
+NOT test-only, whatever an earlier version of this line said.  The production
+path reaches it: `master` → `app/mastering/mastering.py` → `apply_precorrection`
+in `rc_engine.py` imports `extract_canonical_features` and feeds the result to
+the Decision Engine, and `closed_loop/engine.py` imports it at module level.
+That path is behind the "Stable / RC" toggle the mastering page shows, one click
+away for any user — so the numbers here decide what a real master gets.
 
 Features extracted:
 - Loudness: integrated_lufs, true_peak_dbtp, loudness_range_lu
@@ -31,17 +37,67 @@ try:
     import numpy as np
     import soundfile as sf
     HAS_SF = True
-except ImportError:
+except ImportError as exc:
     HAS_SF = False
-    log("WARN", "soundfile/numpy not installed — feature extraction unavailable")
+    log("WARN", f"soundfile/numpy unavailable — feature extraction unavailable: "
+                f"{type(exc).__name__}: {exc}")
 
-try:
-    from scipy import signal
-    from scipy.ndimage import uniform_filter1d
-    HAS_SCIPY = True
-except ImportError:
-    HAS_SCIPY = False
-    log("WARN", "scipy not installed — some features unavailable")
+def count_onset_peaks(flux: "np.ndarray") -> int:
+    """Local maxima of the flux curve above mean + one standard deviation.
+
+    A function rather than a loop body because the loop body had a typo and
+    nothing could reach it to say so: the second comparison read `[i - 1]`
+    a second time instead of `[i + 1]`, so this counted every RISING sample
+    above the threshold, not the peaks.  Measured on flux curves, the density
+    came out 1.04x to 1.38x high; it feeds `onset_density`, which
+    `conflict_engine.TRANS_002` tests against 7.0 per second and the
+    TRANSIENT profile carries as a feature.
+    """
+    if len(flux) < 3:
+        return 0
+    threshold = float(np.mean(flux)) + float(np.std(flux))
+    middle = flux[1:-1]
+    is_peak = (middle > threshold) & (middle > flux[:-2]) & (middle > flux[2:])
+    return int(np.count_nonzero(is_peak))
+
+
+def _moving_average(values: "np.ndarray", size: int) -> "np.ndarray":
+    """Centred moving average with reflected edges — one implementation.
+
+    This used to be `scipy.ndimage.uniform_filter1d` with a numpy fallback
+    behind `HAS_SCIPY`, and the fallback was the only code that ever ran:
+    scipy is not in requirements.txt, so it is absent from CI, from the dev
+    environment and from the PyInstaller bundle (where engine.spec excludes
+    it outright).  The branch had never executed anywhere.
+
+    It also was not equivalent.  `np.convolve(..., mode='same')` pads with
+    ZEROS, so the first and last half-windows average real samples against
+    nothing and the envelope dips at both ends of every file.  Measured on a
+    50 ms window at 44.1 kHz:
+
+        signal                      range today   range reflected
+        steady 440 Hz tone               0.5021            0.0014
+        steady noise                     0.5755            0.1093
+        3 s fade-in                      1.9875            1.9860
+        0.5 s of digital silence         1.2030            1.2017
+
+    `envelope_range_normalized` is `(max - min) / mean`, so for any file that
+    does not begin and end quiet the minimum came from the padding — 363x the
+    real figure for a steady tone — and the number described the window length
+    rather than the music.  `conflict_engine.TRANS_003` ("Already limited
+    envelope range", severity BLOCK, blocking `transient_enhancement` and
+    `attack_boost`) tests `envelope_range_normalized < 0.2`, which is exactly
+    the range a limited master sits in.  It could not fire.
+
+    `uniform_filter1d`'s default edge mode is 'reflect', which is what the
+    fallback was meant to approximate, so that is what this does — by cumulative
+    sum, which is exact and linear in the input.
+    """
+    pad_left = size // 2
+    pad_right = size - 1 - pad_left
+    padded = np.pad(values, (pad_left, pad_right), mode="reflect")
+    cumulative = np.concatenate(([0.0], np.cumsum(padded, dtype=np.float64)))
+    return (cumulative[size:] - cumulative[:-size]) / size
 
 
 class FeatureStatus(Enum):
@@ -386,7 +442,8 @@ class CanonicalFeatureExtractor:
     Uses:
     - FFmpeg ebur128 for loudness (via existing loudnorm_pass1)
     - the bundled FFmpeg for canonical decode/resample, then numpy for analysis
-    - scipy for transient detection (optional)
+    - numpy for transient detection — scipy is not a dependency of this
+      project and never was, so there is one implementation, not two
     """
 
     def __init__(self):
@@ -851,7 +908,18 @@ class CanonicalFeatureExtractor:
             spec_diff = np.diff(spectrogram, axis=0)
             # Half-wave rectified (positive changes only = onset detection)
             spec_diff_hw = np.maximum(0, spec_diff)
-            flux = np.sum(spec_diff_hw, axis=1)
+            # Per-bin, so that dividing by the per-bin mean magnitude below
+            # leaves a dimensionless ratio.  It was `np.sum`, i.e. a sum over
+            # all ~1025 rfft bins divided by the mean of ONE bin, so the
+            # result carried a factor of n_bins: measured 448.33 on pink noise
+            # plus a 110 Hz tone, for a quantity the rule table compares
+            # against 0.4 (`conflict_engine.TRANS_001`, with 0.25 as its
+            # default) and that the TRANSIENT profile carries as a feature
+            # called "normalized".  The flux condition was therefore true for
+            # every input.  No commercial target exists for this feature
+            # (target_registry has none for TRANSIENT), so nothing was
+            # calibrated against the old scale.
+            flux = np.mean(spec_diff_hw, axis=1)
 
             # Normalize by mean magnitude
             mean_mag = np.mean(spectrogram) + eps
@@ -861,27 +929,16 @@ class CanonicalFeatureExtractor:
             features.spectral_flux_normalized_std = _validate_value(float(np.std(flux_normalized)))
 
             # Onset density (peaks in flux per second)
-            # Simple peak picking: local maxima above mean + std
-            flux_threshold = np.mean(flux_normalized) + np.std(flux_normalized)
-            peaks = []
-            for i in range(1, len(flux_normalized) - 1):
-                if (flux_normalized[i] > flux_threshold and
-                    flux_normalized[i] > flux_normalized[i - 1] and
-                    flux_normalized[i] > flux_normalized[i - 1]):
-                    peaks.append(i)
-
             duration_sec = features.duration_sec or 1.0
-            features.onset_density = _validate_value(len(peaks) / duration_sec)
+            features.onset_density = _validate_value(
+                count_onset_peaks(flux_normalized) / duration_sec
+            )
 
             # Envelope analysis
             # Compute RMS envelope with 50ms window
             window_samples = int(0.05 * sr)
             if window_samples > 0 and len(mono) > window_samples:
-                if HAS_SCIPY:
-                    envelope = uniform_filter1d(np.abs(mono), window_samples)
-                else:
-                    # Fallback: simple moving average
-                    envelope = np.convolve(np.abs(mono), np.ones(window_samples) / window_samples, mode='same')
+                envelope = _moving_average(np.abs(mono), window_samples)
 
                 env_max = float(np.max(envelope))
                 env_min = float(np.min(envelope))

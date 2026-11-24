@@ -12,6 +12,23 @@
 > `shortcuts/commands.ts` 에 있다. 이 폴더의 문서들은 **그때의 계획과
 > 레이아웃 기록**이며, 지금 코드의 설명이 아니다 — 컴포넌트 이름으로
 > 코드를 찾으면 없다.
+>
+> **두 번째 정리 (코드 기준).** 위 "8. What's next" 의 두 항목은 둘 다
+> 성립하지 않는다. (2) 는 ProductPage 가 은퇴했으니 무효다. (1) 은 절반만
+> 일어났다 — 슬라이드오버(`LouiModuleSlideOver`)는 살아 있지만
+> `LouiPresetSlideOver` 만 쓰고, 그 주석이 children 으로 적어 둔 다섯 개
+> 전용 파라미터 패널은 어디서도 import 되지 않는다. 앱은 범용 패널을
+> 렌더한다. 그 패널들과 그들이 쓰는 컨트롤은
+> `apps/desktop/scripts/fixtures/story-only-files.txt` 에
+> `awaiting-product-decision` 으로 적혀 있고, 스윕이 그 목록을 지킨다.
+>
+> 같은 마일스톤의 엔진 쪽 — dispatcher seam(`PresetPatchDispatcher`,
+> `preview-render-client`, 그 mock 과 배럴), 스테이징된 override
+> 빌더(`engine-preset-builder`), 그리고 EQ 오버레이와 그 드래그/커브
+> 모델 — 은 삭제되었다. 앱은 명령을 엔진으로 **밀지** 않고, 상태에서
+> 체인 config 를 만들어 워클릿과 렌더가 **읽게** 한다. EQ 는
+> `LouiEqGraph` 가 주파수·게인·Q 를 끌고 free 밴드를 더하고 지우며,
+> `eq-graph-selftest` 가 그린 커브를 실제 WASM 체인과 비교한다.
 
 ---
 

@@ -1,14 +1,21 @@
 // Resolve which AnalyzerSessionFactory to use at runtime.
 //
-// Decision order:
-//   1. The caller passed an explicit factory → use it.
-//   2. Build-time env var `VITE_LOUI_WASM_ANALYZER` is `'true'` → WASM factory.
-//   3. Runtime override on `window.__LOUI_WASM_ANALYZER__` → WASM factory.
-//   4. Default → SyntheticAnalyzerSessionFactory (dev-only).
+// The real WASM analyzer is the DEFAULT, and every gate below is an
+// opt-OUT.  `isWasmAnalyzerEnabled()` has the decision order; this header
+// used to carry a second, opposite copy of it —
 //
-// This single switch is the production-safety net: production builds set
-// the env var, dev / smoke tests stick to synthetic, and a power-user
-// can force one or the other via the window override.
+//   "2. Build-time env var `VITE_LOUI_WASM_ANALYZER` is 'true' → WASM
+//    factory. … 4. Default → SyntheticAnalyzerSessionFactory (dev-only).
+//    … production builds set the env var, dev / smoke tests stick to
+//    synthetic"
+//
+// — which was false in every clause: the env var is read only for 'false'
+// and '0', a production build needs no env var at all, and a fresh boot
+// with nothing set resolves to WASM.  It described the switch before the
+// default was inverted, in the file that decides whether a user's meters
+// are real.  `analyzer-factory-selftest` now drives each gate and pins the
+// answers, because the next reader who makes the code match a comment like
+// that ships fabricated meters to everyone.
 
 import type { AnalyzerSessionFactory } from '@aimaster/shared-types/streaming';
 
@@ -67,9 +74,14 @@ export function isWasmAnalyzerEnabled(): boolean {
       if (v === 'false' || v === '0') return false;
     }
   } catch { /* ignore */ }
-  // Safe-boot kill switch — defaults to OFF for the wasmAnalyzer flag in
-  // safe-boot-flags.DEFAULT_ENABLED, so this is the active gate during
-  // crash-hunt sessions until the user explicitly toggles it on.
+  // Safe-boot kill switch — `safe-boot-flags.DEFAULT_ENABLED` ships
+  // `{ wasmAnalyzer: true }`, so this gate is open unless somebody closes it
+  // from DevTools (`window.__SAFE_BOOT__.disableWasmAnalyzer()`).  It used to
+  // say the flag "defaults to OFF … until the user explicitly toggles it on",
+  // which was true while the dlmalloc panic was being cornered and stopped
+  // being true when that was fixed at the source.  Had it still been OFF,
+  // every boot would have resolved to synthetic — so this is the one comment
+  // in the file whose being stale was indistinguishable from the bug.
   try {
     if (!isSafeBootEnabled('wasmAnalyzer')) return false;
   } catch { /* sessionStorage not available — fall through to ON */ }

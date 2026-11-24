@@ -24,7 +24,7 @@
  *
  * Run:  pnpm --filter @aimaster/desktop render:audition -- <출력 폴더>
  */
-import { OfflineAudioContext } from 'node-web-audio-api';
+import { OfflineAudioContext } from './lib/offline-audio-context.js';
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 
 import { findInstrument, defaultInstrumentParams } from '../src/renderer/daw/engine/instruments.js';

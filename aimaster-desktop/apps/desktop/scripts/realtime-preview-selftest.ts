@@ -16,6 +16,9 @@
 //   3. The snapshot is referentially stable between ticks, so
 //      `useSyncExternalStore` cannot tear or loop.
 //   4. Config messages reach the chain and are applied.
+//   5. The HOOK cannot re-attach on a parameter change — the third of the
+//      three properties `realtime-preview-flag.ts` names, and the one that
+//      was claimed and never checked here.  See the section at the bottom.
 //
 // Run:  pnpm --filter @aimaster/desktop test:realtime-preview
 
@@ -24,6 +27,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import vm from 'node:vm';
+import { buildChainConfig, chainConfigToJson } from '../src/renderer/audio/chain-config.js';
+import { ALL_MODULE_PARAMETER_DEFS } from '../src/renderer/audio/parameters/module-parameter-definitions.js';
+import { defaultAllModulesState } from '../src/renderer/audio/parameters/parameter-state.js';
 import {
   ingestWorkletMetrics,
   subscribePreviewMetrics,
@@ -297,9 +303,84 @@ async function storeChecks(): Promise<void> {
   check('reset clears the snapshot', getPreviewMetrics().updatedAt === 0, 'cleared');
 }
 
+
+// ── 5. The hook cannot re-attach on a parameter change ───────────────────
+//
+// `realtime-preview-flag.ts` gives three reasons the audio-rate feedback
+// loop cannot come back.  Two are held above: the worklet rate-limits its
+// metrics, and the store notifies on a timer.  The third is the hook —
+// "attaches on stable primitives only, and pushes config through a ref-held
+// node — a parameter change can no longer re-attach anything" — and this
+// harness's own header says re-enabling is "only defensible if the
+// properties that make that loop impossible are actually checked".  That
+// one was not.
+//
+// `useRealtimePreview` takes `config` as an OBJECT, which is a new identity
+// on every render, and serialises it inside the hook:
+//
+//     const configJson = chainConfigToJson(config);     // a primitive
+//     useEffect(…attach…,   [media, enabled, sampleRate]);
+//     useEffect(…push…,     [configJson, masterBypass]);
+//
+// So the whole property rests on that serialisation being STABLE: equal
+// state must give an equal string, or the push effect fires every render —
+// and on being SENSITIVE: a real edit must change it, or nothing is pushed
+// at all.  Both are measurable with no React in the room.
+function hookChecks(): void {
+  const st = defaultAllModulesState(ALL_MODULE_PARAMETER_DEFS);
+  const json = (s: typeof st): string => chainConfigToJson(buildChainConfig({ state: s }));
+  const base = json(st);
+
+  check('the same state serialises identically twice — a re-render pushes nothing',
+    json(st) === base, `${base.length} chars`);
+
+  // The sharper version: every object in the state tree is a different
+  // instance, so if identity leaked into the serialisation this would differ.
+  const cloned = JSON.parse(JSON.stringify(st)) as typeof st;
+  check('and so does a state cloned to fresh object identities',
+    json(cloned) === base, 'object identity does not reach the dependency');
+
+  // Sensitive, or the stability above is just a dead push.
+  const moved = { ...st, eq: { ...st.eq, parameters: { ...st.eq.parameters, airDb: 6 } } };
+  check('a parameter edit does change it, so the push is not dead',
+    json(moved) !== base, 'airDb 0 → 6');
+  const bypassed = { ...st, eq: { ...st.eq, bypass: !st.eq.bypass } };
+  check('and so does a bypass toggle', json(bypassed) !== base, 'eq.bypass flipped');
+
+  // Key order must not depend on which earlier module happened to be
+  // engaged, or two states with the same content would serialise apart.
+  const withDeclick = { ...st, declick: { ...st.declick, bypass: false } };
+  const keys = (s: string): string => Object.keys(JSON.parse(s) as object).join(',');
+  check('the key order does not move when an unrelated module engages',
+    keys(json(withDeclick)) === keys(base), keys(base));
+
+  // And the dependency lists themselves, read from the hook.  This is a
+  // SOURCE check: it cannot run the effects without React, so what it holds
+  // is the shape the property needs — `config` absent from the attach deps,
+  // and a ref carrying it instead.  It would not catch an attach effect that
+  // kept these deps and re-attached for some other reason.
+  const hook = readFileSync(
+    path.join(__dirname_, '../src/renderer/hooks/useRealtimePreview.ts'), 'utf8');
+  const depLists = [...hook.matchAll(/\}, \[([^\]]*)\]\);/g)].map((m) => m[1]!.trim());
+  check('the hook has exactly the two effects this property is about',
+    depLists.length === 2, `dep lists: ${depLists.map((d) => `[${d}]`).join(' ')}`);
+  const attach = depLists[0] ?? '';
+  const push = depLists[1] ?? '';
+  check('the attach effect depends on media, enabled and sampleRate — and not on the config',
+    /\bmedia\b/.test(attach) && /\benabled\b/.test(attach) && /\bsampleRate\b/.test(attach)
+      && !/\bconfig\b/.test(attach),
+    `[${attach}]`);
+  check('the push effect depends on the SERIALISED config, not the object',
+    /\bconfigJson\b/.test(push) && !/\bconfig\b(?!Json)/.test(push), `[${push}]`);
+  check('and the attach path reads the config from a ref',
+    /latestConfigRef\s*=\s*useRef/.test(hook) && /latestConfigRef\.current/.test(hook),
+    'latestConfigRef');
+}
+
 // tsx transpiles this file to CJS, where top-level await is unavailable —
 // so the async half runs through a promise chain instead.
 void storeChecks().then(() => {
+  hookChecks();
   console.log(`\n=== ${passed} passed, ${failed} failed ===\n`);
   if (failed > 0) process.exit(1);
 });

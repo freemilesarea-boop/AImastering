@@ -32,6 +32,9 @@ export function DevAnalyzerStreamPage() {
   const [wasmEnabled, setWasmEnabled] = useState(isWasmAnalyzerEnabled);
   const factory = useMemo<AnalyzerSessionFactory>(
     () => resolveAnalyzerFactory(),
+    // The factory is chosen by a module-level flag, so the state mirroring
+    // that flag is the only dependency there is.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [wasmEnabled], // re-resolve when flag toggles
   );
   const label = wasmEnabled ? 'WASM (loui-dsp)' : 'Synthetic (dev only)';

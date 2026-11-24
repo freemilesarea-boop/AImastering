@@ -32,7 +32,7 @@
  * Run: pnpm --filter @aimaster/desktop test:mixer-meter
  */
 
-import { OfflineAudioContext } from 'node-web-audio-api';
+import { OfflineAudioContext } from './lib/offline-audio-context.js';
 
 import {
   CLIP_CEILING, HOLD_FALL_DB_PER_SEC, HOLD_SECONDS, METER_FLOOR_DB, METER_POLL_MS,

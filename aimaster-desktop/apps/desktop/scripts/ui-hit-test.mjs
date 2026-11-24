@@ -24,10 +24,15 @@
  *
  * ── No new dependency ───────────────────────────────────────────────────────
  *
- * It speaks CDP directly over Node 22's built-in WebSocket and fetch.  The
- * whole sweep is `Runtime.evaluate`; nothing here needs a driver.  Playwright
- * would have meant either a 300 MB install for browsers we do not use, or
- * playwright-core as a dependency for one script.
+ * It speaks CDP directly over a WebSocket and fetch.  The whole sweep is
+ * `Runtime.evaluate`; nothing here needs a driver.
+ *
+ * The socket is Node's own global when there is one and `ws` when there is
+ * not, and that `when there is not` is the CI runner: the global landed in
+ * Node 22, this repository's workflows pin Node 20, and the first CI run of
+ * this script died in one second with `WebSocket is not defined`.  `ws` was
+ * already in the tree as somebody else's transitive dependency, which is not
+ * the same as being allowed to import it, so it is declared.
  *
  * ── Running it ──────────────────────────────────────────────────────────────
  *
@@ -39,13 +44,15 @@
  *
  * ── What it does not cover ──────────────────────────────────────────────────
  *
- * Only what is ON SCREEN.  A control scrolled below the fold is skipped, because
- * "outside the viewport" is a different question and a scrollable panel makes it
- * a non-question — an earlier version of this reported 21 such controls on HOME
- * and every one was fine.  HOME therefore probes about six: the mastering page's
- * preset cards live below the fold at this window size.  That is the honest
- * limit, not a bug to paper over — the two defects this found were both in
- * chrome that is always in view, which is where covered controls actually hurt.
+ * A control drawn outside the window is not skipped, but it is not judged where
+ * it lies either: the sweep scrolls the container a USER can scroll (auto or
+ * scroll, never a clipped overflow:hidden, which scrolls from script and would
+ * fake a reachable control), judges the control there, and puts the scroll back.
+ * Outside the window with nothing to scroll it in IS a finding.  An earlier
+ * version only counted these, which is how sixteen chrome actions sat past the
+ * right edge of a 1520 px window in eighteen views with nothing saying whether
+ * anyone could reach them — they could, by scrolling, and the count alone could
+ * not say so.
  *
  * It also sweeps one window size.  A collision that only happens at 900 px wide
  * will not show up here.
@@ -53,9 +60,13 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, openSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
+
+/** Node 22 has one; Node 20, which CI pins, does not. */
+const WS = globalThis.WebSocket ?? (await import('ws')).WebSocket;
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 const APP = path.resolve(HERE, '..');
@@ -72,12 +83,51 @@ const VITE_PORT = Number(process.env.UI_HIT_TEST_VITE_PORT ?? 5199);
 const DISPLAY_NUM = process.env.UI_HIT_TEST_DISPLAY ?? ':98';
 const KEEP = process.argv.includes('--keep');
 
+/** Controls the sweep declined to judge, with how many views each sat out. */
+const scrolled = new Map();
+
 const children = [];
-function bg(cmd, args, opts = {}) {
-  const child = spawn(cmd, args, { stdio: 'ignore', detached: true, ...opts });
+/**
+ * Start a child in the background, keeping what it says.
+ *
+ * `stdio: 'ignore'` threw it away, and the first CI run paid for that: vite
+ * did not come up inside ninety seconds and the only thing this script could
+ * report was "timed out waiting for the dev server on 5199" — with vite's own
+ * reason discarded.  A log costs nothing and is the difference between a
+ * diagnosis and a guess.
+ */
+function bg(cmd, args, opts = {}, logPath) {
+  const out = logPath ? openSync(logPath, 'a') : 'ignore';
+  const child = spawn(cmd, args, {
+    stdio: logPath ? ['ignore', out, out] : 'ignore', detached: true, ...opts,
+  });
   child.unref();
   children.push(child);
   return child;
+}
+
+/**
+ * vite colours its output, and the escape that does it is a control
+ * character, which `no-control-regex` rightly refuses in a literal.  Built
+ * from its code point instead of suppressing the rule.
+ */
+const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+
+/**
+ * The last few MEANINGFUL lines of a log.
+ *
+ * Stack frames are dropped, because they are what a crashing dev server ends
+ * with and never what it failed for: the first version of this tail returned
+ * six `at .../esbuild/lib/main.js` lines while "Cannot find config file" sat
+ * just above them.
+ */
+function tailOf(file, lines = 6) {
+  try {
+    const all = readFileSync(file, 'utf8').trimEnd().split('\n')
+      .map((l) => l.replace(ANSI, '').trimEnd())
+      .filter((l) => l.trim() !== '' && !/^\s*at /.test(l));
+    return all.slice(-lines).join(' | ').slice(0, 400) || '(the log says nothing)';
+  } catch { return '(no log was written)'; }
 }
 function stopAll() {
   for (const c of children) {
@@ -123,7 +173,7 @@ async function pageTarget() {
 }
 
 function connect(wsUrl) {
-  const ws = new WebSocket(wsUrl);
+  const ws = new WS(wsUrl);
   const pending = new Map();
   let nextId = 1;
   const open = new Promise((res, rej) => {
@@ -171,6 +221,7 @@ function connect(wsUrl) {
 
 const PROBE = `
   const out = [];
+  const reachable = [];
   let probed = 0;
   const vis = (el) => {
     const s = getComputedStyle(el);
@@ -179,27 +230,74 @@ const PROBE = `
   };
   const label = (el) => ((el.textContent || '').trim() || el.getAttribute('title')
     || el.getAttribute('aria-label') || el.tagName).replace(/\\s+/g, ' ').slice(0, 24);
+  const boxOf = (r) => Math.round(r.left) + ',' + Math.round(r.top)
+    + ' ' + Math.round(r.width) + 'x' + Math.round(r.height);
+  const inView = (r) => r.right > 0 && r.bottom > 0 && r.left < innerWidth && r.top < innerHeight;
+  const owner = (el, r) => {
+    const cx = Math.min(innerWidth - 1, Math.max(0, r.left + r.width / 2));
+    const cy = Math.min(innerHeight - 1, Math.max(0, r.top + r.height / 2));
+    const hit = document.elementFromPoint(cx, cy);
+    return {
+      ok: hit === el || el.contains(hit) || (hit && hit.contains(el)),
+      blocker: hit ? hit.tagName + '.' + (hit.className || '').toString()
+        .replace(/\\s+/g, ' ').slice(0, 44) : 'none',
+    };
+  };
+  // The container a USER can scroll.  overflow:hidden scrolls fine from script,
+  // so scrollIntoView would happily "reach" a control behind a clipped edge and
+  // call it clickable; only auto/scroll gives the user a way in.
+  const scroller = (el) => {
+    for (let p = el.parentElement; p; p = p.parentElement) {
+      const s = getComputedStyle(p);
+      if (['auto', 'scroll'].includes(s.overflowX) && p.scrollWidth > p.clientWidth) return p;
+      if (['auto', 'scroll'].includes(s.overflowY) && p.scrollHeight > p.clientHeight) return p;
+    }
+    const d = document.scrollingElement;
+    if (d && (d.scrollWidth > d.clientWidth || d.scrollHeight > d.clientHeight)) return d;
+    return null;
+  };
+  const outside = [];
   for (const el of document.querySelectorAll('button, select, input, [role=button]')) {
     if (!vis(el) || el.disabled) continue;
     const r = el.getBoundingClientRect();
     if (r.width < 1 || r.height < 1) continue;
-    // Off-screen is a different defect and a scrollable panel makes it a
-    // non-defect; this one is only about who owns the pixel.
-    if (r.right < 0 || r.bottom < 0 || r.left > innerWidth || r.top > innerHeight) continue;
+    if (!inView(r)) { outside.push(el); continue; }
     probed++;
-    const cx = Math.min(innerWidth - 1, Math.max(0, r.left + r.width / 2));
-    const cy = Math.min(innerHeight - 1, Math.max(0, r.top + r.height / 2));
-    const hit = document.elementFromPoint(cx, cy);
-    if (hit === el || el.contains(hit) || (hit && hit.contains(el))) continue;
-    out.push({
-      what: label(el),
-      box: Math.round(r.left) + ',' + Math.round(r.top)
-        + ' ' + Math.round(r.width) + 'x' + Math.round(r.height),
-      blocker: hit ? hit.tagName + '.' + (hit.className || '').toString()
-        .replace(/\\s+/g, ' ').slice(0, 44) : 'none',
-    });
+    const o = owner(el, r);
+    if (o.ok) continue;
+    out.push({ what: label(el), box: boxOf(r), blocker: o.blocker });
   }
-  return { covered: out, probed };
+  // The ones drawn outside the window.  An earlier version counted these and
+  // judged none of them, which is how sixteen actions sat past the right edge
+  // in eighteen views with nothing saying whether a user could get to them.
+  // Counting is not an answer.  Ask what the user asks — can I bring it into
+  // view and click it? — by scrolling the container that would do it, judging
+  // the control there, and putting the scroll back.
+  for (const el of outside) {
+    const r0 = el.getBoundingClientRect();
+    const sc = scroller(el);
+    if (!sc) {
+      out.push({ what: label(el), box: boxOf(r0), blocker: 'off-screen, and nothing scrolls it into view' });
+      continue;
+    }
+    const sl = sc.scrollLeft, st = sc.scrollTop;
+    const cb = sc === document.scrollingElement
+      ? { left: 0, top: 0 } : sc.getBoundingClientRect();
+    sc.scrollLeft += (r0.left - cb.left) - (sc.clientWidth - r0.width) / 2;
+    sc.scrollTop += (r0.top - cb.top) - (sc.clientHeight - r0.height) / 2;
+    const r = el.getBoundingClientRect();
+    if (!inView(r)) {
+      out.push({ what: label(el), box: boxOf(r0), blocker: 'off-screen, and scrolling ' + sc.tagName + ' did not bring it in' });
+    } else {
+      probed++;
+      const o = owner(el, r);
+      if (o.ok) reachable.push(label(el) + ' @' + boxOf(r0));
+      else out.push({ what: label(el), box: boxOf(r), blocker: o.blocker + ' (once scrolled into view)' });
+    }
+    sc.scrollLeft = sl;
+    sc.scrollTop = st;
+  }
+  return { covered: out, probed, reachable, win: innerWidth + 'x' + innerHeight };
 `;
 
 // ── Driving the app ───────────────────────────────────────────────────────────
@@ -257,15 +355,21 @@ async function sweep(cdp) {
    * user cannot reach by waiting.
    */
   const look = async (view) => {
-    let { covered, probed } = await cdp.evaluate(PROBE);
+    let { covered, probed, reachable, win } = await cdp.evaluate(PROBE);
     if (covered.length > 0) {
       await sleep(4000);
-      ({ covered, probed } = await cdp.evaluate(PROBE));
+      ({ covered, probed, reachable, win } = await cdp.evaluate(PROBE));
     }
     probedTotal += probed;
     for (const c of covered) findings.push({ view, ...c });
     const mark = covered.length === 0 ? 'clean' : `${covered.length} COVERED`;
-    console.log(`  ${view.padEnd(20)} ${String(probed).padStart(3)} probed   ${mark}`);
+    console.log(`  ${view.padEnd(20)} ${String(probed).padStart(3)} probed   ${mark}`
+      + `   ${win}${reachable.length ? ` · ${reachable.length} only after scrolling` : ''}`);
+    // Judged, not skipped: these were drawn outside the window, and scrolling
+    // the container a user can scroll brought each one in and gave it its own
+    // pixel.  So they are clickable — but only for someone who scrolls, and
+    // that is worth printing rather than leaving to a guess.
+    for (const o of reachable) scrolled.set(o, (scrolled.get(o) ?? 0) + 1);
     for (const c of covered) {
       console.log(`       "${c.what}" at ${c.box}\n         under ${c.blocker}`);
     }
@@ -345,6 +449,70 @@ function haveXvfb() {
   return spawnSync('sh', ['-c', 'command -v Xvfb'], { encoding: 'utf8' }).status === 0;
 }
 
+/**
+ * Does the display ANSWER?  `existsSync` on the lock file asked the wrong
+ * question: `/tmp/.X98-lock` and `/tmp/.X11-unix/X98` outlive the server that
+ * made them, so a stale pair made this script report "using the X server
+ * already on :98" and then blame the debugger when nothing could connect.
+ *
+ * Same test, same order and same reason as `app-smoke/boot.sh` — ask the
+ * server with `xdpyinfo`, fall back to looking for the process only when
+ * `xdpyinfo` is not installed, and only in that direction.  `boot-shares`
+ * in `tooling-selftest` holds the two to each other.
+ */
+function displayIsDead(display) {
+  const run = (cmd) => spawnSync('sh', ['-c', cmd], { encoding: 'utf8' }).status === 0;
+  if (run('command -v xdpyinfo')) return !run(`xdpyinfo -display ${display} > /dev/null 2>&1`);
+  // No xdpyinfo: the PROCESS alone answers too early.  It exists for a moment
+  // before it has created its socket, so the poll below that waits for the
+  // server to come up was satisfied by a process that was not listening yet,
+  // and Electron started against it and exited with "Missing X server or
+  // $DISPLAY".  Measured here, on a machine without x11-utils, after a
+  // leftover socket with no process behind it had been cleared.  `boot.sh`
+  // asks for the socket too, in the same situation, for the same reason.
+  const n = display.replace(':', '');
+  return !(run(`pgrep -f "Xvfb ${display} " > /dev/null 2>&1`)
+    && existsSync(`/tmp/.X11-unix/X${n}`));
+}
+
+/**
+ * Take the CDP port, or refuse to measure.
+ *
+ * `boot.sh` learned this one at full price: launching a second Electron does
+ * NOT take the port from the first.  The newcomer starts and serves nothing
+ * while the tool connects to the OLD app and measures code that is no longer
+ * on disk — a deliberately broken build once reported 26/26 green that way.
+ * This script had none of that check, and in this container it attached to
+ * the smoke run's leftover app (the two share port 9333) and timed out
+ * "waiting for the window to render" on a page it never launched.
+ */
+async function ownCdpPort(port) {
+  const url = `http://127.0.0.1:${port}/json/version`;
+  if (!await reachable(url)) return;
+  console.log(`CDP      :${port} answered BEFORE launch — killing the previous run's Electron`);
+  // By PID from the port in its own argv; `pkill -f` would match this script.
+  spawnSync('sh', ['-c',
+    `ps -eo pid,args --no-headers | grep -F -- "remote-debugging-port=${port}"`
+    + " | grep -v grep | awk '{print $1}' | xargs -r kill -9"], { encoding: 'utf8' });
+  try {
+    await until(`CDP :${port} to go quiet`, async () => !await reachable(url), 10_000);
+  } catch {
+    throw new Error(`something is STILL serving CDP on ${port} — refusing to measure it,`
+      + ' because the app that answers would not be the one this run built');
+  }
+  console.log(`CDP      :${port} is clear`);
+}
+
+/** The files a dead server leaves behind, which Xvfb then refuses to start over. */
+function clearStaleDisplay(display) {
+  const n = display.replace(':', '');
+  const leftovers = [`/tmp/.X${n}-lock`, `/tmp/.X11-unix/X${n}`].filter((f) => existsSync(f));
+  if (leftovers.length === 0) return false;
+  console.log(`display  ${display} had a stale lock/socket — removing`);
+  for (const f of leftovers) { try { rmSync(f, { force: true }); } catch { /* not ours */ } }
+  return true;
+}
+
 async function main() {
   const linux = process.platform === 'linux';
   let display = process.env.DISPLAY ?? '';
@@ -360,24 +528,48 @@ async function main() {
     // says nothing, and the run then quietly borrows the first one — which is
     // fine until cleanup, where it would kill a server it did not start.  So
     // decide explicitly, and only own what this run brought up.
-    if (existsSync(`/tmp/.X${display.replace(':', '')}-lock`)) {
+    if (!displayIsDead(display)) {
       console.log(`using the X server already on ${display}`);
     } else {
+      clearStaleDisplay(display);
       bg('Xvfb', [display, '-screen', '0', '1600x1000x24']);
-      await sleep(2000);
+      // Ask the display whether it answers, rather than sleeping a fixed two
+      // seconds and hoping.
+      await until(`the X server on ${display}`,
+        async () => !displayIsDead(display), 20_000);
       console.log(`Xvfb on ${display}`);
     }
   }
 
+  await ownCdpPort(CDP_PORT);
+
   const env = { ...noProxy, ...(display ? { DISPLAY: display } : {}) };
 
-  if (await reachable(`http://127.0.0.1:${VITE_PORT}/`)) {
+  // The URL the APP will be given, probed as the app will reach it.
+  //
+  // These two were different: the wait asked `http://127.0.0.1:5199/` and
+  // Electron was handed `http://localhost:5199`.  On this machine those are
+  // the same address; on a CI runner `localhost` resolves to ::1 first, vite
+  // bound there, and the IPv4 probe was refused for ninety seconds while
+  // vite's own log said `ready in 157 ms`.  Waiting for something other than
+  // what you are about to use is its own bug, and it took the log tail added
+  // in the same commit to see it.
+  const VITE_URL = `http://localhost:${VITE_PORT}`;
+  if (await reachable(`${VITE_URL}/`)) {
     console.log(`using the dev server already on ${VITE_PORT}`);
   } else {
     console.log(`vite on ${VITE_PORT} …`);
-    bg('pnpm', ['exec', 'vite', '--port', String(VITE_PORT), '--strictPort'], { cwd: APP, env });
-    await until(`the dev server on ${VITE_PORT}`,
-      () => reachable(`http://127.0.0.1:${VITE_PORT}/`));
+    const viteLog = path.join(tmpdir(), `ui-hit-test-vite-${process.pid}.log`);
+    bg('pnpm', ['exec', 'vite', '--port', String(VITE_PORT), '--strictPort'],
+      { cwd: APP, env }, viteLog);
+    try {
+      await until(`the dev server on ${VITE_PORT}`,
+        () => reachable(`${VITE_URL}/`));
+    } catch (err) {
+      throw new Error(`${err instanceof Error ? err.message : String(err)} — vite said: `
+        + tailOf(viteLog));
+    }
+    console.log(`vite      log at ${viteLog}`);
   }
 
   const electronBin = path.resolve(APP, '../../node_modules/electron/dist/electron');
@@ -385,15 +577,41 @@ async function main() {
     console.error(`electron is not installed at ${electronBin} — run pnpm install`);
     process.exit(2);
   }
-  // Root on Linux cannot use the sandbox; a normal desktop user can and should.
-  const sandbox = linux && typeof process.getuid === 'function' && process.getuid() === 0
-    ? ['--no-sandbox'] : [];
+  // `--no-sandbox` on Linux, always, which `app-smoke/boot.sh` has done from
+  // the start.  This used to be "only when running as root", and the two
+  // harnesses then disagreed about the same app: root in this container took
+  // the flag, the CI runner's non-root `runner` did not, and Electron's
+  // bundled chrome-sandbox helper is not installed setuid by a node_modules
+  // install — so the app never came up and this script waited ninety seconds
+  // for a debugger that was never going to appear.  Nothing this sweep
+  // measures — where a control is, and what is on top of it — is affected by
+  // the sandbox, and the harness that drives the product already runs without
+  // it.  One answer for both.
+  const sandbox = linux ? ['--no-sandbox'] : [];
   console.log(`electron with CDP on ${CDP_PORT} …`);
+  const electronLog = path.join(tmpdir(), `ui-hit-test-electron-${process.pid}.log`);
   bg(electronBin, [...sandbox, `--remote-debugging-port=${CDP_PORT}`, '.'], {
     cwd: APP,
-    env: { ...env, VITE_DEV_SERVER_URL: `http://localhost:${VITE_PORT}` },
-  });
-  await until(`the app's debugger on ${CDP_PORT}`, async () => await pageTarget() !== undefined);
+    env: { ...env, VITE_DEV_SERVER_URL: VITE_URL },
+  }, electronLog);
+  console.log(`electron  log at ${electronLog}`);
+  // The debugger is the LAST thing to come up, so it is the first thing
+  // blamed.  Twice in this container the real cause was the display — a
+  // stale lock with no server behind it — and the message sent the reader to
+  // look at Electron.  So when it times out, say what the display was doing.
+  try {
+    await until(`the app's debugger on ${CDP_PORT}`, async () => await pageTarget() !== undefined);
+  } catch (err) {
+    const where = display === '' ? 'no DISPLAY set'
+      : displayIsDead(display) ? `and ${display} is not answering either — the display is the`
+        + ' likelier cause (a stale /tmp/.X*-lock with no server behind it does this)'
+        : `while ${display} answers, so the display is not the cause`;
+    // And what the app itself said, which is the half the display answer
+    // cannot supply: a sandbox it cannot use, a missing library, a crash on
+    // boot.  Discarding this cost a CI round.
+    throw new Error(`${err instanceof Error ? err.message : String(err)} — ${where}`
+      + ` — electron said: ${tailOf(electronLog)}`);
+  }
 
   const target = await pageTarget();
   const cdp = connect(target.webSocketDebuggerUrl);
@@ -412,6 +630,13 @@ async function main() {
   const { findings, probedTotal } = await sweep(cdp);
   cdp.close();
 
+  if (scrolled.size > 0) {
+    console.log(`\n${scrolled.size} control(s) are drawn outside the window and need a scroll`
+      + ` — each one was scrolled in and owned its own pixel there:`);
+    for (const [what, views] of [...scrolled.entries()].sort((a, b) => b[1] - a[1])) {
+      console.log(`  ${what}   (in ${views} view${views === 1 ? '' : 's'})`);
+    }
+  }
   console.log(`\n${probedTotal} controls probed across ${WINDOW_MODES.length + POPULATED.length + 1} views`);
   if (probedTotal < 200) {
     console.error(`only ${probedTotal} controls probed — the sweep did not see the app`);
@@ -424,7 +649,11 @@ async function main() {
   console.log(`\n${findings.length} control(s) cannot be clicked where they are drawn:\n`);
   for (const f of findings) console.log(`  ${f.view}: "${f.what}" at ${f.box} under ${f.blocker}`);
   console.log('');
-  return findings.length;
+  // The exit code is one byte.  Clipping the chrome row produced 288 findings,
+  // which the shell reported as 32; at exactly 256 it would have reported 0 and
+  // read as a pass.  The true number is in the output above — cap what the
+  // shell sees so a big number can never wrap into success.
+  return Math.min(findings.length, 120);
 }
 
 let code = 2;

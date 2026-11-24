@@ -16,6 +16,7 @@ import {
   toggleFavorite as toggleFavoriteInGroup,
 } from '../audio/revisions/revision-logic.js';
 import { savedSongPaths, loadSongSettings } from '../audio/session/song-settings.js';
+import type { SaveDepth, SaveDither } from '../audio/save-format.js';
 
 // ── Structured error ──────────────────────────────────────────────────────────
 
@@ -318,6 +319,17 @@ interface AudioStore {
   reset: () => void;
 
   /** Advanced Settings 패널 펼침 여부 */
+  /**
+   * How a saved master is written — the depth and dither the result screen
+   * offers.  In the store rather than in that page because the keyboard
+   * export reads the same choice; when it lived in the page's useState the
+   * key could not see it and silently wrote 24-bit with no dither.
+   */
+  saveDepth: SaveDepth;
+  saveDither: SaveDither;
+  setSaveDepth: (depth: SaveDepth) => void;
+  setSaveDither: (dither: SaveDither) => void;
+
   showAdvanced: boolean;
   setShowAdvanced: (v: boolean) => void;
 
@@ -510,6 +522,10 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
   updateOptions:      (patch)      => set((s) => ({ options: { ...s.options, ...patch } })),
   reset:              ()           => set({ selectedFile: null, analysis: null, masteringResult: null, qcResult: null, error: null, progress: 0, progressStage: '', queue: [], isBatchRunning: false, revisionGroup: null }),
 
+  saveDepth:          '24',
+  saveDither:         'tpdf',
+  setSaveDepth:       (saveDepth)  => set({ saveDepth }),
+  setSaveDither:      (saveDither) => set({ saveDither }),
   showAdvanced:       false,
   setShowAdvanced:    (v)          => set({ showAdvanced: v }),
 

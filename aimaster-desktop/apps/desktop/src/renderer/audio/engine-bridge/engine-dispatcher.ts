@@ -30,8 +30,6 @@
 
 import type { EngineModuleType } from '@aimaster/shared-types/engine';
 import {
-  findParameterDef,
-  type AllModulesDefinitions,
   type EngineCommand,
   type ModuleId,
   type ParameterValue,
@@ -118,112 +116,25 @@ export function toEngineValue(
   return { engineValue: value };
 }
 
-const now = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
-// ── PresetPatchDispatcher — the production-safe 1st connection ───────────
-
-/**
- * Translates `wired` parameters into EngineSchema patch fragments and
- * accumulates them.  Does NOT trigger a render or touch live DSP.
- *
- *   • `SET_MODULE_PARAM` (wired)        → `staged`
- *   • `SET_MODULE_PARAM` (pending/unavail) → `unsupported`
- *   • `SET_MODULE_BYPASS`               → `unsupported` (bypass bindings all pending)
- *   • `RESET_MODULE`                    → `staged` (clears that module's fragments)
- *   • everything else                   → `noop`
- *
- * The accumulated patch is exposed via `getStagedPatch()` for the future
- * offline-render / live-engine consumer (M3-P-NEXT-5C).
- */
-export class PresetPatchDispatcher implements EngineDispatcher {
-  readonly name: string;
-  private patch = new Map<string, StagedPatchEntry>();
-  private dryRun: boolean;
-
-  constructor(
-    private readonly defs: AllModulesDefinitions,
-    opts: { dryRun?: boolean; name?: string } = {},
-  ) {
-    this.dryRun = opts.dryRun ?? false;
-    this.name = opts.name ?? (this.dryRun ? 'preset-patch (dry-run)' : 'preset-patch');
-  }
-
-  dispatch(command: EngineCommand): DispatchResult {
-    const base = { command, timestamp: now() };
-    switch (command.kind) {
-      case 'SET_MODULE_PARAM': {
-        const def = findParameterDef(this.defs, command.moduleId, command.parameterId);
-        const binding = def.binding;
-        if (binding.status !== 'wired') {
-          return {
-            ...base,
-            status: 'unsupported',
-            engineModule: binding.moduleType,
-            enginePath: binding.path,
-            note: `binding status=${binding.status} — UI state kept, no engine effect`,
-          };
-        }
-        const { engineValue, note } = toEngineValue(command.moduleId, command.parameterId, command.value);
-        if (this.dryRun) {
-          return {
-            ...base,
-            status: 'dry-run',
-            engineModule: binding.moduleType,
-            enginePath: binding.path,
-            engineValue,
-            note: note ? `dry-run · ${note}` : 'dry-run · would stage',
-          };
-        }
-        if (binding.moduleType) {
-          this.patch.set(`${binding.moduleType}:${binding.path}`, {
-            moduleType: binding.moduleType,
-            path: binding.path,
-            value: engineValue,
-            sourceModuleId: command.moduleId,
-            sourceParameterId: command.parameterId,
-          });
-        }
-        return {
-          ...base,
-          status: 'staged',
-          engineModule: binding.moduleType,
-          enginePath: binding.path,
-          engineValue,
-          note: note ? `staged · ${note}` : 'staged into preset patch (not yet rendered)',
-        };
-      }
-      case 'SET_MODULE_BYPASS': {
-        const bypassBinding = this.defs[command.moduleId].bypassBinding;
-        return {
-          ...base,
-          status: 'unsupported',
-          engineModule: bypassBinding.moduleType,
-          enginePath: bypassBinding.path,
-          note: `bypass binding status=${bypassBinding.status} — not wired yet`,
-        };
-      }
-      case 'RESET_MODULE': {
-        if (!this.dryRun) {
-          for (const [key, entry] of this.patch) {
-            if (entry.sourceModuleId === command.moduleId) this.patch.delete(key);
-          }
-        }
-        return {
-          ...base,
-          status: this.dryRun ? 'dry-run' : 'staged',
-          note: `module "${command.moduleId}" reset — staged fragments cleared`,
-        };
-      }
-      default:
-        return { ...base, status: 'noop', note: `${command.kind} not handled by preset-patch dispatcher` };
-    }
-  }
-
-  getStagedPatch(): StagedPatchEntry[] {
-    return [...this.patch.values()];
-  }
-
-  reset(): void {
-    this.patch.clear();
-  }
-}
+// ── What is left of this seam ────────────────────────────────────────────
+//
+// `PresetPatchDispatcher` lived here: it turned a parameter command into an
+// EngineSchema patch fragment and accumulated it, exposing the result via
+// `getStagedPatch()` "for the future offline-render / live-engine consumer
+// (M3-P-NEXT-5C)".  That consumer was `preview-render-client.ts`, which with
+// its transport, its mocks and the barrel that exported them is gone — the
+// app applies a parameter change by rebuilding the chain config from state
+// and letting the worklet and the render read it, so nothing ever staged a
+// patch.  Nothing constructed the class either, not even a test.
+//
+// Its routing also still spoke of bypass bindings with `status: 'pending'`,
+// which stopped existing when all 23 bindings were measured and marked
+// `wired`.
+//
+// What remains is the seam itself: `EngineDispatcher`, its result types, and
+// `toEngineValue` (which `pending-summary.ts` uses).  The app installs
+// `NOOP_DISPATCHER`, so every accepted command is handed to something that
+// does nothing.  That is a design state, not dead code — `useModuleParameterState`
+// really does call it — so taking the seam out of the hook is a separate
+// decision from this clean-up, and it is not made here.

@@ -28,7 +28,7 @@ import {
   formatUnsupported,
   loudnormParseFailed,
   unknownError,
-  type AppErrorCode,
+  outputDirNotWritable,
 } from '../errors.js';
 
 // ── Error types ───────────────────────────────────────────────────────────────
@@ -387,7 +387,7 @@ export async function normalizeLoudnessPass2(
     outputPath,
   ];
 
-  await spawnCollect(resolveFFmpegPath(opts), args, opts.timeoutMs);
+  await spawnCollect(bin, args, opts.timeoutMs);
 }
 
 // ── Public: encodePreviewMp3 ──────────────────────────────────────────────────
@@ -422,8 +422,61 @@ export async function encodePreviewMp3(
 }
 
 // ── Error classification ───────────────────────────────────────────────────────
+//
+// Every pattern below was measured against a real binary — ffmpeg 7.0.2
+// (`ffmpeg-static`, what the dev build runs) and ffmpeg 6.1.1 (the system one)
+// — by making each failure happen and reading what came out.  The versions
+// print the decisive line identically.  Three of the four patterns that used
+// to live here could not match either of them:
+//
+//   /unknown encoder/                      → both say "Encoder not found"
+//   /decoder .+ not found/                 → both say "Decoder not found",
+//                                            with nothing between the two
+//                                            words for `.+` to match
+//   /unable to find a suitable output format/ → both say
+//                                            "Error initializing the muxer"
+//
+// They are kept, below, as the pre-7 wordings they are, but they are not what
+// catches anything today.
 
-/** Stderr patterns that indicate a corrupt / unreadable file. */
+/**
+ * ffmpeg's own verdict line.  It is the only line that says which SIDE failed
+ * and why, and it is identical on 6.1.1 and 7.0.2:
+ *
+ *   Error opening input files: No such file or directory        (file moved)
+ *   Error opening input files: Invalid data found when processing input
+ *   Error opening input files: Decoder not found
+ *   Error opening output files: No such file or directory       (no such dir)
+ *   Error opening output files: Encoder not found
+ *   Error opening output files: Invalid argument   (bad filter, bad muxer)
+ *
+ * ffprobe does not print it at all — it prints `<path>: <reason>` — so the
+ * legacy patterns below are what classify a probe failure.
+ */
+const VERDICT_LINE = /Error opening (input|output) files:\s*(.+)/i;
+
+/** A reason, from either side, that means the codec or container is the problem. */
+const CODEC_REASON = /(en|de)coder not found|unknown (en|de)coder|codec not currently supported/i;
+
+/** A reason, on the output side, that means the destination cannot take bytes. */
+const DESTINATION_REASON =
+  /no such file or directory|permission denied|no space left on device|read-only file system/i;
+
+/**
+ * ffmpeg reached the muxer and then gave up.  Measured: writing to a device
+ * that is already full prints THIS AND NOTHING ELSE — no errno, no "No space
+ * left on device", just the size line and `Conversion failed!`.  Before this
+ * was measured, a full disk during an export matched no pattern at all and
+ * came out of the catch-all as "your audio file is damaged, try re-exporting
+ * it", which is advice that cannot work and sends the user to the wrong file.
+ */
+const LATE_FAILURE = /Conversion failed!/i;
+
+/** Our own arguments were refused — nothing the user can act on. */
+const OUR_ARGUMENTS =
+  /Nothing was written into output file|Error initializing a simple filtergraph|Error reinitializing filters/i;
+
+/** Pre-7 stderr patterns for a corrupt / unreadable input.  Still what catches ffprobe. */
 const CORRUPT_PATTERNS = [
   /invalid data found/i,
   /moov atom not found/i,
@@ -432,13 +485,74 @@ const CORRUPT_PATTERNS = [
   /input\/output error/i,
 ];
 
-/** Stderr patterns that indicate an unsupported codec or container. */
+/** Pre-7 stderr patterns for an unsupported codec or container. */
 const UNSUPPORTED_PATTERNS = [
   /decoder .+ not found/i,
   /unknown encoder/i,
   /codec not currently supported/i,
   /unable to find a suitable output format/i,
 ];
+
+/**
+ * The shape the app's own ffmpeg callers throw.
+ *
+ * Three places in the desktop app spawn ffmpeg themselves and reject with
+ * `` `${binary} exited ${code}: ${stderr}` `` — the offline Rust render, the
+ * decode store, and the transcoder.  None of them construct an
+ * {@link FFmpegSpawnError}, so until this pattern existed every one of their
+ * failures fell past the classification below and reached the user as
+ * "알 수 없는 오류" with ffmpeg's English stderr attached, while the Korean
+ * message and the UI hint for the actual cause sat here unused.
+ */
+const APP_SPAWN_MESSAGE = /^(ffmpeg|ffprobe)(\.exe)? exited (-?\d+|null)(?::|$)/i;
+
+/** Classify ffmpeg/ffprobe stderr.  `isProbe` picks the binary for ENOENT. */
+function classifyStderr(
+  stderr: string, exitCode: number | null, filePath: string, isProbe: boolean,
+): AppError {
+  const detail = (what: string): string =>
+    `${what} (exit ${exitCode ?? 'null'}): ${stderr.trim().slice(-400)}`;
+
+  const verdict = VERDICT_LINE.exec(stderr);
+  if (verdict) {
+    const side   = (verdict[1] ?? '').toLowerCase();
+    const reason = (verdict[2] ?? '').trim();
+
+    if (CODEC_REASON.test(reason)) {
+      const named = /unknown (?:en|de)coder '([^']+)'/i.exec(stderr)?.[1];
+      return formatUnsupported(filePath, named ?? reason);
+    }
+    if (side === 'output') {
+      if (DESTINATION_REASON.test(reason)) return outputDirNotWritable(filePath || reason);
+      // Anything else on the output side is our argument list, not their file.
+      return unknownError(detail(`ffmpeg refused the output arguments — ${reason}`));
+    }
+    return fileCorrupted(filePath, detail(`input rejected — ${reason}`));
+  }
+
+  if (OUR_ARGUMENTS.test(stderr)) {
+    return unknownError(detail('ffmpeg refused the filter or encoder arguments'));
+  }
+
+  for (const pat of UNSUPPORTED_PATTERNS) {
+    if (pat.test(stderr)) {
+      const named = /decoder (.+?) not found/i.exec(stderr)?.[1];
+      return formatUnsupported(filePath, named ?? 'unknown');
+    }
+  }
+  for (const pat of CORRUPT_PATTERNS) {
+    if (pat.test(stderr)) return fileCorrupted(filePath, detail('input rejected'));
+  }
+
+  // The input opened and decoding ran; the write side is what gave up.  A full
+  // disk lands exactly here.  ffprobe never writes anything, so this is only
+  // ever ffmpeg.
+  if (!isProbe && LATE_FAILURE.test(stderr)) {
+    return outputDirNotWritable(filePath || '(output path)');
+  }
+
+  return unknownError(detail('ffmpeg failed'));
+}
 
 /**
  * Convert a raw `FFmpegSpawnError` or `FFmpegParseError` into an `AppError`
@@ -461,49 +575,75 @@ export function classifyFFmpegError(
   }
 
   if (err instanceof FFmpegSpawnError) {
-    const msg    = err.message;
-    const stderr = err.stderr ?? '';
+    const msg = err.message;
 
-    // Binary not found (ENOENT on spawn)
+    // Binary not found (ENOENT on spawn).  Which binary comes from the path
+    // as well as the flag: `runFFprobe` resolves ffprobe and raises this
+    // without anyone passing `isFfprobe`, and reporting that as a missing
+    // ffmpeg points the user at a binary they may well already have.
     if (/ENOENT/i.test(msg) || /Failed to start process/i.test(msg)) {
-      return isFfprobe
-        ? ffprobeNotFound(`spawn ENOENT for "${err.bin}" — ${msg}`)
-        : ffmpegNotFound(`spawn ENOENT for "${err.bin}" — ${msg}`);
+      return binaryNotFound(err.bin, msg, isFfprobe || isProbeBin(err.bin));
     }
 
     // Timeout
-    if (/timed out/i.test(msg)) {
-      return new AppError(
-        'PYTHON_PROCESS_FAILED' as AppErrorCode,
-        '처리 시간이 초과되었습니다. 파일 크기를 확인하거나 다시 시도해주세요.',
-        `FFmpeg timeout: ${msg}`,
-        true,
-      );
-    }
+    if (/timed out/i.test(msg)) return ffmpegTimedOut(msg);
 
-    // Unsupported format
-    for (const pat of UNSUPPORTED_PATTERNS) {
-      if (pat.test(stderr)) {
-        const match = stderr.match(/decoder (.+?) not found/i);
-        const codec = match?.[1] ?? 'unknown';
-        return formatUnsupported(filePath, codec);
-      }
-    }
+    return classifyStderr(err.stderr ?? '', err.exitCode, filePath, isFfprobe || isProbeBin(err.bin));
+  }
 
-    // Corrupted file
-    for (const pat of CORRUPT_PATTERNS) {
-      if (pat.test(stderr)) {
-        return fileCorrupted(filePath, `ffmpeg exit ${err.exitCode}: ${stderr.slice(0, 300)}`);
-      }
+  // An ordinary Error carrying ffmpeg's stderr — what the app's own three
+  // spawners throw.  Gated on the measured message shape so that a failure
+  // from somewhere else (the Python bridge, a licence read, a missing session
+  // file) cannot be read as an ffmpeg verdict just because the words "no such
+  // file or directory" appear in it.
+  if (err instanceof Error && APP_SPAWN_MESSAGE.test(err.message)) {
+    const probe = isFfprobe || /^ffprobe/i.test(err.message);
+    if (/ENOENT/i.test(err.message)) {
+      return binaryNotFound(probe ? 'ffprobe' : 'ffmpeg', err.message, probe);
     }
+    // The stderr follows the first colon; the whole message is passed when the
+    // caller trimmed it to nothing.
+    const stderr = err.message.slice(err.message.indexOf(':') + 1).trim() || err.message;
+    const exitCode = Number(/exited (-?\d+)/i.exec(err.message)?.[1] ?? NaN);
+    return classifyStderr(stderr, Number.isNaN(exitCode) ? null : exitCode, filePath, probe);
+  }
 
-    // Catch-all for non-zero exit
-    return fileCorrupted(
-      filePath,
-      `ffmpeg exited ${err.exitCode}: ${stderr.slice(0, 500)}`,
-    );
+  // Node's own spawn failure, before any stderr exists: "spawn ffmpeg ENOENT".
+  if (err instanceof Error && /spawn\s+\S*ffprobe(\.exe)?\s+ENOENT/i.test(err.message)) {
+    return binaryNotFound('ffprobe', err.message, true);
+  }
+  if (err instanceof Error && /spawn\s+\S*ffmpeg(\.exe)?\s+ENOENT/i.test(err.message)) {
+    return binaryNotFound('ffmpeg', err.message, false);
   }
 
   // Unrecognised error
   return unknownError((err as Error).message ?? String(err));
+}
+
+/** True when the resolved binary path is ffprobe rather than ffmpeg. */
+function isProbeBin(bin: string): boolean {
+  return /ffprobe(\.exe)?$/i.test(bin);
+}
+
+function binaryNotFound(bin: string, detail: string, isProbe: boolean): AppError {
+  const said = `spawn ENOENT for "${bin}" — ${detail}`;
+  return isProbe ? ffprobeNotFound(said) : ffmpegNotFound(said);
+}
+
+/**
+ * An ffmpeg run that went past its timeout.
+ *
+ * The code is PYTHON_PROCESS_FAILED because that is the one recoverable code
+ * the renderer already shows "잠시 후 다시 시도해주세요" for, and a timeout is
+ * the one ffmpeg failure where retrying can genuinely work.  The Korean text
+ * is this function's own, so the user is never told the Python engine is
+ * involved when it is not.
+ */
+function ffmpegTimedOut(detail: string): AppError {
+  return new AppError(
+    'PYTHON_PROCESS_FAILED',
+    '처리 시간이 초과되었습니다. 파일 크기를 확인하거나 다시 시도해주세요.',
+    `FFmpeg timeout: ${detail}`,
+    true,
+  );
 }

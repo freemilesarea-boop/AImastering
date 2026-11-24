@@ -1,0 +1,67 @@
+# Files the shipped app never renders — alive only because a story imports
+# them.  `reachable-files-selftest` prints the live list and holds it against
+# this one: a new entry fails until it is classified here, and a line whose
+# file is gone or no longer story-only fails too.  The list only goes down.
+#
+# The report used to print the list and stop there, which left nineteen files
+# looking identical.  They are not: one group is waiting on a product
+# decision, one exists so a story can run without an engine, and one is a
+# feature that describes itself as always-on and is wired to nothing.  That
+# last group is the one worth reading, and it was invisible in a flat list.
+#
+# Format:  <path>  <group>
+#
+# Groups
+# ------
+# awaiting-product-decision
+#   The five bespoke per-module parameter panels and the controls they are
+#   built from.  The app renders the generic panel instead.
+#   `LouiModuleSlideOver.tsx:18` still documents these as its children and
+#   imports none of them — the slide-over is live, but `LouiPresetSlideOver`
+#   is its only caller.  Adopt them or delete them; until then they are
+#   known, not forgotten.
+#
+# storybook-fixture
+#   Correctly story-only: these exist so a story renders without an audio
+#   device or a running engine.  Deleting them would cost the workbench and
+#   buy nothing.
+#
+# There was briefly a third group, `advertised-but-unwired`, for a capability
+# whose docblock said it was in use with nothing calling it.  It had three
+# members and none of them belonged: `useNativeAnalyzer.ts` calls itself "the
+# always-on fallback", and that sentence was believed over the import graph,
+# which had it imported by `ImagerParameterPanel` all along — as were
+# `media-element-context.tsx` and `dev-mode.ts`.  The group did not exist.
+# The check now DERIVES each group from the graph and fails when a label here
+# disagrees, so the next such sentence cannot get a group of its own.
+#
+# `dev-mode.ts` nearly left this list: the WASM analyzer's crash-hunt
+# instrumentation was briefly gated on `isDevMode()`, which made the file
+# app-reached and the ratchet said so.  That gate was wrong — `isDevMode()`
+# is "ON automatically in a dev build", so the instrumentation would still
+# have spoken in every dev session — and it is now an explicit opt-in of its
+# own.  The file stays here.  Worth recording because the ratchet is not a
+# reason to pick a design: it reports where a file sits, and this one sat
+# where it sits for a reason.
+
+src/renderer/components/product/panels/DynamicsParameterPanel.tsx  awaiting-product-decision
+src/renderer/components/product/panels/EqParameterPanel.tsx  awaiting-product-decision
+src/renderer/components/product/panels/ExportParameterPanel.tsx  awaiting-product-decision
+src/renderer/components/product/panels/ImagerParameterPanel.tsx  awaiting-product-decision
+src/renderer/components/product/panels/LimiterParameterPanel.tsx  awaiting-product-decision
+src/renderer/components/product/panels/index.ts  awaiting-product-decision
+src/renderer/components/product/panels/usePanelStateBridge.ts  awaiting-product-decision
+src/renderer/components/product/controls/LouiKnob.tsx  awaiting-product-decision
+src/renderer/components/product/controls/LouiMiniMeter.tsx  awaiting-product-decision
+src/renderer/components/product/controls/LouiValueBadge.tsx  awaiting-product-decision
+src/renderer/components/product/controls/index.ts  awaiting-product-decision
+src/renderer/components/product/modules/ExportSupportBadge.tsx  awaiting-product-decision
+src/renderer/audio/modules/realtime-gr-context.tsx  awaiting-product-decision
+
+src/renderer/audio/mock-analyzer-session.ts  storybook-fixture
+src/renderer/components/product/LouiRealtimeDebugPanel.tsx  storybook-fixture
+src/renderer/components/product/modules/LouiGainReductionMeter.tsx  storybook-fixture
+
+src/renderer/audio/dev-mode.ts  awaiting-product-decision
+src/renderer/audio/media-element-context.tsx  awaiting-product-decision
+src/renderer/hooks/useNativeAnalyzer.ts  awaiting-product-decision

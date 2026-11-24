@@ -171,6 +171,9 @@ function NoData(props: { width: number; label: string }) {
  * are the notches landing on the hum, and how much programme material sits
  * under them.
  */
+/** One empty curve, not a fresh one per render — it feeds a memo's deps. */
+const NO_CURVE: readonly number[] = [];
+
 export function DehumView(props: {
   values: Record<string, ParameterValue>;
   width: number;
@@ -439,7 +442,7 @@ export function MatchView(props: {
   disabled?: boolean | undefined;
 }) {
   const source = props.metrics.tonalCurveDb;
-  const target = props.targetCurveDb ?? [];
+  const target = props.targetCurveDb ?? NO_CURVE;
   const amount = num(props.values, 'amountPct', 50);
   const maxMove = num(props.values, 'maxMoveDb', 3);
 

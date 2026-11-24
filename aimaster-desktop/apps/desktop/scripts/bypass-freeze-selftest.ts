@@ -28,7 +28,7 @@
  * Run via:  pnpm --filter @aimaster/desktop test:bypass-freeze
  */
 
-import { OfflineAudioContext } from 'node-web-audio-api';
+import { OfflineAudioContext } from './lib/offline-audio-context.js';
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 
 import { readFileSync } from 'node:fs';

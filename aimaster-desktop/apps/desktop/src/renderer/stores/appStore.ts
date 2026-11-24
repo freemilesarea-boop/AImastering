@@ -5,8 +5,42 @@ export type Page = 'home' | 'mastering' | 'result' | 'tweak' | 'studio' | 'qc' |
 /** How long a message stays on screen, when nothing replaces it. */
 export const NOTIFY_MS = 3500;
 
+/** How long the key hint stays. Shorter than a message — it is an aside. */
+export const CHORD_HINT_MS = 2600;
+
+/**
+ * How long the projector keeps a key.
+ *
+ * Long enough to write down, short enough that the next one is not queued
+ * behind it: an instructor demonstrating a chain of edits presses a key every
+ * couple of seconds.
+ */
+export const DEMO_CAST_MS = 1600;
+
 interface Notification {
+  /** The first line, for readers that want one string. */
   message: string;
+  /**
+   * Everything this turn said, in order — usually one line.
+   *
+   * Fourteen places in this app report trouble like this:
+   *
+   *     for (const problem of result.problems.slice(0, 3)) notify(problem, 'warning');
+   *
+   * and with one slot and nothing else, that showed the THIRD problem and
+   * threw the other two away.  One of them is worse: `daw-commands.ts` emits
+   * its warnings, then its skipped tracks, then a success line — so the only
+   * thing that ever reached the screen was "saved", from a run that had
+   * warnings.  Every one of those loops was written as if the notifier
+   * queued, and that is the behaviour that was missing, not fourteen bugs.
+   *
+   * So messages raised in the SAME turn join one notification instead of
+   * replacing each other.  A later turn — the next thing the user does —
+   * still replaces, which is what a confirmation wants.
+   */
+  lines: string[];
+  /** How many more there were than `lines` holds. */
+  hidden: number;
   type: 'info' | 'success' | 'error' | 'warning';
   /**
    * Which call put this here.
@@ -18,15 +52,59 @@ interface Notification {
    * older one's countdown.  Measured in the app at 0.2 s against the 3.5 s
    * it was supposed to get.  A timer now only clears the message it was
    * scheduled for.
+   *
+   * A group keeps the id of its first line, so that one timer still governs
+   * the whole group and the rule above is unchanged.
    */
+  id: number;
+}
+
+/** Lines one toast will hold before it starts counting the rest. */
+export const NOTIFY_MAX_LINES = 6;
+
+/** Which type wins when a turn raises more than one kind. */
+const SEVERITY: Record<Notification['type'], number> = {
+  info: 0, success: 1, warning: 2, error: 3,
+};
+
+/**
+ * "That button has a key" — shown beside the message, never instead of it.
+ *
+ * Its own slot because the notifier has exactly one, and a hint that competed
+ * for it would cut the command's own message short: measured at 0.2 s against
+ * the 3.5 s it was supposed to get, which is the comment above this one.
+ */
+interface ChordHint {
+  label: string;
+  chord: string;
+  id: number;
+}
+
+/**
+ * What the instructor just ran, for the projector.
+ *
+ * Its own slot again, and a short one: this replaces itself several times a
+ * minute during a demonstration, while the message slot has to hold what the
+ * command SAID for long enough to read.  Two things, two lifetimes.
+ */
+interface DemoCast {
+  label: string;
+  /** The key, or null when it was a click. */
+  chord: string | null;
   id: number;
 }
 
 interface AppStore {
   currentPage: Page;
   notification: Notification | null;
+  chordHint: ChordHint | null;
+  demoCast: DemoCast | null;
   setPage: (page: Page) => void;
   notify: (message: string, type?: Notification['type']) => void;
+  /** Show a command's key. The policy for WHETHER lives in chord-hints.ts. */
+  showChordHint: (label: string, chord: string) => void;
+  /** Announce a command on the projector. The flag lives in demo-mode.ts. */
+  castCommand: (label: string, chord: string | null) => void;
 }
 
 // ── Bootstrap guard ───────────────────────────────────────────────────────────
@@ -67,6 +145,18 @@ function initialPage(): Page {
 }
 
 let notifySeq = 0;
+/**
+ * The notification a synchronous burst is still adding to, or null.
+ *
+ * Closed in a microtask rather than after a number of milliseconds: the
+ * boundary is then exactly "the same turn", with nothing to tune and no
+ * window in which two unrelated actions can be mistaken for one.  Anything
+ * raised after an `await` starts its own notification, which is right —
+ * that is a different moment to the user as well.
+ */
+let openGroup: number | null = null;
+let hintSeq = 0;
+let castSeq = 0;
 
 export const useAppStore = create<AppStore>((set, get) => ({
   currentPage:  initialPage(),
@@ -85,9 +175,47 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ currentPage: page });
   },
 
+  demoCast: null,
+  castCommand: (label, chord) => {
+    const id = ++castSeq;
+    set({ demoCast: { label, chord, id } });
+    setTimeout(() => {
+      if (get().demoCast?.id === id) set({ demoCast: null });
+    }, DEMO_CAST_MS);
+  },
+
+  chordHint: null,
+  showChordHint: (label, chord) => {
+    const id = ++hintSeq;
+    set({ chordHint: { label, chord, id } });
+    setTimeout(() => {
+      // Only if this is still the hint this timer was started for — the same
+      // trap the message slot fell into.
+      if (get().chordHint?.id === id) set({ chordHint: null });
+    }, CHORD_HINT_MS);
+  },
+
   notify: (message, type = 'info') => {
+    const current = get().notification;
+    if (openGroup !== null && current !== null && current.id === openGroup) {
+      // The same line twice is one line: several of these loops run over a
+      // list that can repeat, and a toast that says the same thing three
+      // times is the same as saying it once, only longer.
+      if (current.lines.includes(message)) return;
+      const room = current.lines.length < NOTIFY_MAX_LINES;
+      set({ notification: {
+        ...current,
+        lines: room ? [...current.lines, message] : current.lines,
+        hidden: room ? current.hidden : current.hidden + 1,
+        type: SEVERITY[type] > SEVERITY[current.type] ? type : current.type,
+      } });
+      return;
+    }
+
     const id = ++notifySeq;
-    set({ notification: { message, type, id } });
+    openGroup = id;
+    queueMicrotask(() => { if (openGroup === id) openGroup = null; });
+    set({ notification: { message, lines: [message], hidden: 0, type, id } });
     setTimeout(() => {
       // Only if this is still the message this timer was started for.
       if (get().notification?.id === id) set({ notification: null });

@@ -101,6 +101,44 @@ export interface SanitisedParams {
 }
 
 /**
+ * What a sanitise cost, in one line — or `null` when it cost nothing.
+ *
+ * `sanitiseParams` has returned this from the start and its own comment says
+ * "what was dropped comes back so a caller can say so".  Six call sites took
+ * `.params` and threw the rest away, and no caller said anything.
+ *
+ * Three of those six load something a PERSON wrote — a saved rack, a saved
+ * preset, a preset file from somewhere else — and there the loss is both
+ * invisible and permanent: a dropped id is not a blank, it falls back to the
+ * factory default the next time `resolvePreset` runs, so the device ends up
+ * sounding like the factory while the toast says the preset loaded.  The
+ * other three read from a device that is running, where there is nothing
+ * stale to lose.
+ *
+ * Names for the clamped ones, because the user set those in the UI and knows
+ * them by their labels.  Ids for the unknown ones, because by definition this
+ * build has no label to offer.
+ */
+export function describeSanitise(pluginId: string, result: SanitisedParams): string | null {
+  if (result.unknown.length === 0 && result.clamped.length === 0) return null;
+  const device = findPlugin(pluginId);
+  const named = (id: string): string =>
+    device?.params.find((p) => p.id === id)?.name ?? id;
+  const list = (ids: readonly string[], label: (id: string) => string): string => {
+    const shown = ids.slice(0, 3).map(label);
+    return ids.length > 3 ? `${shown.join(', ')} 외 ${ids.length - 3}개` : shown.join(', ');
+  };
+  const parts: string[] = [];
+  if (result.unknown.length > 0) {
+    parts.push(`${list(result.unknown, (id) => id)} — 이 빌드에 없는 설정이라 생략`);
+  }
+  if (result.clamped.length > 0) {
+    parts.push(`${list(result.clamped, named)} — 범위를 벗어나 조정`);
+  }
+  return parts.join(' · ');
+}
+
+/**
  * Check a stored parameter map against the device that will receive it.
  *
  * Everything about a preset is user-writable, and a device's ranges change
@@ -223,6 +261,21 @@ export function asPluginPreset(preset: UserPreset): PluginPreset {
     note: preset.note,
     params: sanitiseParams(preset.pluginId, preset.params).params,
   };
+}
+
+/**
+ * What loading this saved preset would cost, or `null` when nothing is lost.
+ *
+ * Asked at the moment of loading rather than carried on `PluginPreset`: that
+ * type is the factory catalogue's too, and a field only user presets ever set
+ * is a field every reader has to learn is usually absent.  The envelope is
+ * already in memory for the picker, so this is a lookup, not a read.
+ */
+export function userPresetLoss(id: string): string | null {
+  if (!isUserPresetId(id)) return null;
+  const preset = readEnvelope().items.find((p) => p.id === id);
+  if (!preset) return null;
+  return describeSanitise(preset.pluginId, sanitiseParams(preset.pluginId, preset.params));
 }
 
 /**
@@ -378,6 +431,14 @@ export interface ImportReport {
   skipped: number;
   /** One line per skipped entry, so a partial import can be explained. */
   reasons: string[];
+  /**
+   * One line per entry that came in with settings missing.
+   *
+   * Separate from `reasons`: those entries did not arrive at all, these did
+   * and are not what the file said.  Rolling them together would let a
+   * caller print "2 skipped" about presets that are sitting in the list.
+   */
+  adjusted: string[];
 }
 
 /**
@@ -389,7 +450,7 @@ export interface ImportReport {
  * three outcomes keeps both.
  */
 export function importUserPresets(json: string): ImportReport {
-  const report: ImportReport = { added: 0, renamed: 0, skipped: 0, reasons: [] };
+  const report: ImportReport = { added: 0, renamed: 0, skipped: 0, reasons: [], adjusted: [] };
   let parsed: unknown;
   try { parsed = JSON.parse(json); } catch {
     report.skipped += 1;
@@ -435,6 +496,7 @@ export function importUserPresets(json: string): ImportReport {
     }
     const name = uniqueName(wanted, taken);
     if (name !== wanted) report.renamed += 1;
+    const checked = sanitiseParams(raw.pluginId, raw.params);
     env.items.push({
       id: newId(),
       pluginId: raw.pluginId,
@@ -442,14 +504,16 @@ export function importUserPresets(json: string): ImportReport {
       note: sanitiseNote(raw.note ?? ''),
       createdAt: Number.isFinite(raw.createdAt) ? raw.createdAt : now,
       updatedAt: now,
-      params: sanitiseParams(raw.pluginId, raw.params).params,
+      params: checked.params,
     });
+    const lost = describeSanitise(raw.pluginId, checked);
+    if (lost) report.adjusted.push(`${name} — ${lost}`);
     report.added += 1;
   }
 
   if (report.added > 0 && !writeEnvelope(env)) {
     return { added: 0, renamed: 0, skipped: report.added + report.skipped,
-      reasons: ['프리셋을 저장할 수 없습니다'] };
+      reasons: ['프리셋을 저장할 수 없습니다'], adjusted: [] };
   }
   return report;
 }
@@ -468,5 +532,6 @@ export function describeImport(report: ImportReport): string {
   const parts: string[] = [`${report.added}개 추가`];
   if (report.renamed > 0) parts.push(`${report.renamed}개 이름 변경`);
   if (report.skipped > 0) parts.push(`${report.skipped}개 건너뜀`);
+  if (report.adjusted.length > 0) parts.push(`${report.adjusted.length}개는 설정 일부가 빠진 채로`);
   return parts.join(' · ');
 }

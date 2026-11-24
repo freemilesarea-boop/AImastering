@@ -69,7 +69,7 @@ export async function ensureSource(
   if (!api) throw new Error('PCM 스토어를 사용할 수 없습니다');
 
   const task = (async () => {
-    const reply = await api.invoke('daw:pcm-source', { path, sampleRate }) as PcmSourceReply;
+    const reply = await askMain(api, path, sampleRate);
     const source: PcmSource = {
       fileId,
       key: reply.key,
@@ -88,6 +88,28 @@ export async function ensureSource(
   try { return await task; } finally { pending.delete(fileId); }
 }
 
+/**
+ * Electron's own wrapper around a handler's error.  Measured on the running
+ * app: a rejection from `daw:pcm-source` arrives as
+ *
+ *   Error invoking remote method 'daw:pcm-source': Error: 오디오 파일을 …
+ *
+ * and that whole string is what gets recorded as the reason a track is
+ * silent.  Main went to the trouble of turning ffmpeg's stderr into a
+ * sentence; this takes the envelope off it.
+ */
+const IPC_WRAPPER = /^Error invoking remote method '[^']*':\s*(?:[A-Za-z]*Error:\s*)?/;
+
+async function askMain(api: Bridge, path: string, sampleRate: number): Promise<PcmSourceReply> {
+  try {
+    return await api.invoke('daw:pcm-source', { path, sampleRate }) as PcmSourceReply;
+  } catch (err) {
+    const said = err instanceof Error ? err.message : String(err);
+    const clean = said.replace(IPC_WRAPPER, '').trim();
+    throw clean && clean !== said ? new Error(clean) : err;
+  }
+}
+
 export type SourceProgress = (done: number, total: number) => void;
 
 /**
@@ -100,12 +122,21 @@ export type SourceProgress = (done: number, total: number) => void;
  */
 const PREPARE_CONCURRENCY = 4;
 
-/** Prepare a set of files, reporting progress.  Failures are collected. */
+/**
+ * Prepare a set of files, reporting progress.  Failures are collected.
+ *
+ * `errors` is keyed by path and holds what main actually said — which is the
+ * whole point of returning it: the caller used to get paths only and recorded
+ * a placeholder sentence against each one, so the reason main had already
+ * worked out (a file that is not audio, a file that moved, a disk with no
+ * room) never reached the person looking at the empty track.
+ */
 export async function ensureSources(
   files: ReadonlyArray<{ id: FileId; path: string }>, sampleRate: number,
   onProgress?: SourceProgress,
-): Promise<{ ready: number; failed: string[] }> {
+): Promise<{ ready: number; failed: string[]; errors: Map<string, unknown> }> {
   const failed: string[] = [];
+  const errors = new Map<string, unknown>();
   let ready = 0;
   let seen = 0;
   let next = 0;
@@ -117,12 +148,12 @@ export async function ensureSources(
         const file = files[next++];
         if (file === undefined) return;
         try { await ensureSource(file.id, file.path, sampleRate); ready += 1; }
-        catch { failed.push(file.path); }
+        catch (err) { failed.push(file.path); errors.set(file.path, err); }
         seen += 1;
         onProgress?.(seen, files.length);
       }
     },
   );
   await Promise.all(workers);
-  return { ready, failed };
+  return { ready, failed, errors };
 }

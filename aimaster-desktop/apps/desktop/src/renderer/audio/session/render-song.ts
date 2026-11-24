@@ -24,6 +24,7 @@
 // and `chainConfigHonored` is how it says so.
 
 import { buildChainConfig } from '../chain-config.js';
+import { loudnessAfterFromRenderMetrics } from './render-metrics.js';
 import { freeBandToWire } from '../modules/eq-graph-model.js';
 import { layerAlbumPreset, type LayerReport, type SongSettings } from './song-settings.js';
 import { louiPresetToMasteringOptions } from '../presets/preset-to-options.js';
@@ -201,8 +202,16 @@ export async function renderSong(input: RenderSongInput): Promise<RenderSongOutp
       truePeakDbtp:   input.analysis.loudness?.truePeakDbtp ?? 0,
       lra:            input.analysis.loudness?.lra ?? 0,
     },
-    loudnessAfter: (res.metrics as MasteringResult['loudnessAfter'])
-      ?? input.analysis.loudness,
+    // The Rust channel answers in its own metric names; this maps the two
+    // it actually measured and refuses to invent the rest.  Null means the
+    // render measured no loudness — the UI says so rather than printing a
+    // zero.  See `render-metrics.ts` for what the payload looks like.
+    // Null, not the BEFORE analysis: `input.analysis.loudness` is what the
+    // source measured, and showing it as the master's own numbers is how a
+    // user concludes the master changed nothing.  The old code fell back to
+    // it for exactly that reason, and the result page would have shown a
+    // 0.0 dB delta for a file that did move.
+    loudnessAfter: loudnessAfterFromRenderMetrics(res.metrics),
     spectralBalance: null,
     analysisReport: null,
     // Reaching here with `fallbackUsed` means the main process is older

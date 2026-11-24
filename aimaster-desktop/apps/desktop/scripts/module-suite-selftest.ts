@@ -221,17 +221,31 @@ console.log('\n=== MODULE SUITE — state → chain config ===\n');
   );
   check('no module has an empty parameter list', emptyDefs.length === 0, `empty=[${emptyDefs.join(', ')}]`);
 
-  // A suite binding must name a dotted chain-config path — a bare field
-  // name is a knob that silently does nothing.  (The five original modules
-  // predate this convention and use EngineSchema-relative paths, so they
-  // are checked by their own harnesses, not here.)
+  // A suite binding must name a dotted chain-config path — a bare field name
+  // is a knob that silently does nothing.
+  //
+  // The five original modules predate this convention and use
+  // EngineSchema-relative paths (`adaptive-eq:bands[lowCut].freqHz`), so they
+  // are skipped here.  This used to say they "are checked by their own
+  // harnesses" — true of their BEHAVIOUR, false of their paths: searched, and
+  // nothing in `scripts/` resolves one, because the schema they address is
+  // not in this repository.  `parameter-reach-selftest` now says so in the
+  // place it matters, pins their count at 35 so the vocabulary can only
+  // shrink, and holds that each of those knobs at least moves a config.
+  //
+  // The shape is held here; WHERE THE PATH POINTS is held by
+  // `parameter-reach-selftest`'s "a declared binding path names the config
+  // field that actually moves", which moves each parameter and diffs the
+  // config to find its real address.  This check alone accepted
+  // `dehum.anything` as readily as `dehum.frequencyHz`, so on its own it was
+  // a spelling rule standing in for a correctness one.
   const badPaths: string[] = [];
   for (const id of Object.keys(SUITE_PARAMETER_DEFS) as ModuleId[]) {
     for (const p of ALL_MODULE_PARAMETER_DEFS[id].parameters) {
       if (!p.binding.path.includes('.')) badPaths.push(`${id}.${p.id}`);
     }
   }
-  check('every suite binding names a config path', badPaths.length === 0, `bad=[${badPaths.join(', ')}]`);
+  check('every suite binding is shaped like a config path', badPaths.length === 0, `bad=[${badPaths.join(', ')}]`);
 }
 
 // ── 1b. Dither ───────────────────────────────────────────────────────────

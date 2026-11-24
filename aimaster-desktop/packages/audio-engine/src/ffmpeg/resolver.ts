@@ -41,9 +41,20 @@ export interface ResolveBinOptions {
 const IS_WIN = process.platform === 'win32';
 const WIN_EXT = IS_WIN ? '.exe' : '';
 
-/** Check whether the given path points to an executable file. */
+/**
+ * Check whether the given path points to an executable FILE.
+ *
+ * The `statSync` half is not decoration: `access(X_OK)` succeeds for a
+ * directory — that is what the execute bit means on a directory — so
+ * `AIMASTER_FFMPEG=/opt/ffmpeg/bin`, which is the obvious thing to try if you
+ * think the variable takes a folder, used to be accepted as the binary and
+ * handed to `spawn`, which then failed with EACCES somewhere far from here.
+ * The warning below, which exists to say exactly "that is not executable",
+ * could not fire for it.
+ */
 function isExecutable(filePath: string): boolean {
   try {
+    if (!fs.statSync(filePath).isFile()) return false;
     fs.accessSync(filePath, fs.constants.X_OK);
     return true;
   } catch {

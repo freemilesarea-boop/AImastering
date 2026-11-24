@@ -34,7 +34,7 @@ export const TOOL_LABELS: Record<ToolId, string> = {
 export type PanelId =
   | 'transport' | 'mixConsole' | 'bottomZone' | 'inspector'
   | 'rightRack' | 'mediaBay' | 'vstEditor' | 'help' | 'surface'
-  | 'controlRoom' | 'provenance' | 'deviceSetup';
+  | 'controlRoom' | 'provenance' | 'deviceSetup' | 'palette';
 
 /**
  * Panels that occupy the same corner of the screen.
@@ -47,6 +47,10 @@ export type PanelId =
 export const PANEL_SLOTS: readonly (readonly PanelId[])[] = [
   // The right-hand MIDI window: control surface bindings and device setup.
   ['surface', 'deviceSetup'],
+  // Both of these are full-screen overlays at the same z-index, which is the
+  // exact arrangement the note above is about: whichever lost the DOM order
+  // would still have clickable buttons under the other one.
+  ['help', 'palette'],
 ];
 
 /** Which panels have to close for `opening` to be the only one in its slot. */
@@ -73,6 +77,20 @@ export interface WorkspaceState {
   snapEnabled: boolean;
   snapGridSec: number;
   toggleSnap: () => void;
+  /**
+   * Load an instrument chain's reverb and delay onto shared auxes instead of
+   * into the channel.
+   *
+   * Here rather than in the two pickers because it is one decision about the
+   * session, not two about two panels: turn it on in the insert rack, reach
+   * for the mixer strip, and the strip has to already agree — otherwise the
+   * second track routed is the one that quietly builds its own second plate.
+   *
+   * Off by default, which is the argument `instrument-chains.ts` makes at
+   * length: the channel version works without anybody understanding it.
+   */
+  chainSendRouting: boolean;
+  toggleChainSendRouting: () => void;
   /** Section boundaries (seconds) used as snap targets when available. */
   snapMarkers: number[];
   setSnapMarkers: (m: number[]) => void;
@@ -133,8 +151,6 @@ export interface WorkspaceState {
   /** Clear the applying flag once the undone/redone snapshot is in audioStore. */
   endApplyHistory: () => void;
   redoOptions: () => MasteringOptions | null;
-  canUndoOptions: () => boolean;
-  canRedoOptions: () => boolean;
 
   // Settings clipboard (Mod+C / Mod+V)
   clipboard: MasteringOptions | null;
@@ -156,8 +172,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setTool: (t) => set({ tool: t }),
 
   snapEnabled: false,
+  chainSendRouting: false,
   snapGridSec: 1,
   toggleSnap: () => set((s) => ({ snapEnabled: !s.snapEnabled })),
+  toggleChainSendRouting: () => set((s) => ({ chainSendRouting: !s.chainSendRouting })),
   snapMarkers: [],
   setSnapMarkers: (m) => set({ snapMarkers: [...m].sort((a, b) => a - b) }),
 
@@ -212,6 +230,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     mediaBay:   false,
     vstEditor:  false,
     help:       false,
+    palette:    false,
     surface:    false,
     deviceSetup: false,
   },
@@ -248,8 +267,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     return next.present;
   },
   endApplyHistory: () => set({ applyingHistory: false }),
-  canUndoOptions: () => { const h = get().history; return h ? canUndo(h) : false; },
-  canRedoOptions: () => { const h = get().history; return h ? canRedo(h) : false; },
 
   clipboard: null,
   setClipboard: (o) => set({ clipboard: o }),

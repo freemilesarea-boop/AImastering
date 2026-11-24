@@ -23,7 +23,7 @@
 //   into.  Carrying the id would silently key a ducker off the wrong thing —
 //   the one failure here nobody would hear until the mix was wrong.
 
-import { sanitiseParams } from '../engine/user-presets.js';
+import { describeSanitise, sanitiseParams } from '../engine/user-presets.js';
 import { findPlugin } from '../engine/plugins.js';
 import { createInsert, findTrack } from './session-ops.js';
 import { INSERT_SLOTS } from './types.js';
@@ -123,7 +123,16 @@ export interface LoadResult {
   session: DawSession;
   /** Devices that landed, in slot order. */
   loaded: RackDevice[];
-  /** One line per device that did not, naming it and why. */
+  /**
+   * One line per thing that did not survive the load, naming it and why.
+   *
+   * Not only devices that failed to land: a device CAN land with settings
+   * missing — an id this build no longer has, a value pulled back into
+   * range — and that is the quieter half, because the rack appears, the
+   * toast says it loaded, and the dropped setting comes back as the factory
+   * default.  Both go here so every caller reports both; they all already
+   * show this list.
+   */
   problems: string[];
 }
 
@@ -157,7 +166,10 @@ export function loadRack(
       problems.push(`${descriptor.name} — 슬롯 ${device.slot} 은 이 랙에 없습니다`);
       continue;
     }
-    const params = sanitiseParams(device.pluginId, device.params).params;
+    const checked = sanitiseParams(device.pluginId, device.params);
+    const lost = describeSanitise(device.pluginId, checked);
+    if (lost) problems.push(`${descriptor.name} — ${lost}`);
+    const params = checked.params;
     const insert = createInsert(device.slot, device.pluginId, device.label || descriptor.name, {
       bypass: device.bypass === true,
       params,

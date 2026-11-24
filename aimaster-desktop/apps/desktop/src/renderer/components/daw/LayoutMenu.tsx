@@ -10,7 +10,7 @@
 // reason the mix snapshots do: switching room is a large visual jump, and a
 // button whose effect you only learn afterwards is one people stop pressing.
 
-import React, { useLayoutEffect, useRef, useState } from 'react';
+import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useDawStore } from '../../stores/dawStore.js';
 import { useWorkspaceStore } from '../../stores/workspaceStore.js';
 import { usePanelWindowStore } from '../../stores/panelWindowStore.js';
@@ -20,11 +20,18 @@ import { describeLayoutDiff, layoutDiff } from '../../daw/edit/layout-ops.js';
 import { askText } from '../../ui/text-prompt.js';
 import { LAYER } from '../../theme/layers.js';
 import { dropdownOffset } from '../../ui/dropdown-place.js';
+import { commandTitle } from '../../shortcuts/command-title.js';
+import { detectPlatform } from '../../shortcuts/keys.js';
+import { useShortcutStore } from '../../stores/shortcutStore.js';
 
 /** Wide enough for a name, a difference and two buttons without wrapping. */
 const MENU_WIDTH = 320;
 
 export default function LayoutMenu() {
+  // A tooltip asks the keymap rather than spelling a chord out, so it
+  // follows a remap and shows the key this platform prints.
+  const chordOverrides = useShortcutStore((s) => s.overrides);
+  const chordPlatform = useMemo(() => detectPlatform(), []);
   const layouts = useDawStore((s) => s.layouts);
   const open = useDawStore((s) => s.layoutsOpen);
   const setOpen = useDawStore((s) => s.setLayoutsOpen);
@@ -80,7 +87,7 @@ export default function LayoutMenu() {
     <div className="relative" ref={anchor}>
       <button
         onClick={() => setOpen(!open)}
-        title="작업 화면을 이름 붙여 저장하고 한 번에 되돌립니다 (Mod+Alt+Shift+L)"
+        title={commandTitle('daw.layoutMenu', chordOverrides, chordPlatform, '작업 화면을 이름 붙여 저장하고 한 번에 되돌립니다')}
         className={`h-7 px-2 rounded border text-[11px] ${open
           ? 'bg-zinc-800 border-zinc-600 text-zinc-200'
           : 'bg-zinc-900 border-zinc-700 text-zinc-400'}`}

@@ -9,7 +9,7 @@
 // Pure graph maths over the session model — no audio nodes involved.
 
 import type { BusId, DawSession, Insert, SendId, Track, TrackId } from './types.js';
-import { findTrack } from './session-ops.js';
+import { addTrack, createTrack, findTrack } from './session-ops.js';
 import { descriptorLatency, findPlugin } from '../engine/plugins.js';
 import { materializeRack, moduleParams } from './macros.js';
 import { rackModulesNeeded } from './macro-automation.js';
@@ -34,6 +34,22 @@ export interface RouteEdge {
 export interface RouteGraph {
   nodes: RouteNodeId[];
   edges: RouteEdge[];
+}
+
+/**
+ * Tracks that actually pass audio.  VCAs are control-only, and a folder stack
+ * that does not sum its children has no signal path of its own.
+ *
+ * It lives here, not in the engine that asks it most, because the engine
+ * already imports this module: the other direction would close a cycle
+ * between the graph maths and the thing it describes, and a cycle that only
+ * works because nobody calls across it at module-init time is a trap set for
+ * whoever adds the first top-level call.
+ */
+export function carriesAudio(track: Track): boolean {
+  if (track.kind === 'vca') return false;
+  if (track.kind === 'folder' && track.input === null) return false;
+  return true;
 }
 
 export function buildRouteGraph(session: DawSession): RouteGraph {
@@ -169,6 +185,144 @@ export function insertLatency(track: Track, sampleRate: number): number {
       return sum + (descriptor ? descriptor.latencyFor(moduleParams(m), sampleRate) : 0);
     }, 0);
   return manual + graph + rack;
+}
+
+// ── Dead ends ─────────────────────────────────────────────────────────────────
+//
+// A bus is a routing node and nothing else.  `MixerEngine.buildBus` returns
+// its output connected to NOTHING, and the one wire that makes a bus audible
+// is an aux track reading it:
+//
+//     if (track.input) this.buses.get(track.input)?.output.connect(ch.input);
+//
+// So everything written into a bus that no aux reads is discarded.  "I put a
+// reverb on a send and I hear nothing" is this, and it is the hardest thing
+// in the mixer to find, because every control involved looks right: the send
+// is up, the bus exists, the reverb is on it, nothing is muted.
+//
+// Reachability, not one hop.  An aux may return its bus into ANOTHER bus, so
+// a chain of returns that ends nowhere is exactly as silent as no return at
+// all, and a check that only asks "does some aux read this bus" passes on it.
+
+/** A bus whose audio reaches nothing audible, and what is being lost in it. */
+export interface DeadEndBus {
+  busId: BusId;
+  /** Tracks whose MAIN output lands here — they cannot be heard at all. */
+  silenced: TrackId[];
+  /**
+   * Live sends aimed here, each one a fader that does nothing.
+   *
+   * Empty when the bus is a sidechain key source: feeding a compressor's key
+   * input is the normal use for a send whose audio is never meant to be
+   * heard, and flagging it would make this warning something to learn to
+   * ignore.  A track whose MAIN output lands here is still silenced, key or
+   * no key — nobody routes a channel's only output to a key bus on purpose.
+   */
+  deadSends: Array<[TrackId, SendId]>;
+  /** Inserts keying a sidechain off this bus — why a dead end can be right. */
+  keys: Array<[TrackId, string]>;
+}
+
+/**
+ * Every node whose audio reaches somewhere a listener would hear it.
+ *
+ * Walked backwards from the sinks, which are two and not one: the master NODE
+ * that `output.kind === 'master'` points at, and the master TRACK itself,
+ * which the engine wires straight to the destination and which an aux may
+ * feed through `input`.
+ */
+function audibleNodes(session: DawSession): Set<RouteNodeId> {
+  const graph = buildRouteGraph(session);
+  const into = new Map<RouteNodeId, RouteNodeId[]>();
+  for (const n of graph.nodes) into.set(n, []);
+  for (const e of graph.edges) into.get(e.to)?.push(e.from);
+
+  const queue: RouteNodeId[] = [MASTER_NODE];
+  for (const t of session.tracks) if (t.kind === 'master') queue.push(trackNode(t.id));
+  const heard = new Set<RouteNodeId>(queue);
+  while (queue.length > 0) {
+    const node = queue.pop() as RouteNodeId;
+    for (const from of into.get(node) ?? []) {
+      if (heard.has(from)) continue;
+      heard.add(from);
+      queue.push(from);
+    }
+  }
+  return heard;
+}
+
+/**
+ * Buses that swallow audio, with the tracks and sends they swallow it from.
+ *
+ * A bus nothing writes into is NOT reported: an empty bus is a bus waiting to
+ * be used, and a warning on the one the user just created would be the first
+ * one they learn to dismiss.
+ */
+export function deadEndBuses(session: DawSession): DeadEndBus[] {
+  const heard = audibleNodes(session);
+  const out: DeadEndBus[] = [];
+
+  for (const bus of session.buses) {
+    if (heard.has(busNode(bus.id))) continue;
+
+    const silenced: TrackId[] = [];
+    const sends: Array<[TrackId, SendId]> = [];
+    const keys: Array<[TrackId, string]> = [];
+
+    for (const track of session.tracks) {
+      // A VCA carries no audio, and neither does a folder with no input — so
+      // neither can lose any.  The same predicate the engine builds channels
+      // from, not a copy of it: a copy drifts.
+      if (!carriesAudio(track)) continue;
+      if (track.output.kind === 'bus' && track.output.busId === bus.id) silenced.push(track.id);
+      for (const send of track.sends) {
+        if (send.mute || send.target !== bus.id) continue;
+        sends.push([track.id, send.id]);
+      }
+      for (const insert of track.inserts) {
+        if (insert.sidechainSource === bus.id) keys.push([track.id, insert.id]);
+      }
+    }
+
+    const deadSends = keys.length > 0 ? [] : sends;
+    if (silenced.length + deadSends.length === 0) continue;
+    out.push({ busId: bus.id, silenced, deadSends, keys });
+  }
+
+  return out;
+}
+
+/**
+ * Give a bus the return channel it was missing, in one step.
+ *
+ * An aux that reads the bus and goes to the master — the only wiring that
+ * makes a bus audible, and the one the user already believed was there.  It
+ * takes the bus's own name because a bus called "Plate" with a return called
+ * "Aux 3" is a second puzzle on top of the first.
+ *
+ * `null` when the bus is gone, rather than a session with a return reading
+ * nothing: the panel offering this can be a frame behind the session.
+ *
+ * It lands directly under the last track feeding the bus, not at the bottom
+ * of the session.  A return that appears somewhere off-screen is a second
+ * thing to go looking for, and the row under the sources is where a console
+ * puts it.
+ */
+export function addReturnChannel(
+  session: DawSession, busId: BusId,
+): { session: DawSession; trackId: TrackId } | null {
+  const bus = session.buses.find((b) => b.id === busId);
+  if (!bus) return null;
+  const feeds = (t: Track): boolean =>
+    (t.output.kind === 'bus' && t.output.busId === busId)
+    || t.sends.some((x) => x.target === busId);
+  let last = -1;
+  session.tracks.forEach((t, i) => { if (t.kind !== 'master' && feeds(t)) last = i; });
+  const aux = createTrack(`${bus.name} 리턴`, 'aux', { input: busId });
+  // `undefined` and not `tracks.length`: `addTrack` keeps the master last on
+  // its own, and naming an index past it would be a second rule to keep.
+  const at = last === -1 ? undefined : last + 1;
+  return { session: addTrack(session, aux, at), trackId: aux.id };
 }
 
 /**
@@ -319,8 +473,30 @@ export function computeDelayCompensation(session: DawSession): DelayCompensation
   return { perTrack, perOutput, perSend, maxSamples: max };
 }
 
-/** Human-readable signal path, for the routing readout in the Mix window. */
+/**
+ * The readout's last words when the signal stops before the master.
+ *
+ * No glyph: `✕` is the close button's and `ui-consistency` keeps exactly one
+ * of those, so a mark here would be a second thing to learn for the same
+ * shape.  The colour does the work a glyph would have done.
+ */
+export const PATH_DEAD_END = '여기서 끊김';
+
+/**
+ * Human-readable signal path, for the routing readout in the Mix window.
+ *
+ * It used to stop with a bus's name last, and a readout that ends on a bus
+ * name reads as though it carries on to the master.  It does not — a bus
+ * nothing returns is where the audio stops — so the one case the reader
+ * cannot see is the one the line has to say out loud.
+ *
+ * Asked of the whole graph rather than of the next hop: this walk follows the
+ * FIRST aux reading each bus, and a bus with two returns where only the other
+ * one reaches the master is audible.  `'✕'` on that would be a lie in the
+ * other direction, and a readout that cries wolf is one nobody reads.
+ */
 export function describePath(session: DawSession, trackId: TrackId): string {
+  const heard = audibleNodes(session);
   const parts: string[] = [];
   const seen = new Set<TrackId>();
   let current = findTrack(session, trackId);
@@ -336,6 +512,7 @@ export function describePath(session: DawSession, trackId: TrackId): string {
     const busId = current.output.busId;
     const bus = session.buses.find((b) => b.id === busId);
     parts.push(bus?.name ?? busId);
+    if (!heard.has(busNode(busId))) { parts.push(PATH_DEAD_END); break; }
     current = session.tracks.find((t) => t.input === busId);
   }
   return parts.join(' → ');

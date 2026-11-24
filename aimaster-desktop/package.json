@@ -1,6 +1,6 @@
 {
   "name": "aimaster-desktop-monorepo",
-  "version": "3.7.0",
+  "version": "3.8.0",
   "private": true,
   "packageManager": "pnpm@9.0.0",
   "scripts": {
@@ -35,7 +35,8 @@
       "builder-util-runtime": "9.2.4",
       "dmg-builder": "24.13.3",
       "electron-builder-squirrel-windows": "24.13.3",
-      "electron-publish": "24.13.1"
+      "electron-publish": "24.13.1",
+      "sharp": "0.33.5"
     },
     "peerDependencyRules": {
       "ignoreMissing": [

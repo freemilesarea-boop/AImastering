@@ -70,9 +70,16 @@ cd aimaster-desktop
 pnpm install
 pnpm typecheck                                 # must be clean
 pnpm --filter @aimaster/desktop build
-pnpm --filter @aimaster/desktop test           # 81 PASS / 0 FAIL
+pnpm --filter @aimaster/desktop test           # exit 0 is the criterion
 pnpm --filter @aimaster/desktop test:release-smoke
-( cd services/python-audio && pytest -q )      # 79 passed / 41 skipped
+pnpm --filter @aimaster/desktop test:python    # the Python engine, ~14 min
+
+# Measured 2026-10-18: the chain is 221 steps / 4677 checks, and the Python
+# suite is 526 passed / 0 skipped.  Read the exit code, not these numbers —
+# they are here to say roughly what to expect, and the previous pair (81 PASS,
+# "79 passed / 41 skipped") was both out of date and hiding thirty tests that
+# had removed themselves at collection.  `test:python-suite`, inside the main
+# chain, now fails if any Python test skips itself.
 ```
 
 Then for each downloaded installer:

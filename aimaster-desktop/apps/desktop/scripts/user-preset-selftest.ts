@@ -20,6 +20,7 @@ import {
   exportUserPresets, findUserPreset, importUserPresets, isUserPresetId, listUserPresets,
   overwriteUserPreset, renameUserPreset, resetUserPresetIds, sanitiseName, sanitiseNote,
   sanitiseParams, saveUserPreset, setUserPresetStore, canSaveUserPreset, type PresetStore,
+  describeSanitise, userPresetLoss,
 } from '../src/renderer/daw/engine/user-presets.js';
 import { presetGroups, resolvePreset } from '../src/renderer/daw/engine/plugin-presets.js';
 import { PLUGINS, defaultParams, findPlugin } from '../src/renderer/daw/engine/plugins.js';
@@ -438,11 +439,12 @@ check('an out-of-range value in an imported file is clamped on the way in', () =
 });
 
 check('describeImport says what actually happened', () => {
-  const text = describeImport({ added: 3, renamed: 1, skipped: 2, reasons: [] });
+  const text = describeImport({ added: 3, renamed: 1, skipped: 2, reasons: [], adjusted: ['x'] });
   assert(text.includes('3개 추가'), `added — ${text}`);
   assert(text.includes('1개 이름 변경'), `renamed — ${text}`);
   assert(text.includes('2개 건너뜀'), `skipped — ${text}`);
-  const clean = describeImport({ added: 2, renamed: 0, skipped: 0, reasons: [] });
+  assert(text.includes('1개는 설정 일부가 빠진 채로'), `adjusted — ${text}`);
+  const clean = describeImport({ added: 2, renamed: 0, skipped: 0, reasons: [], adjusted: [] });
   eq(clean, '2개 추가', 'and stays quiet when nothing went wrong');
 });
 
@@ -520,6 +522,125 @@ check('asPluginPreset produces something the picker can use directly', () => {
 // ── Report ────────────────────────────────────────────────────────────────────
 
 setUserPresetStore(null);
+// ── What a preset loses on the way in, said out loud ──────────────────────
+//
+// `sanitiseParams` has always reported this and its own comment said a caller
+// would pass it on.  Six call sites took `.params` and dropped the rest, so a
+// preset saved by an older build came back missing settings and the toast
+// said it loaded.  The three that read a stored preset now say so.
+//
+// The quiet part is that a dropped id is not a blank: `resolvePreset` fills
+// it with the factory default.  The device sounds like the factory in that
+// one place, which is the hardest kind of wrong to notice.
+
+/**
+ * The store as a BUILD AGO left it.
+ *
+ * Written directly, because every way in sanitises: `saveUserPreset` does,
+ * and so does `importUserPresets`.  Nothing this build can do puts a stale
+ * id in the store — which is exactly why the loss only ever shows up on the
+ * way OUT, in a session that opens presets an older version wrote.
+ * `readEnvelope` filters malformed ENTRIES and does not touch their params,
+ * so they survive to the moment of loading.
+ */
+function storeFromAnOlderBuild(params: Record<string, unknown>): string {
+  const id = 'user:old';
+  setUserPresetStore(memoryStore({
+    'loui.daw.presets.user': JSON.stringify({
+      version: 1,
+      items: [{ id, pluginId: 'comp', name: '옛날 보컬', note: '',
+                createdAt: 1, updatedAt: 1, params }],
+    }),
+  }));
+  return id;
+}
+
+check('describeSanitise says nothing when nothing was lost', () => {
+  const clean = sanitiseParams('comp', { thresholdDb: -20, ratio: 4 });
+  eq(describeSanitise('comp', clean), null, 'invented a loss');
+});
+
+check('and names the dropped ids and the clamped ones differently', () => {
+  const result = sanitiseParams('comp', {
+    thresholdDb: -20,          // fine
+    ratio: 999,                // out of range (1..20)
+    warmth: 0.5,               // this build has no such parameter
+    vibe: 1,                   // nor this
+  });
+  const line = describeSanitise('comp', result);
+  assert(line !== null, 'said nothing about a preset that lost two ids');
+  assert(line!.includes('vibe') && line!.includes('warmth'),
+    `did not name the dropped ids: ${line}`);
+  // Clamped ones come back by their UI label, because that is the only name
+  // the user has ever seen for them.
+  assert(line!.includes('Ratio'), `used the id instead of the label: ${line}`);
+  assert(!line!.includes('thresholdDb'), `blamed a parameter that was fine: ${line}`);
+});
+
+check('a long list is cut, not printed whole', () => {
+  const many: Record<string, unknown> = {};
+  for (let i = 0; i < 9; i++) many[`ghost${i}`] = 1;
+  const line = describeSanitise('comp', sanitiseParams('comp', many))!;
+  assert(line.includes('외 6개'), `did not fold the tail: ${line}`);
+  assert(line.length < 80, `a toast this long is a toast nobody reads: ${line.length} chars`);
+});
+
+check('loading a preset an older build saved reports what it cannot bring', () => {
+  const clean = storeFromAnOlderBuild({ ratio: 4, attackMs: 10 });
+  eq(userPresetLoss(clean), null, 'invented a loss on a preset that is still valid');
+
+  const lossy = storeFromAnOlderBuild({ ratio: 4, warmth: 0.5 });
+  const loss = userPresetLoss(lossy);
+  assert(loss !== null, 'a preset that lost a setting loaded silently');
+  assert(loss!.includes('warmth'), `did not name what went missing: ${loss}`);
+
+  // And it is the picker's own entry that goes quiet, which is the thing
+  // that made this invisible: `asPluginPreset` hands over the sanitised map
+  // and `resolvePreset` fills the hole with the factory default, so the
+  // device is wrong in exactly one place and nothing says which.
+  const shown = asPluginPreset(findUserPreset(lossy)!);
+  assert(!('warmth' in shown.params), 'the picker carried a parameter the device has not got');
+  const applied = resolvePreset(shown, defaultParams('comp'));
+  eq(applied.ratio, 4, 'the surviving setting did not survive');
+
+  eq(userPresetLoss('factory:something'), null, 'asked the store about a factory preset');
+});
+
+check('and the import itself says it, separately from what it skipped', () => {
+  setUserPresetStore(memoryStore());
+  resetUserPresetIds();
+  const file = {
+    kind: EXPORT_KIND, version: 1, exportedAt: 0,
+    items: [
+      { id: 'user:a', pluginId: 'comp', name: '멀쩡', note: '',
+        createdAt: 1, updatedAt: 1, params: { ratio: 4 } },
+      { id: 'user:b', pluginId: 'comp', name: '옛날', note: '',
+        createdAt: 1, updatedAt: 1, params: { ratio: 4, warmth: 1 } },
+    ],
+  };
+  const report = importUserPresets(JSON.stringify(file));
+  eq(report.added, 2, 'both should land — neither was skipped');
+  eq(report.skipped, 0, 'nothing was skipped');
+  eq(report.reasons.length, 0, 'a loss is not a skip');
+  eq(report.adjusted.length, 1, `expected one adjusted entry, got ${report.adjusted.length}`);
+  assert(report.adjusted[0]!.startsWith('옛날'), `did not name it: ${report.adjusted[0]}`);
+  assert(describeImport(report).includes('설정 일부'),
+    `the summary hid it: ${describeImport(report)}`);
+});
+
+check('a preset that lost nothing adds nothing to the report', () => {
+  setUserPresetStore(memoryStore());
+  resetUserPresetIds();
+  const file = {
+    kind: EXPORT_KIND, version: 1, exportedAt: 0,
+    items: [{ id: 'user:a', pluginId: 'comp', name: '멀쩡', note: '',
+              createdAt: 1, updatedAt: 1, params: { ratio: 4, attackMs: 10 } }],
+  };
+  const report = importUserPresets(JSON.stringify(file));
+  eq(report.adjusted.length, 0, `warned about a clean import: ${report.adjusted.join(', ')}`);
+  assert(!describeImport(report).includes('설정 일부'), 'the summary cried wolf');
+});
+
 const passed = results.filter((r) => r.pass).length;
 const failed = results.length - passed;
 console.log('\n=== User presets: save · load · files · every device ===');

@@ -398,7 +398,7 @@ export function canRecord(
   session: DawSession, settings: RecordSettings, inputs: RecordInputs = {},
 ): RecordReadiness {
   const armed = armedTracks(session);
-  if (armed.length === 0) return { ok: false, reason: '녹음할 트랙을 먼저 무장(R)하세요' };
+  if (armed.length === 0) return { ok: false, reason: '녹음할 트랙을 먼저 무장하세요' };
   const frozen = armed.filter((t) => t.frozen);
   if (frozen.length > 0) {
     return { ok: false, reason: `프리즈된 트랙에는 녹음할 수 없습니다 — ${frozen[0]?.name}` };

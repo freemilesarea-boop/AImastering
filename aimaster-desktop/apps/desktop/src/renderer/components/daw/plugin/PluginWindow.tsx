@@ -18,11 +18,14 @@ import { defaultParams } from '../../../daw/engine/plugins.js';
 import { resolvePreset } from '../../../daw/engine/plugin-presets.js';
 import type { PluginPreset } from '../../../daw/engine/plugin-presets.js';
 import { partitionGenre } from '../../../daw/engine/plugin-presets-genre.js';
-import { partitionInstrument } from '../../../daw/engine/plugin-presets-instrument.js';
+import {
+  INSTRUMENT_LABEL, INSTRUMENT_ORDER, partitionInstrument, sharedInstrumentSource,
+} from '../../../daw/engine/plugin-presets-instrument.js';
 import { partitionVoice } from '../../../daw/engine/plugin-presets-voice.js';
 import {
   allPresetGroups, canSaveUserPreset, deleteUserPreset, exportUserPresets,
   importUserPresets, isUserPresetId, overwriteUserPreset, saveUserPreset, describeImport,
+  userPresetLoss,
 } from '../../../daw/engine/user-presets.js';
 import { useAppStore } from '../../../stores/appStore.js';
 import { useAutomationStore } from '../../../stores/automationStore.js';
@@ -42,6 +45,23 @@ import { wantsSquareVisual } from '../../../daw/model/plugin-shapes.js';
 import { knobParams } from '../../../daw/engine/plugin-kit.js';
 
 /**
+ * "This instrument's answer here is somebody else's, and here is whose."
+ *
+ * A handful of devices have no per-instrument answer for some sources — a
+ * shaker has no pitch for `pitchcorrect` to correct, and mains hum is a fact
+ * about the building rather than the microphone.  Those are declared in
+ * `SHARED_INSTRUMENT_ANSWERS`, and the chip says so rather than letting
+ * somebody spend five minutes deciding between two identical presets.
+ */
+function borrowedFrom(pluginId: string | undefined, preset: PluginPreset): string | null {
+  if (pluginId === undefined) return null;
+  const id = INSTRUMENT_ORDER.find((i) => INSTRUMENT_LABEL[i] === preset.name);
+  if (id === undefined) return null;
+  const from = sharedInstrumentSource(pluginId, id);
+  return from === null ? null : `${INSTRUMENT_LABEL[from]}와(과) 같은 설정 — ${preset.note}`;
+}
+
+/**
  * A row of preset chips for one closed set.
  *
  * Both the instrument row and the genre row are the same control with a
@@ -49,11 +69,13 @@ import { knobParams } from '../../../daw/engine/plugin-kit.js';
  * existed — which is how one of them ends up with the hover note and the
  * other without it.
  */
-function ChipRow({ label, presets, loadedPreset, onPick }: {
+function ChipRow({ label, presets, loadedPreset, onPick, pluginId }: {
   label: string;
   presets: readonly PluginPreset[];
   loadedPreset: string | null;
   onPick: (id: string) => void;
+  /** Set on the instrument row, so a borrowed answer can say whose it is. */
+  pluginId?: string;
 }): React.ReactElement | null {
   if (presets.length === 0) return null;
   return (
@@ -67,7 +89,7 @@ function ChipRow({ label, presets, loadedPreset, onPick }: {
             <button
               key={preset.id}
               onClick={() => onPick(preset.id)}
-              title={preset.note}
+              title={borrowedFrom(pluginId, preset) ?? preset.note}
               className="h-[18px] px-1.5 rounded text-[9px] leading-none
                          transition-colors shrink-0"
               style={{
@@ -75,7 +97,7 @@ function ChipRow({ label, presets, loadedPreset, onPick }: {
                 background: on ? 'rgba(198,167,104,0.14)' : 'transparent',
                 color: on ? premium.accent.base : premium.text.muted,
               }}
-            >{preset.name}</button>
+            >{preset.name}{borrowedFrom(pluginId, preset) === null ? '' : ' ·'}</button>
           );
         })}
       </div>
@@ -349,6 +371,11 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
   const loadPreset = (presetId: string): void => {
     const preset = groups.flatMap((g) => g.presets).find((entry) => entry.id === presetId);
     if (!preset) return;
+    // Asked BEFORE the merge, because the merge is what hides it: a setting
+    // this build no longer has is not left blank by `resolvePreset`, it is
+    // filled in with the factory default.  The preset then loads, sounds
+    // like the factory in that one place, and says nothing.
+    const lost = userPresetLoss(preset.id);
     const next = resolvePreset(preset, defaultParams(insert.pluginId));
     setLoadedPreset(preset.id);
     apply((s) => setInsert(s, win.trackId, {
@@ -356,6 +383,7 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
       params: next,
       latencySamples: descriptor.latencyFor(next, session.sampleRate),
     }));
+    if (lost) notify(`"${preset.name}" — ${lost}`, 'warning');
   };
   const activePreset = groups.flatMap((g) => g.presets).find((entry) => entry.id === loadedPreset);
   const userPresetActive = activePreset !== undefined && isUserPresetId(activePreset.id);
@@ -418,6 +446,16 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
       setPresetTick((n) => n + 1);
       notify(describeImport(report), report.added === 0 ? 'warning' : 'info');
       for (const reason of report.reasons.slice(0, 3)) notify(reason, 'warning');
+      // One call, not a loop: `notify` holds a single message and the next
+      // one replaces it, so three in a row show the third and nothing else.
+      // (The `reasons` loop above has had that bug since before this; it is
+      // left alone here rather than changed without a measurement of its own.)
+      if (report.adjusted.length > 0) {
+        notify(report.adjusted.length === 1
+          ? report.adjusted[0]!
+          : `${report.adjusted[0]!} · 외 ${report.adjusted.length - 1}개도 설정 일부가 빠졌습니다`,
+        'warning');
+      }
     } catch (err) {
       notify(err instanceof Error ? err.message : String(err), 'error');
     }
@@ -561,7 +599,8 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
             Instrument first, because you know what is on the track before you
             know what you want it to become. */}
         <ChipRow label="목소리" presets={voicePresets} loadedPreset={loadedPreset} onPick={loadPreset} />
-        <ChipRow label="악기" presets={instrumentPresets} loadedPreset={loadedPreset} onPick={loadPreset} />
+        <ChipRow label="악기" presets={instrumentPresets} loadedPreset={loadedPreset}
+                 onPick={loadPreset} pluginId={insert.pluginId} />
         <ChipRow label="장르" presets={genrePresets} loadedPreset={loadedPreset} onPick={loadPreset} />
 
         {(menuGroups.length > 0 || canSave) && (
