@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol, screen } from 'electron';
+import { app, BrowserWindow, crashReporter, dialog, ipcMain, protocol, screen } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import { Readable } from 'node:stream';
@@ -215,7 +215,27 @@ function createWindow(): void {
   }
 }
 
+// ── Crash dumps, kept on the machine that crashed ───────────────────────────
+//
+// A renderer that dies of a NATIVE fault leaves nothing in this log but an
+// exit code.  0xC0000005 is an access violation; an access violation has no
+// JavaScript stack to print, so `render-process-gone` below can only say that
+// it happened.  That is the whole of what was known about the Windows crash
+// for three rounds of looking: the app said "it crashed" and had no way to
+// say anything else.
+//
+// Started here rather than inside `whenReady` because the handler has to be
+// up before the first renderer exists — a crash during startup is precisely
+// the one worth catching.
+//
+// `uploadToServer: false`: NOTHING LEAVES THE MACHINE.  The dump is written
+// under `app.getPath('crashDumps')` and stays there for whoever is looking,
+// which on a student's machine is the student and on a runner is the job.
+crashReporter.start({ submitURL: '', uploadToServer: false });
+
 app.whenReady().then(() => {
+  log.info('[crash] dumps go to:', app.getPath('crashDumps'));
+
   // ── 0. 로컬 파일 프로토콜 핸들러 ─────────────────────────────────────────
   // aimaster-local:///<absolute-path> → reads from local filesystem.
   //

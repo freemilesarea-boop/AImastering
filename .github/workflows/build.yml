@@ -1006,6 +1006,78 @@ jobs:
           $log = "$env:RUNNER_TEMP\pkg-smoke\electron.log"
           if (Test-Path $log) { Get-Content $log -Tail 160 } else { Write-Host '(no electron.log)' }
 
+      # ── Three things to ask a crash that leaves no stack ──────────────────
+      #
+      # The renderer dies here with 0xC0000005 and no JavaScript error at all,
+      # so the app's log can only say that it happened.  These ask the three
+      # questions that do not need a JavaScript stack, and each of them is
+      # worth a round on its own:
+      #
+      #   1. does a BLANK page survive in the same process on this machine?
+      #      — that splits "Chromium cannot keep a renderer alive here" from
+      #        "our bundle is what it cannot survive"
+      #   2. which MODULE was the faulting address inside?
+      #   3. and the app's own last words, which the boot step prints above.
+      # Only when something has already gone wrong: it boots a second copy of
+      # the app, and there is nothing to split on a run where nothing died.
+      - name: Probe — is it Chromium here, or is it our bundle?
+        if: failure()
+        run: |
+          cd D:\w\aimaster-desktop\apps\desktop
+          node scripts/app-smoke/boot-packaged.mjs "$env:RUNNER_TEMP\blank-probe" 9445 --blank
+
+      # The dump directory is READ OUT OF THE APP'S LOG, not guessed.
+      #
+      # It was guessed first — `%APPDATA%\LV DAW\Crashpad`, from the product
+      # name — and the app actually writes to `...\@aimaster\desktop\...`,
+      # because `app.getName()` answers with the package name.  A guess that
+      # misses finds no dumps and reports "no crash dump was written", which
+      # is a confident lie about the one piece of evidence there is.  The app
+      # logs the path at startup; this reads that line.
+      - name: Read the crash dump — which module faulted
+        if: always()
+        run: |
+          $out = "$env:RUNNER_TEMP\crash-dumps"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $log = "$env:RUNNER_TEMP\pkg-smoke\electron.log"
+          $dirs = @()
+          if (Test-Path $log) {
+            $line = Select-String -Path $log -Pattern 'dumps go to: (.+)$' | Select-Object -First 1
+            if ($line) { $dirs += $line.Matches[0].Groups[1].Value.Trim() }
+          }
+          # Whatever the app said, plus a sweep for any Crashpad folder the
+          # run left behind — the log line is the answer, the sweep is the
+          # check that the answer was complete.
+          foreach ($root in @($env:APPDATA, $env:LOCALAPPDATA)) {
+            $dirs += @(Get-ChildItem -Path $root -Recurse -Directory -Filter Crashpad -Depth 3 -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+          }
+          $dirs = $dirs | Where-Object { $_ } | Select-Object -Unique
+          Write-Host "looking in: $($dirs -join ' ; ')"
+          $dumps = @()
+          foreach ($d in $dirs) {
+            $dumps += @(Get-ChildItem -Path $d -Recurse -Filter *.dmp -ErrorAction SilentlyContinue)
+          }
+          $dumps = $dumps | Select-Object -Unique
+          if ($dumps.Count -eq 0) {
+            Write-Host '(no .dmp anywhere — the renderer never reached the crash handler)'
+            exit 0
+          }
+          Write-Host "$($dumps.Count) dump(s)"
+          cd D:\w\aimaster-desktop\apps\desktop
+          foreach ($d in $dumps) {
+            Copy-Item $d.FullName -Destination $out -Force
+            python scripts/app-smoke/read-minidump.py $d.FullName
+          }
+
+      - name: Upload the crash dumps
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-dumps-windows
+          path: ${{ runner.temp }}/crash-dumps
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Stop the app the packaged smoke left running
         if: always()
         run: |

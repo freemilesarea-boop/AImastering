@@ -111,9 +111,29 @@ if (process.argv[2] === '--print-args') {
   process.exit(0);
 }
 
-const WORK = process.argv[2];
-const PORT = process.argv[3] ?? '9444';
-const DISP = process.argv[4] ?? '97';
+const argv = process.argv.slice(2).filter((a) => a !== '--blank');
+/**
+ * `--blank`: load NOTHING into the window and watch it.
+ *
+ * One question, and it halves the problem.  The Windows renderer dies 1.6 s
+ * after loading the app with an access violation and no JavaScript error, and
+ * two very different things look exactly like that: Chromium cannot keep a
+ * renderer alive on that machine at all, or something our bundle does on the
+ * way up kills it.
+ *
+ * The window the app just opened is the only renderer anyone can get here —
+ * Electron has no "new tab", and asking its debugger endpoint for one answers
+ * 500 — so the split has to be made in the moment that window is alive: go
+ * straight to `about:blank`, which throws away every line of our own code
+ * while keeping the same process, the same switches and the same machine.
+ *
+ * It reports and exits 0 either way.  A run that cannot answer the question
+ * is not a build failure.
+ */
+const BLANK = process.argv.includes('--blank');
+const WORK = argv[0];
+const PORT = argv[1] ?? '9444';
+const DISP = argv[2] ?? '97';
 if (!WORK) {
   console.error('usage: boot-packaged.mjs <workdir> [cdp-port] [display]');
   process.exit(2);
@@ -134,6 +154,63 @@ function logTail(lines = 25) {
     return fs.readFileSync(path.join(WORK, 'electron.log'), 'utf8')
       .split(/\r?\n/).slice(-lines).join('\n');
   } catch { return '(no electron.log)'; }
+}
+
+/**
+ * A raw CDP socket to one target.
+ *
+ * Playwright will not touch a page it has seen crash — `page.goto()` answers
+ * "Page crashed" and stops there — and the crashed window is exactly the one
+ * worth navigating: telling a dead target to load `about:blank` is what makes
+ * Chromium give it a fresh renderer.  So that one navigation is done by hand.
+ */
+async function rawTarget() {
+  const WS = globalThis.WebSocket ?? (await import('ws')).WebSocket;
+  const list = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
+  const target = (Array.isArray(list) ? list : [])
+    .find((t) => t?.type === 'page' && !String(t?.url ?? '').startsWith('devtools://'));
+  if (!target?.webSocketDebuggerUrl) throw new Error('no page target to talk to');
+  const ws = new WS(target.webSocketDebuggerUrl);
+  const pending = new Map();
+  let nextId = 1;
+  await new Promise((res, rej) => {
+    ws.addEventListener('open', res, { once: true });
+    ws.addEventListener('error', () => rej(new Error('CDP socket failed')), { once: true });
+  });
+  ws.addEventListener('message', (ev) => {
+    const msg = JSON.parse(typeof ev.data === 'string' ? ev.data : String(ev.data));
+    const slot = pending.get(msg.id);
+    if (!slot) return;
+    pending.delete(msg.id);
+    if (msg.error) slot.reject(new Error(msg.error.message)); else slot.resolve(msg.result);
+  });
+  // Every call has a deadline.  A crashed target accepts `Page.navigate` and
+  // then never answers it, and a probe that hangs there is worse than one
+  // that says it could not tell: the job sits for its whole timeout and the
+  // log ends mid-sentence, which is what the first run of this did.
+  const send = (method, params = {}, ms = 8000) => new Promise((resolve, reject) => {
+    const id = nextId++;
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error(`${method} did not answer in ${ms} ms`));
+    }, ms);
+    pending.set(id, {
+      resolve: (v) => { clearTimeout(timer); resolve(v); },
+      reject: (e) => { clearTimeout(timer); reject(e); },
+    });
+    try { ws.send(JSON.stringify({ id, method, params })); }
+    catch (err) { clearTimeout(timer); pending.delete(id); reject(err); }
+  });
+  return {
+    send,
+    close: () => { try { ws.close(); } catch { /* already gone */ } },
+    async answers() {
+      try {
+          const r = await send('Runtime.evaluate', { expression: '1+1', returnByValue: true }, 4000);
+        return r?.result?.value === 2;
+      } catch { return false; }
+    },
+  };
 }
 
 /** How many real pages the app has open; 0 while it is still starting. */
@@ -467,6 +544,75 @@ if (pageAt === 0) {
 }
 console.log(`window   ${pageAt} page target(s)`);
 
+if (BLANK) {
+  const WATCH = 8;
+  const SECONDS = 10;
+  const say = (line) => console.log(`  ${line}`);
+  const answers = async (pg) => {
+    try { return (await pg.evaluate(() => 1 + 1)) === 2; } catch { return false; }
+  };
+  let verdict = 'unknown';
+  try {
+    const browser = await chromium.connectOverCDP(`http://127.0.0.1:${PORT}`);
+    const pages = browser.contexts()[0]?.pages() ?? [];
+    const win = pages.find((p) => !p.url().startsWith('devtools://')) ?? pages[0] ?? null;
+    if (!win) {
+      say('the window went away before anything could look at it');
+      verdict = 'unknown — no page to watch';
+    } else {
+      // FIRST the real thing, because a verdict about our bundle is worth
+      // nothing on a machine where our bundle did not die.  The app gets the
+      // same look the smoke would give it.
+      say(`watching the app's own page for up to ${WATCH}s`);
+      let died = 0;
+      for (let i = 1; i <= WATCH; i++) {
+        await sleep(1000);
+        if (!await answers(win)) { died = i; break; }
+      }
+      if (died === 0) {
+        say(`the app's page answered every second for ${WATCH}s`);
+        verdict = 'nothing to split — the app\u2019s renderer does not die on this machine';
+      } else {
+        say(`the app's page stopped answering after ${died}s — now emptying the window`);
+        // By hand, over a raw socket: Playwright has written this page off.
+        const raw = await rawTarget();
+        await raw.send('Page.enable').catch(() => {});
+        // Not awaited for an answer: a crashed target takes the navigation
+        // and never replies to it, but it DOES act on it.
+        raw.send('Page.navigate', { url: 'about:blank' }).catch(() => {});
+        await sleep(3000);
+        if (!await raw.answers()) {
+          say('the emptied window would not answer at all');
+          verdict = 'chromium — this machine could not give the app a working renderer even with nothing in it';
+        } else {
+          say(`emptied; watching it for ${SECONDS}s with none of our code in it`);
+          let alive = 0;
+          for (let i = 1; i <= SECONDS; i++) {
+            await sleep(1000);
+            if (!await raw.answers()) {
+              say(`the BLANK window stopped answering after ${i}s too`);
+              verdict = 'chromium — a page with none of our code in it dies here as well';
+              break;
+            }
+            alive = i;
+          }
+          if (verdict === 'unknown') {
+            say(`the blank window answered every second for ${alive}s`);
+            verdict = 'our bundle — the same process keeps an empty renderer alive, and only ours dies';
+          }
+        }
+        raw.close();
+      }
+    }
+  } catch (err) {
+    say(`the probe could not finish: ${String(err?.message ?? err)}`);
+    verdict = `unknown — ${String(err?.message ?? err)}`;
+  }
+  console.log(`  VERDICT  ${verdict}`);
+  console.log(logTail(12));
+  process.exit(0);
+}
+
 // ── And it is still there a moment later ────────────────────────────────────
 //
 // A window that appears and then dies is not a window, and until this existed
@@ -489,9 +635,16 @@ const SETTLE_MS = 4000;
     const pages = watched.contexts()[0]?.pages() ?? [];
     watchedPage = pages.find((p) => !p.url().startsWith('devtools://')) ?? pages[0] ?? null;
     if (watchedPage) {
+      // EVERY line, not only the errors.
+      //
+      // The Windows renderer dies 1.6 s after load with an access violation
+      // and no JavaScript error at all, so the error channel is empty and
+      // says nothing.  What it does leave is the ordinary log the app writes
+      // on its way up, and the LAST of those lines is the closest thing to a
+      // pointer at what it was doing when the process went away.
       watchedPage.on('pageerror', (e) => said.push(`pageerror: ${String(e?.message ?? e)}`));
-      watchedPage.on('console', (m) => { if (m.type() === 'error') said.push(`console: ${m.text()}`); });
-      watchedPage.on('crash', () => said.push('the page crashed'));
+      watchedPage.on('console', (m) => said.push(`${m.type()}: ${m.text()}`.slice(0, 200)));
+      watchedPage.on('crash', () => said.push('--- the page crashed here ---'));
     }
   } catch (err) {
     said.push(`could not watch the page: ${String(err?.message ?? err)}`);
@@ -512,16 +665,20 @@ const SETTLE_MS = 4000;
   }
   if (!alive) {
     const log = logTail();
+    // The tail, because the last thing it said is the interesting end.
+    const lastWords = said.slice(-20);
     const crashed = /render-process-gone/.test(log);
     die(crashed
       ? `the app opened a window and its RENDERER crashed within ${SETTLE_MS} ms — see ${logPath}`
       : `the app opened a window and lost it within ${SETTLE_MS} ms — see ${logPath}`,
-    `${said.length > 0 ? `the renderer said:\n  ${said.join('\n  ')}\n\n` : 'the renderer said nothing on the way out\n\n'}`
+    `${lastWords.length > 0
+        ? `the renderer's last ${lastWords.length} line(s), oldest first:\n  ${lastWords.join('\n  ')}\n\n`
+        : 'the renderer said nothing at all on the way out\n\n'}`
       + log);
   }
   if (said.length > 0) {
-    console.log(`window   the renderer logged ${said.length} error(s) while settling:`);
-    for (const line of said.slice(0, 10)) console.log(`         ${line}`);
+    console.log(`window   the renderer logged ${said.length} line(s) while settling, last 5:`);
+    for (const line of said.slice(-5)) console.log(`         ${line}`);
   }
   // NOT closed.  `browser.close()` over a CDP connection closes the APP, and
   // the flow is about to attach to it — closing here would leave the flow
